@@ -134,23 +134,10 @@ inline float Transmittance_GGX(
     float Pr,
     float Pm)
 {
-    float  Ni   = LoadNi(mID);
-    float  F0   = ComputeF0Dielectric(etat, etai).x;
-    float  Favg = (F0 + (1.0f - F0) * (1.0f / 21.0f)) * (1.0f/Ni);
-
     float3 N    = normalize(normal);
     float3 wo   = normalize(outgoing);
-    float3 wi   = normalize(-incoming);
-
-    float  Fo = FresnelDielectric(wo, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f);
-    float  Fi = FresnelDielectric(wi, N, etai, etat).x;
-
-    float  Kd_frac = Avg3(Kd * LoadKd_w(mID));
-
-    float  metalness = Pm;
-    float  gate      = LoadKd_w(mID) * (1.0f - metalness);
-
-    return gate * (1.0f - Fo) * (1.0f - Fi) * (1.0f / max(1.0f - Kd_frac * Favg, 1e-4f));
+    float gate = LoadKd_w(mID) * (1.0f - Pm);
+    return gate * (1.0f - GGXDirectionalReflectance(Pr, max(dot(N, wo), 0.0f), etai, etat));
 }
 
 inline float Sampling_Weight_GGX(
@@ -247,18 +234,8 @@ inline float GGXTransmittance(
     uint matID, float3 N, float3 V, float3 L,
     half etai, half etat, float3 Kd, half Pr, half Pm)
 {
-    const half  Kd_w_h     = (half)LoadKd_w(matID);
-    const half  oneMinusPm = (half)1.0 - Pm;
-    const float Ni       = LoadNi(matID);
-    const half  F0_t     = (half)ComputeF0Dielectric(etat, etai).x;
-    const half  Favg     = (F0_t + ((half)1.0 - F0_t) * (half)(1.0f / 21.0f)) * (half)(1.0f / Ni);
-    const half  PrFactor = (half)1.0 - Pr * (half)0.7;
-    const half  Fo       = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
-    const half  Fi       = (half)FresnelDielectric(L, N, etai, etat).x;
-    const half  Kd_frac  = (half)Avg3(Kd) * Kd_w_h;
-    const half  gate_t   = Kd_w_h * oneMinusPm;
-    return (float)(gate_t * ((half)1.0 - Fo) * ((half)1.0 - Fi)
-                   / max((half)1.0 - Kd_frac * Favg, (half)1e-4));
+    const float gate = LoadKd_w(matID) * (1.0f - (float)Pm);
+    return gate * (1.0f - GGXDirectionalReflectance((float)Pr, max(dot(N, V), 0.0f), etai, etat));
 }
 struct GGXResult {
     float3 f;
@@ -290,16 +267,7 @@ inline GGXResult EvalGGXAll(
 
     [branch] if (needTransmission)
     {
-        const float Ni       = LoadNi(matID);
-        const half  F0_t     = (half)ComputeF0Dielectric(etat, etai).x;
-        const half  Favg     = (F0_t + ((half)1.0 - F0_t) * (half)(1.0f / 21.0f)) * (half)(1.0f / Ni);
-        const half  PrFactor = (half)1.0 - Pr * (half)0.7;
-        const half  Fo       = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
-        const half  Fi       = (half)FresnelDielectric(L, N, etai, etat).x;
-        const half  Kd_frac  = (half)Avg3(Kd) * Kd_w_h;
-        const half  gate_t   = Kd_w_h * oneMinusPm;
-        r.t = (float)(gate_t * ((half)1.0 - Fo) * ((half)1.0 - Fi)
-                     / max((half)1.0 - Kd_frac * Favg, (half)1e-4));
+        r.t = GGXTransmittance(matID, N, V, L, etai, etat, Kd, Pr, Pm);
     }
 
     const half alpha = max((half)0.001, Pr * Pr);

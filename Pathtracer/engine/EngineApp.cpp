@@ -11,6 +11,10 @@ void EngineApp::OnInit() {
     m_renderer.InitDevice();
 
     auto meshes = m_sceneDef->GetMeshes();
+    char surveyWorld[32768]{};
+    const DWORD surveyWorldLength = GetEnvironmentVariableA("RT_MC_WORLD", surveyWorld, sizeof(surveyWorld));
+    if (surveyWorldLength > 0 && surveyWorldLength < sizeof(surveyWorld))
+        for (auto& mesh : meshes) if (mesh.minecraft) mesh.path = surveyWorld;
     std::vector<ModelEntry> models;
     const MeshDefinition* world = nullptr;
     // A scene may stream at most one Minecraft world.
@@ -36,6 +40,12 @@ void EngineApp::OnInit() {
         m_renderer.LoadMinecraftWorld(cfg, world->transform);
     }
 
+    char surveyCamera[256]{};
+    float ex,ey,ez,cx,cy,cz;
+    const DWORD surveyCameraLength = GetEnvironmentVariableA("RT_MC_CAMERA", surveyCamera, sizeof(surveyCamera));
+    if (surveyCameraLength > 0 && surveyCameraLength < sizeof(surveyCamera)
+        && sscanf_s(surveyCamera,"%f %f %f %f %f %f",&ex,&ey,&ez,&cx,&cy,&cz) == 6)
+        nv_helpers_dx12::CameraManip.setLookat({ex,ey,ez},{cx,cy,cz},{0,1,0});
     m_sceneDef->Init(m_sceneManager, m_renderer);
     m_sceneManager.SyncToRendererInitial(m_renderer.GetScene());
     m_renderer.InitSceneGPU();

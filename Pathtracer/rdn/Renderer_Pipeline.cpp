@@ -1490,11 +1490,10 @@ void Renderer::ClearSortBuffers(ID3D12GraphicsCommandList* cmdList) {
 
 void Renderer::GenerateLutTextures() {
     SCOPE_TIMER("GenerateLutTextures");
-    std::vector<std::vector<float>> allData(NUM_LUTS, std::vector<float>(LUT_RESOLUTION * LUT_RESOLUTION));
+    std::vector<std::vector<float>> allData(NUM_LUTS, std::vector<float>(LUT_RESOLUTION * LUT_RESOLUTION * 4));
     const XMFLOAT3 N = {0, 0, 1};
     Material tempMat;
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(0x4c5554u);
     std::uniform_real_distribution<float> dist(0, 1);
 
     for (int y = 0; y < LUT_RESOLUTION; ++y) {
@@ -1505,22 +1504,29 @@ void Renderer::GenerateLutTextures() {
         for (int x = 0; x < LUT_RESOLUTION; ++x) {
             float roughness = std::max(0.01f, (float)x / (LUT_RESOLUTION - 1));
             tempMat.Pr_Pm_Ps_Pc.x = roughness;
-            size_t pi = (size_t)y * LUT_RESOLUTION + x;
+            size_t pi = ((size_t)y * LUT_RESOLUTION + x) * 4;
 
             allData[0][pi] = ComputeSheenDirectionalAlbedo(N, V, roughness, NUM_SAMPLES_LUT);
 
-            float Ess = 0;
+            float Ess = 0, schlick5 = 0, schlick10 = 0;
             for (int i = 0; i < NUM_SAMPLES_LUT; ++i) {
                 XMFLOAT3 L;
                 SampleGGX(tempMat, V, N, L, dist(gen), dist(gen));
                 if (dot(N, L) <= 0)
                     continue;
-                XMFLOAT3 b = EvaluateBRDF_GGX(V, L, N, {}, roughness);
-                float pdf = BRDF_PDF_GGX(roughness, N, L * -1.0f, V);
-                if (pdf > 1e-6f)
-                    Ess += (b.x * dot(N, L)) / pdf;
+                // With the legacy VNDF proposal, f_unit * cos / pdf = G1(L).
+                float weight = G1_SmithGGX(dot(N, L), roughness * roughness);
+                XMFLOAT3 H = normalize(V + L);
+                float xh = std::clamp(1.0f - dot(V, H), 0.0f, 1.0f);
+                float xh2 = xh * xh;
+                float xh5 = xh2 * xh2 * xh;
+                Ess += weight;
+                schlick5 += weight * xh5;
+                schlick10 += weight * xh5 * xh5;
             }
             allData[1][pi] = NUM_SAMPLES_LUT > 0 ? Ess / NUM_SAMPLES_LUT : 0;
+            allData[1][pi + 1] = NUM_SAMPLES_LUT > 0 ? schlick5 / NUM_SAMPLES_LUT : 0;
+            allData[1][pi + 2] = NUM_SAMPLES_LUT > 0 ? schlick10 / NUM_SAMPLES_LUT : 0;
         }
     }
     CreateAndUploadLutArray(allData, m_lutTextureArray, L"LutTextureArray");
@@ -1538,7 +1544,7 @@ void Renderer::CreateAndUploadLutArray(const std::vector<std::vector<float>>& al
     td.Height = LUT_RESOLUTION;
     td.DepthOrArraySize = arraySize;
     td.MipLevels = 1;
-    td.Format = DXGI_FORMAT_R32_FLOAT;
+    td.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     td.SampleDesc.Count = 1;
     ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
                                                           &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
@@ -1556,7 +1562,7 @@ void Renderer::CreateAndUploadLutArray(const std::vector<std::vector<float>>& al
     std::vector<D3D12_SUBRESOURCE_DATA> sr(arraySize);
     for (UINT i = 0; i < arraySize; ++i) {
         sr[i].pData = allData[i].data();
-        sr[i].RowPitch = LUT_RESOLUTION * sizeof(float);
+        sr[i].RowPitch = LUT_RESOLUTION * 4 * sizeof(float);
         sr[i].SlicePitch = sr[i].RowPitch * LUT_RESOLUTION;
     }
     UpdateSubresources(m_ctx.CmdList(), tar.Get(), uh.Get(), 0, 0, arraySize, sr.data());

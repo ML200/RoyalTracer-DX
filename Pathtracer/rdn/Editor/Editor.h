@@ -26,6 +26,7 @@ class Editor {
               const FrameStats& stats, const planet::StreamOrchestrator::Stats& planetStats,
               mc::VoxelStreamer* voxels = nullptr);
     void Render(ID3D12GraphicsCommandList* cmdList);
+    void RenderPlatformWindows();
 
     bool IsVisible() const { return m_visible; }
     void ToggleVisibility() { m_visible = !m_visible; }

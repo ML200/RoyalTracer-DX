@@ -82,6 +82,8 @@ struct StreamerStats {
     float    adaptMs   = 0.0f;
     uint32_t cutNodes  = 0;
     float    recordMs  = 0.0f;
+    float    lightSelectionMs = 0.0f;
+    bool     lightSelectionReused = false;
     double   warmUpSeconds = 0.0;
     bool     warmUpComplete = false;
     uint64_t lightTrisResident = 0, lightNodesResident = 0;
@@ -390,6 +392,12 @@ private:
     uint32_t               m_lightLiveVersion = 0;
     bool                   m_lightTlasHasVoxels = false;
     bool                   m_lightSetDirty = false;
+    uint32_t               m_lightSelectionFrame = NONE;
+    double                 m_lightSelectionCam[3] = {};
+    uint32_t               m_lightSelectionMaxTris = 0, m_lightSelectionMaxSlots = 0;
+    uint32_t               m_lightSelectionFreeSlots = 0, m_lightSelectionSlots = 0;
+    int                    m_lightSelectionMaxLevel = -1;
+    bool                   m_lightSelectionEnabled = false;
 
     std::unique_ptr<planet::WorkerPool> m_lodPool;
     std::unique_ptr<planet::WorkerPool> m_workers;

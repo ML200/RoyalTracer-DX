@@ -2,19 +2,28 @@
 #include "Editor.h"
 #include <unordered_set>
 
+namespace {
+void SetInitialPanelPosition(ImVec2 offset) {
+    // Multi-viewports use desktop coordinates; keep new panels inside the main window.
+    const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+    ImGui::SetNextWindowPos(ImVec2(origin.x + offset.x, origin.y + offset.y), ImGuiCond_FirstUseEver);
+}
+}
+
 void Editor::Init(HWND hwnd, ID3D12Device* device, UINT numFramesInFlight, ID3D12DescriptorHeap* srvHeap,
                   D3D12_CPU_DESCRIPTOR_HANDLE fontCpu, D3D12_GPU_DESCRIPTOR_HANDLE fontGpu) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     ImGui::StyleColorsDark();
     auto& style = ImGui::GetStyle();
-    style.WindowRounding = 4.0f;
+    style.WindowRounding = 0.0f;
     style.FrameRounding = 2.0f;
     style.GrabRounding = 2.0f;
-    style.Colors[ImGuiCol_WindowBg].w = 0.92f;
+    style.Colors[ImGuiCol_WindowBg].w = 1.0f;
 
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX12_Init(device, numFramesInFlight, DXGI_FORMAT_R8G8B8A8_UNORM, srvHeap, fontCpu, fontGpu);
@@ -40,12 +49,15 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
         m_performanceFrame.minecraft = m_performanceFrame.hasMinecraft ? voxels->stats() : mc::StreamerStats{};
     }
 
-    if (!m_visible)
-        return;
-
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+
+    // An empty frame lets ImGui close detached windows when the editor is hidden.
+    if (!m_visible) {
+        ImGui::Render();
+        return;
+    }
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("View")) {
@@ -117,7 +129,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
 }
 
 void Editor::DrawMinecraftPanel(mc::VoxelStreamer& v) {
-    ImGui::SetNextWindowPos(ImVec2(380, 30), ImGuiCond_FirstUseEver);
+    SetInitialPanelPosition(ImVec2(380, 30));
     ImGui::SetNextWindowSize(ImVec2(440, 560), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Minecraft###Minecraft World", &m_showMinecraft)) {
         ImGui::End();
@@ -215,8 +227,15 @@ void Editor::Render(ID3D12GraphicsCommandList* cmdList) {
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
 }
 
+void Editor::RenderPlatformWindows() {
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
+}
+
 void Editor::DrawScenePanel(Scene& scene) {
-    ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
+    SetInitialPanelPosition(ImVec2(10, 30));
     ImGui::SetNextWindowSize(ImVec2(360, 450), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Scene###Scene Hierarchy", &m_showScene)) {
@@ -299,7 +318,7 @@ void Editor::DrawScenePanel(Scene& scene) {
 }
 
 void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
-    ImGui::SetNextWindowPos(ImVec2(10, 490), ImGuiCond_FirstUseEver);
+    SetInitialPanelPosition(ImVec2(10, 490));
     ImGui::SetNextWindowSize(ImVec2(360, 180), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Camera", &m_showCamera)) {
@@ -331,7 +350,7 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
 }
 
 void Editor::DrawPassPipelinePanel(PassSystem& passes) {
-    ImGui::SetNextWindowPos(ImVec2(380, 30), ImGuiCond_FirstUseEver);
+    SetInitialPanelPosition(ImVec2(380, 30));
     ImGui::SetNextWindowSize(ImVec2(350, 400), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Render passes###Pass Pipeline", &m_showPipeline)) {
@@ -516,7 +535,7 @@ void showByteUsage(const char* label, UINT64 used, UINT64 capacity) {
 
 void Editor::DrawPerformancePanel(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs, float fps,
                                   const mc::StreamerStats* minecraft) {
-    ImGui::SetNextWindowPos(ImVec2(20, 60), ImGuiCond_FirstUseEver);
+    SetInitialPanelPosition(ImVec2(20, 60));
     ImGui::SetNextWindowSize(ImVec2(650, 760), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Performance###Performance", &m_showPerformance)) {
@@ -637,6 +656,8 @@ void Editor::DrawPerformancePanel(const planet::StreamOrchestrator::Stats& ps, c
                             minecraft->compactionsThisFrame, minecraft->copiesThisFrame);
                 showBytes("Uploaded this frame", minecraft->uploadBytesThisFrame);
                 ImGui::Text("CPU selection %.3f ms | recording %.3f ms", minecraft->selectMs, minecraft->recordMs);
+                ImGui::Text("Light selection: %.3f ms CPU (%s)", minecraft->lightSelectionMs,
+                            minecraft->lightSelectionReused ? "reused" : "updated");
                 ImGui::Text("Mesh job average %.3f ms | allocation retries %u", minecraft->meshMsAvg,
                             minecraft->allocFailures);
             } else {
@@ -704,7 +725,7 @@ void Editor::DrawPerformancePanel(const planet::StreamOrchestrator::Stats& ps, c
     ImGui::End();
 }
 void Editor::DrawDLSSNRPanel(DLSSNRManager& nr) {
-    ImGui::SetNextWindowPos(ImVec2(380, 60), ImGuiCond_FirstUseEver);
+    SetInitialPanelPosition(ImVec2(380, 60));
     ImGui::SetNextWindowSize(ImVec2(450, 470), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("DLSS 5 Neural Rendering", &m_showDLSSNR)) {
         ImGui::End();
@@ -756,7 +777,7 @@ void Editor::DrawDLSSNRPanel(DLSSNRManager& nr) {
 }
 
 void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir) {
-    ImGui::SetNextWindowPos(ImVec2(740, 30), ImGuiCond_FirstUseEver);
+    SetInitialPanelPosition(ImVec2(740, 30));
     ImGui::SetNextWindowSize(ImVec2(620, 700), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(540, 300), ImVec2(FLT_MAX, FLT_MAX));
 
@@ -904,7 +925,10 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         }
 
         if (ImGui::CollapsingHeader("PBR", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (mats.diffuseRoughness.size() < mats.size())
+                mats.diffuseRoughness.resize(mats.size(), .5f);
             changed |= ImGui::SliderFloat("Roughness", &mats.Pr_Pm_Ps_Pc[i].x, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Diffuse roughness", &mats.diffuseRoughness[i], 0.0f, 1.0f);
             changed |= ImGui::SliderFloat("Metallic", &mats.Pr_Pm_Ps_Pc[i].y, 0.0f, 1.0f);
             changed |= ImGui::SliderFloat("Sheen", &mats.Pr_Pm_Ps_Pc[i].z, 0.0f, 1.0f);
         }

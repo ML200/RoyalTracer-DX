@@ -1521,6 +1521,18 @@ void VoxelStreamer::append_instances(planet::TlasBuilder& tlas, InstanceProperti
 }
 
 void VoxelStreamer::update_light_set(uint32_t) {
+    const bool enabled = m_lightsBound && m_cfg.lights;
+    const bool sameCamera = m_lightSelectionCam[0] == m_cam[0] && m_lightSelectionCam[1] == m_cam[1] && m_lightSelectionCam[2] == m_cam[2];
+    // An unchanged scene has the same selected lights. Avoid rebuilding and
+    // sorting the complete candidate list every frame, especially in large maps.
+    const bool reuse = !m_lightSetDirty && m_lightSelectionFrame == m_renderListFrame && sameCamera
+        && m_lightSelectionEnabled == enabled && m_lightSelectionMaxTris == m_cfg.maxLightTris
+        && m_lightSelectionMaxSlots == m_cfg.maxLightSlots && m_lightSelectionMaxLevel == m_cfg.lightMaxLevel
+        && m_lightSelectionFreeSlots == m_freeLightSlots.size() && m_lightSelectionSlots == m_lightSlots.size();
+    m_stats.lightSelectionReused = reuse;
+    m_stats.lightSelectionMs = 0.0f;
+    if (reuse) return;
+    const auto started = std::chrono::steady_clock::now();
     if (m_lightsBound && m_cfg.lights) {
         const uint32_t rc = (uint32_t)m_render.size();
         std::vector<std::vector<std::pair<float, uint64_t>>> parts(piece_count(rc, 2048));
@@ -1573,6 +1585,13 @@ void VoxelStreamer::update_light_set(uint32_t) {
         if (it->second.lightIncludedFrame != m_frame) exclude_light_slot(it->second);
     }
     if (m_lightSetDirty) { ++m_lightVersion; m_lightSetDirty = false; }
+    m_lightSelectionFrame = m_renderListFrame;
+    std::copy(m_cam, m_cam + 3, m_lightSelectionCam);
+    m_lightSelectionEnabled = enabled;
+    m_lightSelectionMaxTris = m_cfg.maxLightTris; m_lightSelectionMaxSlots = m_cfg.maxLightSlots;
+    m_lightSelectionMaxLevel = m_cfg.lightMaxLevel;
+    m_lightSelectionFreeSlots = (uint32_t)m_freeLightSlots.size(); m_lightSelectionSlots = (uint32_t)m_lightSlots.size();
+    m_stats.lightSelectionMs = std::chrono::duration<float,std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
 // Records copy and compute fences for pending uploads and builds.

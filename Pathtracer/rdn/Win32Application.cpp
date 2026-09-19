@@ -47,13 +47,20 @@ int Win32Application::Run(DXSample* pSample, HINSTANCE hInstance, int nCmdShow) 
         ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
     pSample->OnInit();
 
-    ShowWindow(m_hwnd, nCmdShow);
+    char benchmarkFrames[32]{};
+    unsigned frameLimit = 0;
+    if (GetEnvironmentVariableA("RT_BENCHMARK_FRAMES",benchmarkFrames,sizeof(benchmarkFrames)) > 0)
+        sscanf_s(benchmarkFrames,"%u",&frameLimit);
+    ShowWindow(m_hwnd, frameLimit ? SW_HIDE : nCmdShow);
 
     MSG msg = {};
     while (msg.message != WM_QUIT) {
         if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        } else if (frameLimit) {
+            pSample->OnUpdate(); pSample->OnRender();
+            if (--frameLimit == 0) PostQuitMessage(0);
         }
     }
 

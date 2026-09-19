@@ -405,6 +405,51 @@ static void TestScene(const fs::path& dir, ID3D12Device* device) {
         objScene.meshes[0].indexCount == 3, "OBJ loading regressed");
 }
 
+static void TestBvhOptimization(const fs::path& dir, ID3D12Device* device) {
+    // Overlapping static primitives should be combined; distant geometry should
+    // get separate bounds without losing material identity, triangles or motion.
+    const auto path = dir / "bvh-distant.obj";
+    {
+        std::ofstream f(dir / "bvh-distant.mtl");
+        f << "newmtl left\nKd 1 0 0\nnewmtl right\nKd 0 1 0\n";
+    }
+    {
+        std::ofstream f(path);
+        f << "mtllib bvh-distant.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1000 0 0\nv 1001 0 0\nv 1000 1 0\n";
+        for (int i = 0; i < 4096; ++i) f << "usemtl left\nf 1 2 3\nusemtl right\nf 4 5 6\n";
+    }
+    Scene scene;
+    AssetLoader::LoadModels({{path.string()}},scene,device,nullptr,[] {});
+    Require(scene.meshes.size() == 2 && scene.instances.size() == 2,"Automatic BVH survey failed to split distant clusters");
+    Require(scene.models[0].bvhSurvey.triangles == 8192 && scene.models[0].bvhSurvey.overlapPairs == 0,
+        "BVH optimization lost triangles or retained overlapping cluster bounds");
+    for(const auto& mesh : scene.meshes) {
+        Require(mesh.indexCount == 4096*3 && mesh.cpuMaterialIDs.size() == 4096,"Split broke indices or material mapping");
+        for(uint32_t i : mesh.cpuIndices) Require(i < mesh.vertexCount,"Split emitted invalid local indices");
+        const bool left = mesh.cpuVertices[0].position.x < 500;
+        for (uint32_t material : mesh.cpuMaterialIDs) {
+            const auto& color = scene.materials.Kd[material];
+            Require(color.x == (left ? 1.f : 0.f) && color.y == (left ? 0.f : 1.f),
+                "Spatial splitting assigned another cluster's material");
+        }
+    }
+    scene.models[0].position={10,20,30}; scene.MarkModelMoved(0);
+    for(const auto& instance : scene.instances) Position(instance.worldTransform,{0,0,0},{10,20,30});
+
+    Fixture overlap;
+    overlap.doc["meshes"].push_back(overlap.doc["meshes"][0]);
+    overlap.doc["nodes"].push_back({{"mesh",1}}); overlap.doc["scenes"][0]["nodes"]={0,1};
+    Scene merged;
+    AssetLoader::LoadModels({{overlap.Write(dir,"bvh-overlap",false).string()}},merged,device,nullptr,[] {});
+    Require(merged.meshes.size()==1 && merged.instances.size()==1 && merged.meshes[0].indexCount==6,
+        "Static overlapping submeshes did not share a BLAS");
+    bvh::Bounds a,b; a.point(0,0,0); a.point(1,1,1); b.point(1,0,0); b.point(2,1,1);
+    Require(!a.overlaps(b),"Touching chunk boundaries were classified as overlapping");
+    b.point(.5f,.5f,.5f); Require(a.overlaps(b),"Positive root-bound overlap was missed");
+    std::cout << "PASS: automatic static BVH splitting/merging, conservative bounds, triangle/material preservation and model motion.\n";
+}
+
+
 int main(int argc, char** argv) {
     try {
         const fs::path dir = argc > 1 ? argv[1] : "gltf-fixtures";
@@ -415,6 +460,7 @@ int main(int argc, char** argv) {
         Require(SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device))),
             "Could not create D3D12 device");
         TestScene(dir, device.Get());
+        TestBvhOptimization(dir, device.Get());
         std::cout << "PASS: glTF + GLB instances, transforms, accessors, asset uploads, materials, lights, model updates, and OBJ.\n";
         return 0;
     } catch (const std::exception& e) {

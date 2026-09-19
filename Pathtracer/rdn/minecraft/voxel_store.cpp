@@ -165,8 +165,9 @@ Voxel VoxelStore::downsample(const BlockRegistry& reg, int childLevel, const Vox
             cSig = (c & VOX_ANY) ? (int)bi.sig : 0;
             cAny = (c & VOX_ANY) != 0 && (cSig > 0 || decorAllowed);
             cAll = (c & VOX_ALL) != 0;
-            emissive += voxel_emissive(c);
-            if (!cAny && voxel_emissive(c) && lampId == AIR_ID && id != AIR_ID) lampId = id;
+            const uint32_t lightCount = voxel_emissive(c, bi.water != 0);
+            emissive += lightCount;
+            if (!cAny && lightCount && lampId == AIR_ID && id != AIR_ID) lampId = id;
         }
         any = any || cAny;
         all = all && cAll;
@@ -191,6 +192,17 @@ Voxel VoxelStore::downsample(const BlockRegistry& reg, int childLevel, const Vox
     if (!any) {
         if (lampId != AIR_ID) return make_voxel(lampId, true, false, occ, emissive);
         return make_voxel(AIR_ID, false, false, occ, emissive);
+    }
+    if (reg.info(bestId).water) {
+        // Preserve the highest water top instead of snapping it to the parent roof.
+        // Different water states share the same height payload and fluid boundary.
+        uint32_t height = 0;
+        for (int i = 0; i < 8; ++i) {
+            if (!reg.info(voxel_id(v[i])).water || (childLevel > 0 && (v[i] & VOX_ANY) == 0)) continue;
+            const uint32_t top = (((i >> 1) & 1u) << childLevel) + voxel_water_height(v[i], childLevel);
+            height = std::max(height, top);
+        }
+        return make_voxel(bestId, true, all, occ, height);
     }
     return make_voxel(bestId, true, all, occ, emissive);
 }

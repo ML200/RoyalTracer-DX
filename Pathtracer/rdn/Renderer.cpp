@@ -2,6 +2,7 @@
 #include "Renderer.h"
 #include "ReuseTextureGen.h"
 #include "Diagnostics.h"
+#include "Core/PerformanceCapture.h"
 #include "Windowsx.h"
 #include <random>
 #include <unordered_set>
@@ -1197,6 +1198,7 @@ void Renderer::RenderFrame() {
         m_ctx.ExecuteAndPresent();
 
         slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
+        m_editor.RenderPlatformWindows();
     } catch (...) {
         dxdiag::CheckDeviceRemoved(m_ctx.Device(), 1000);
         throw;
@@ -1205,6 +1207,8 @@ void Renderer::RenderFrame() {
     m_planet.end_frame();
 
     m_frameStats.cpuFrameMs = m_frameStats.cpuUpdateMs + m_frameStats.cpuStreamingMs + m_frameStats.cpuPopulateMs;
+    static PerformanceCapture capture;
+    capture.record(m_frameStats, m_voxels.enabled() ? &m_voxels.stats() : nullptr);
 
     s_frameCount++;
     auto now = hrc::now();

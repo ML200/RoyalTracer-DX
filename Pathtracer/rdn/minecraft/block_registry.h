@@ -59,6 +59,7 @@ struct BlockInfo {
     uint8_t      emissive    = 0;
     uint8_t      lodFaceSolid = 0;
     uint8_t      volume      = 0;
+    uint8_t      water       = 0;
     uint16_t     faceMaterial[6]     = { NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL };
     uint16_t     lodFaceMaterial[6]  = { NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL };
     uint16_t     flatFaceMaterial[6] = { NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL, NO_MATERIAL };

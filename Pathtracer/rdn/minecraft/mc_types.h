@@ -10,14 +10,19 @@ namespace mc {
 using BlockId = uint16_t;
 constexpr BlockId AIR_ID = 0;
 
-using Voxel = uint32_t; // Low 16 bits hold the block id; upper bits hold flags.
+using Voxel = uint32_t; // Block id, flags, and an emissive count or non-emissive water height.
 constexpr Voxel VOX_ANY = 1u << 16;
 constexpr Voxel VOX_ALL = 1u << 17;
 constexpr Voxel VOX_OCC = 1u << 18;
 constexpr int   VOX_EMIT_SHIFT = 19;
 constexpr Voxel VOX_EMIT_MAX   = 8191u;
 inline BlockId  voxel_id(Voxel v)       { return (BlockId)(v & 0xFFFFu); }
-inline uint32_t voxel_emissive(Voxel v) { return (uint32_t)(v >> VOX_EMIT_SHIFT); }
+inline uint32_t voxel_emissive(Voxel v, bool water = false) { return water ? 0u : (uint32_t)(v >> VOX_EMIT_SHIFT); }
+// Water reuses the count payload for its top, in blocks above the voxel floor.
+inline uint32_t voxel_water_height(Voxel v, int level) {
+    const uint32_t h = (uint32_t)(v >> VOX_EMIT_SHIFT);
+    return level == 0 || h == 0u ? (1u << level) : h;
+}
 inline Voxel    make_voxel(BlockId id, bool any, bool all, bool occ, uint32_t emissive = 0u) {
     Voxel v = (Voxel)id;
     if (any) v |= VOX_ANY;

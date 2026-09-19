@@ -597,7 +597,7 @@ static void setup_test_registry(BlockRegistry& reg) {
     }
     {
         BlockInfo& w = reg.info(8);
-        w.isCube = true; w.fullOpaque = false; w.cullSameId = true; w.sig = Significance::Full; w.volume = 1;
+        w.isCube = true; w.fullOpaque = false; w.cullSameId = true; w.sig = Significance::Full; w.volume = 1; w.water = 1;
         for (int f = 0; f < 6; ++f) { w.faceMaterial[f] = 5; w.lodFaceMaterial[f] = 5; w.flatFaceMaterial[f] = 5; }
     }
     for (BlockId id : { (BlockId)5, (BlockId)6, (BlockId)7 }) {
@@ -1091,6 +1091,304 @@ static void test_store_and_mesher() {
     }
 }
 
+
+static void test_water_lod() {
+    std::printf("[water height / lod boundaries / edits]\n");
+    BlockRegistry reg;
+    setup_test_registry(reg);
+    const uint32_t up = pack_normal_oct16(Vec3f{ 0, 1, 0 });
+    auto check_surface = [&](ChunkMesher& mesher, const NodeKey& key, float worldHeight) {
+        for (int pass = 0; pass < 2; ++pass) {
+            MeshParams params; params.flatMaterials = pass != 0;
+            ChunkMesh mesh;
+            mesher.mesh(key, params, mesh);
+            const float originY = (float)(key.y * CHUNK_SIZE * (1 << key.level));
+            uint32_t topTris = 0;
+            bool flat = true, sidesClosed = true;
+            for (uint32_t t = 0; t < mesh.triangle_count(); ++t) {
+                if (mesh.materials[t] != 5u) continue;
+                const bool top = mesh.vertices[mesh.indices[3 * t]].packedNormal == up;
+                if (top) ++topTris;
+                for (int k = 0; k < 3; ++k) {
+                    const float y = originY + mesh.vertices[mesh.indices[3 * t + k]].py;
+                    if (top && std::fabs(y - worldHeight) > 1e-4f) flat = false;
+                    if (y > worldHeight + 1e-4f) sidesClosed = false;
+                }
+            }
+            CHECK_EQ(topTris, 2u);
+            CHECK(flat);
+            CHECK(sidesClosed);
+            CHECK_EQ(mesh.light_tri_count(), 0u);
+        }
+    };
+    for (int sign : { 1, -1 }) {
+        reg.info(8).fullOpaque = sign < 0; // Exercise both volume and imported-water occupancy flags.
+        VoxelStore store;
+        store.configure(-1, 0);
+        std::vector<Voxel> values(SECTION_VOXELS, AIR_ID);
+        for (int y = 0; y < 13; ++y)
+        for (int z = 0; z < SECTION_SIZE; ++z)
+        for (int x = 0; x < SECTION_SIZE; ++x) values[section_index(x, y, z)] = 8;
+        const int sx0 = sign > 0 ? 0 : -8, sz0 = sign > 0 ? 0 : -4, sy = sign > 0 ? 0 : -1;
+        for (int sz = sz0; sz < sz0 + 4; ++sz)
+        for (int sx = sx0; sx < sx0 + 8; ++sx)
+            store.put_section(0, sx, sy, sz, Section::from_values(values.data()));
+        store.build_lod(reg, MAX_LOD_LEVELS, nullptr);
+        ChunkMesher mesher(reg, store);
+        const float height = sign > 0 ? 13.0f : -3.0f;
+        for (int level = 0; level < MAX_LOD_LEVELS; ++level) {
+            const NodeKey key{ (uint8_t)level, sign > 0 ? 0 : -1, sign > 0 ? 0 : -1, sign > 0 ? 0 : -1 };
+            check_surface(mesher, key, height);
+            const int vy = floor_shift((int)height - 1, level);
+            const Voxel v = store.get(level, sign > 0 ? 0 : -1, vy, sign > 0 ? 0 : -1);
+            CHECK_EQ(voxel_id(v), 8u);
+            CHECK_EQ(voxel_water_height(v, level), (uint32_t)((int)height - vy * (1 << level)));
+            CHECK_EQ(voxel_emissive(v, reg.info(voxel_id(v)).water != 0), 0u);
+        }
+        // These two meshes meet at x=64 (or x=-64) with different LODs.
+        check_surface(mesher, NodeKey{ 0, sign > 0 ? 1 : -2, sign > 0 ? 0 : -1, sign > 0 ? 0 : -1 }, height);
+        check_surface(mesher, NodeKey{ 1, sign > 0 ? 1 : -2, sign > 0 ? 0 : -1, sign > 0 ? 0 : -1 }, height);
+    }
+    reg.info(8).fullOpaque = false;
+    {
+        VoxelStore store;
+        store.configure(0, 0);
+        std::vector<Voxel> values(SECTION_VOXELS, AIR_ID);
+        const BlockId otherWater = reg.intern("minecraft:water", { { "level", "1" } });
+        reg.info(otherWater) = reg.info(8);
+        // Adjacent coarse voxels have tops at y=5 and y=6 within the same slice.
+        for (int z = 0; z < 4; ++z) for (int x = 0; x < 4; ++x)
+        for (int y = 0; y < (x < 2 ? 5 : 6); ++y) values[section_index(x, y, z)] = x < 2 ? 8 : otherWater;
+        store.put_section(0, 0, 0, 0, Section::from_values(values.data()));
+        store.build_lod(reg, 3, nullptr);
+        ChunkMesher mesher(reg, store);
+        ChunkMesh mesh;
+        mesher.mesh(NodeKey{ 1, 0, 0, 0 }, MeshParams{}, mesh);
+        uint32_t low = 0, high = 0, step = 0;
+        const uint32_t west = pack_normal_oct16(Vec3f{ -1, 0, 0 });
+        bool coplanar = true;
+        for (uint32_t t = 0; t < mesh.triangle_count(); ++t) {
+            const MeshVertex& a = mesh.vertices[mesh.indices[3 * t]];
+            if (mesh.materials[t] == 5u && a.packedNormal == west && a.px == 2.0f) {
+                ++step;
+                for (int k = 0; k < 3; ++k) {
+                    const float y = mesh.vertices[mesh.indices[3 * t + k]].py;
+                    CHECK(y == 5.0f || y == 6.0f);
+                }
+            }
+            if (mesh.materials[t] != 5u || a.packedNormal != up) continue;
+            if (a.py == 5.0f) ++low;
+            if (a.py == 6.0f) ++high;
+            for (int k = 1; k < 3; ++k) if (mesh.vertices[mesh.indices[3 * t + k]].py != a.py) coplanar = false;
+        }
+        CHECK_EQ(low, 2u); CHECK_EQ(high, 2u); CHECK(coplanar);
+        CHECK_EQ(step, 2u);
+        std::vector<uint64_t> stale;
+        for (int z = 0; z < 4; ++z) for (int x = 0; x < 2; ++x) store.set_block(x, 5, z, 8, reg, stale);
+        check_surface(mesher, NodeKey{ 1, 0, 0, 0 }, 6.0f);
+        for (int z = 0; z < 4; ++z) for (int x = 0; x < 4; ++x) store.set_block(x, 5, z, AIR_ID, reg, stale);
+        check_surface(mesher, NodeKey{ 1, 0, 0, 0 }, 5.0f);
+        check_surface(mesher, NodeKey{ 2, 0, 0, 0 }, 5.0f);
+    }
+    {
+        VoxelStore store;
+        Voxel children[8];
+        for (Voxel& v : children) v = make_voxel(8, true, false, true, 13u);
+        children[0] = make_voxel(5, true, true, true, 4u);
+        const Voxel parent = store.downsample(reg, 4, children, 1u, 1u);
+        CHECK_EQ(voxel_id(parent), 5u);
+        CHECK_EQ(voxel_emissive(parent), 4u);
+    }
+    {
+        MemoryResources res;
+        BlockRegistry actual;
+        const BlockId water = actual.intern("minecraft:water", {});
+        const BlockId bubbles = actual.intern("minecraft:bubble_column", {});
+        const BlockId lava = actual.intern("minecraft:lava", {});
+        MaterialSoA materials;
+        std::vector<std::string> names;
+        std::vector<TextureData> textures;
+        MaterialBuildStats stats;
+        CHECK(MaterialBuilder().build(actual, res, materials, names, textures, 0, stats));
+        CHECK(actual.info(water).water && actual.info(bubbles).water);
+        CHECK(!actual.info(lava).water && actual.info(lava).emissive);
+        CHECK_EQ(voxel_emissive(make_voxel(lava, true, true, true, VOX_EMIT_MAX)), VOX_EMIT_MAX);
+    }
+}
+
+static void test_foliage_and_glass_materials() {
+    std::printf("[foliage subsurface / thin plants / clear glass / shared textures / lod]\n");
+    MemoryResources res;
+    add_vanilla_like_models(res);
+    const unsigned char leafPng[] = { 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0, 114, 182, 13, 36, 0, 0, 0, 19, 73, 68, 65, 84, 120, 156, 99, 112, 216, 162, 241, 31, 136, 25, 24, 160, 140, 255, 0, 62, 134, 7, 110, 145, 51, 211, 154, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130 };
+    const unsigned char glassPng[] = { 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0, 114, 182, 13, 36, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 80, 208, 80, 248, 15, 194, 12, 48, 6, 0, 45, 100, 5, 157, 156, 219, 89, 56, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130 };
+    const unsigned char flowerPng[] = { 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0, 114, 182, 13, 36, 0, 0, 0, 21, 73, 68, 65, 84, 120, 156, 99, 84, 104, 248, 240, 159, 129, 129, 129, 129, 9, 68, 128, 48, 0, 38, 88, 2, 147, 161, 96, 194, 88, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130 };
+    res.add("assets/minecraft/textures/block/leaf_fixture.png", std::string((const char*)leafPng, sizeof(leafPng)));
+    res.add("assets/minecraft/textures/block/glass_fixture.png", std::string((const char*)glassPng, sizeof(glassPng)));
+    res.add("assets/minecraft/textures/block/flower_fixture.png", std::string((const char*)flowerPng, sizeof(flowerPng)));
+    res.add("assets/minecraft/textures/block/flower_pot.png", std::string((const char*)leafPng, sizeof(leafPng)));
+    res.add("assets/minecraft/textures/block/dirt.png", std::string((const char*)leafPng, sizeof(leafPng)));
+    for (const char* block : { "stone", "oak_leaves", "glass", "glass_pane", "red_stained_glass", "tinted_glass" }) {
+        const std::string name = block;
+        const bool glass = name.find("glass") != std::string::npos;
+        res.add("assets/minecraft/blockstates/" + name + ".json",
+                "{\"variants\":{\"\":{\"model\":\"minecraft:block/" + name + "\"}}}");
+        res.add("assets/minecraft/models/block/" + name + ".json",
+                "{\"parent\":\"block/cube_all\",\"textures\":{\"all\":\"block/" +
+                std::string(glass ? "glass_fixture" : "leaf_fixture") + "\"}}");
+    }
+    const char* thinPlants[] = {
+        "short_grass", "tall_grass", "fern", "large_fern", "vine", "cave_vines_plant",
+        "sugar_cane", "bamboo", "oak_sapling", "poppy", "dandelion", "wither_rose",
+        "red_tulip", "lily_of_the_valley", "spore_blossom", "closed_eyeblossom", "pink_petals",
+        "wheat", "carrots", "potatoes", "beetroots", "attached_pumpkin_stem", "pitcher_crop",
+        "crimson_roots", "warped_fungus", "brown_mushroom", "dead_bush", "moss_carpet",
+        "glow_lichen", "lily_pad", "big_dripleaf", "small_dripleaf", "big_dripleaf_stem",
+        "tube_coral_fan", "sea_pickle", "seagrass", "kelp_plant",
+        "modded_flower"
+    };
+    const char* ordinaryBlocks[] = { "grass_block", "moss_block", "red_mushroom_block", "bamboo_block", "torch", "cobweb", "rail" };
+    for (const char* block : thinPlants) {
+        const std::string name = block;
+        res.add("assets/minecraft/blockstates/" + name + ".json",
+                "{\"variants\":{\"\":{\"model\":\"minecraft:block/" + name + "\"}}}");
+        res.add("assets/minecraft/models/block/" + name + ".json",
+                "{\"parent\":\"block/cross\",\"textures\":{\"cross\":\"block/" +
+                std::string(name == "poppy" ? "flower_fixture" : "leaf_fixture") + "\"}}");
+    }
+    for (const char* block : ordinaryBlocks) {
+        const std::string name = block;
+        res.add("assets/minecraft/blockstates/" + name + ".json",
+                "{\"variants\":{\"\":{\"model\":\"minecraft:block/" + name + "\"}}}");
+        res.add("assets/minecraft/models/block/" + name + ".json",
+                "{\"parent\":\"block/cube_all\",\"textures\":{\"all\":\"block/leaf_fixture\"}}");
+    }
+    res.add("assets/minecraft/blockstates/potted_poppy.json", "{\"variants\":{\"\":{\"model\":\"block/potted_poppy\"}}}");
+    res.add("assets/minecraft/models/block/potted_poppy.json",
+            "{\"textures\":{\"pot\":\"block/flower_pot\",\"soil\":\"block/dirt\",\"plant\":\"block/flower_fixture\"},"
+            "\"elements\":[{\"from\":[5,0,5],\"to\":[11,6,11],\"faces\":{\"north\":{\"texture\":\"#pot\"},\"up\":{\"texture\":\"#soil\"}}},"
+            "{\"from\":[1,6,8],\"to\":[15,16,8],\"faces\":{\"north\":{\"texture\":\"#plant\"},\"south\":{\"texture\":\"#plant\"}}}]}");
+    for (bool opaqueLeaves : { false, true }) {
+        BlockRegistry reg;
+        const BlockId stone = reg.intern("minecraft:stone", {});
+        const BlockId leaves = reg.intern("minecraft:oak_leaves", {});
+        // Load tinted glass first to exercise clear/tinted material cache separation.
+        const BlockId stained = reg.intern("minecraft:red_stained_glass", {});
+        const BlockId tinted = reg.intern("minecraft:tinted_glass", {});
+        const BlockId glass = reg.intern("minecraft:glass", {});
+        const BlockId pane = reg.intern("minecraft:glass_pane", {});
+        std::vector<BlockId> plants, ordinary;
+        for (const char* name : ordinaryBlocks) ordinary.push_back(reg.intern(std::string("minecraft:") + name, {}));
+        for (const char* name : thinPlants) plants.push_back(reg.intern(std::string("minecraft:") + name, {}));
+        const BlockId potted = reg.intern("minecraft:potted_poppy", {});
+        MaterialSoA materials;
+        std::vector<std::string> names;
+        std::vector<TextureData> textures;
+        MaterialBuildStats stats;
+        MaterialBuilder builder;
+        builder.opaqueLeaves = opaqueLeaves;
+        CHECK(builder.build(reg, res, materials, names, textures, 0, stats));
+        CHECK_EQ(stats.statesMissing, 0u);
+        CHECK_EQ(stats.texturesMissing, 0u);
+        for (BlockId id : plants) {
+            const BlockInfo& plant = reg.info(id);
+            CHECK(plant.hasQuads && plant.quadCount > 0);
+            for (uint32_t q = plant.quadBegin; q < plant.quadBegin + plant.quadCount; ++q) {
+                const Material m = materials.Get(reg.quads[q].material);
+                CHECK(m.sssEnable && !m.thinGlass && m.sssWeight > 0.0f && m.sssRadius > 0.0f);
+                if (reg.desc(id).path() == "poppy") CHECK(m.sssAlbedo.z > m.sssAlbedo.y && m.sssAlbedo.z > m.sssAlbedo.x);
+            }
+            for (int f = 0; f < 6; ++f) for (uint16_t material : { plant.lodFaceMaterial[f], plant.flatFaceMaterial[f] })
+                if (material != NO_MATERIAL) CHECK(materials.Get(material).sssEnable);
+        }
+        for (BlockId id : ordinary) for (uint16_t material : reg.info(id).faceMaterial)
+            CHECK(!materials.Get(material).sssEnable);
+        const BlockInfo& pot = reg.info(potted);
+        uint32_t potSurfaces = 0, plantSurfaces = 0;
+        for (uint32_t q = pot.quadBegin; q < pot.quadBegin + pot.quadCount; ++q) {
+            const Material m = materials.Get(reg.quads[q].material);
+            const bool plant = m.sssEnable != 0;
+            if (plant) { ++plantSurfaces; CHECK(m.sssAlbedo.z > m.sssAlbedo.y); }
+            else ++potSurfaces;
+        }
+        CHECK(plantSurfaces > 0 && potSurfaces > 0);
+        const BlockInfo& foliage = reg.info(leaves);
+        for (int f = 0; f < 6; ++f) {
+            for (uint16_t id : { foliage.faceMaterial[f], foliage.lodFaceMaterial[f], foliage.flatFaceMaterial[f] }) {
+                const Material m = materials.Get(id);
+                CHECK(m.sssEnable && !m.thinGlass);
+                CHECK(m.sssRadius >= 0.5f && m.sssRadius <= 2.0f);
+                CHECK(m.sssWeight > 0.4f && m.sssWeight < 0.9f);
+                CHECK(m.sssAlbedo.y > m.sssAlbedo.x && m.sssAlbedo.y > m.sssAlbedo.z);
+                CHECK(m.sssAlbedo.x >= 0.5f && m.sssAlbedo.y <= 1.0f && m.sssAlbedo.z >= 0.5f);
+                uint32_t packed[MaterialPack::kMatPackedU32];
+                MaterialPack::PackOne(m, packed);
+                CHECK((packed[6] & (1u << 17)) != 0u);
+            }
+            CHECK(!materials.Get(reg.info(stone).faceMaterial[f]).sssEnable);
+            CHECK(!materials.Get(reg.info(stone).flatFaceMaterial[f]).sssEnable);
+            CHECK_EQ(reg.materialAlpha[foliage.faceMaterial[f]], opaqueLeaves ? 0u : 1u);
+            for (BlockId id : { glass, pane }) {
+                const Material m = materials.Get(reg.info(id).faceMaterial[f]);
+                CHECK(m.thinGlass && !m.sssEnable && m.Kd.w == 0.0f);
+                CHECK(m.Tf.x == 1.0f && m.Tf.y == 1.0f && m.Tf.z == 1.0f);
+                CHECK_EQ(reg.materialAlpha[reg.info(id).faceMaterial[f]], 1u);
+            }
+            for (BlockId id : { stained, tinted }) {
+                const Material m = materials.Get(reg.info(id).faceMaterial[f]);
+                CHECK(m.thinGlass && m.Tf.x < 0.5f && m.Tf.y < 0.5f && m.Tf.z < 0.5f);
+            }
+        }
+    }
+}
+
+static void test_imported_emission() {
+    std::printf("[imported emission / material colour / meshed lights / lod]\n");
+    MemoryResources res;
+    add_vanilla_like_models(res);
+    const unsigned char png[] = { 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0, 114, 182, 13, 36, 0, 0, 0, 21, 73, 68, 65, 84, 120, 156, 99, 84, 104, 248, 240, 159, 129, 129, 129, 129, 9, 68, 128, 48, 0, 38, 88, 2, 147, 161, 96, 194, 88, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130 };
+    res.add("assets/minecraft/textures/block/stone.png", std::string((const char*)png, sizeof(png)));
+    BlockRegistry reg;
+    const BlockId plain = reg.intern("minecraft:stone", {});
+    const BlockId weak = reg.intern("minecraft:stone", {{"nightcity_emission", "2"}});
+    const BlockId lit = reg.intern("minecraft:stone", {{"nightcity_emission", "6"}});
+    const BlockId bright = reg.intern("minecraft:stone", {{"nightcity_emission", "12"}});
+    const BlockId invalid = reg.intern("minecraft:stone", {{"nightcity_emission", "bad"}});
+    MaterialSoA materials;
+    std::vector<std::string> names;
+    std::vector<TextureData> textures;
+    MaterialBuildStats stats;
+    std::string err;
+    CHECK(MaterialBuilder().build(reg, res, materials, names, textures, 0, stats, &err));
+    CHECK_EQ(stats.statesMissing, 0u);
+    CHECK_EQ(stats.texturesMissing, 0u);
+    CHECK(!reg.info(plain).emissive && !reg.info(invalid).emissive);
+    const auto emission = [&](BlockId id) { return reg.materialEmission[reg.info(id).faceMaterial[0]]; };
+    const Vec3f e2 = emission(weak), e6 = emission(lit), e12 = emission(bright);
+    CHECK(e2.x > 0 && e2.z > e2.y && e2.y > e2.x);
+    CHECK(std::abs(e6.z - 3.0f * e2.z) < 0.0001f);
+    CHECK(std::abs(e12.z - 2.0f * e6.z) < 0.0001f);
+    CHECK_EQ(emission(plain).z, 0.0f);
+    for (const BlockId id : {plain, weak, lit, bright, invalid}) {
+        CHECK(reg.info(id).isCube);
+        const bool expectedLit = id == weak || id == lit || id == bright;
+        VoxelStore store;
+        store.configure(0, 15);
+        std::vector<Voxel> values(SECTION_VOXELS, 0);
+        for (int y = 4; y < 6; ++y) for (int z = 4; z < 6; ++z) for (int x = 4; x < 6; ++x)
+            values[section_index(x, y, z)] = id;
+        store.put_section(0, 0, 0, 0, Section::from_values(values.data()));
+        store.build_lod(reg, 2, nullptr);
+        ChunkMesher mesher(reg, store);
+        for (int level = 0; level <= 1; ++level) {
+            ChunkMesh mesh;
+            mesher.mesh(NodeKey{(uint8_t)level, 0, 0, 0}, MeshParams{}, mesh);
+            CHECK(mesh.triangle_count() > 0);
+            CHECK_EQ(mesh.light_tri_count(), expectedLit ? mesh.triangle_count() : 0u);
+        }
+    }
+}
+
 static void test_real_world(const std::string& worldDir, bool full, const std::vector<std::string>& packs) {
     std::printf("[world] %s%s\n", worldDir.c_str(), full ? " (full)" : " (spawn window)");
     planet::WorkerPool pool;
@@ -1241,6 +1539,9 @@ int main(int argc, char** argv) {
     test_bake();
     test_placement();
     test_store_and_mesher();
+    test_water_lod();
+    test_foliage_and_glass_materials();
+    test_imported_emission();
     if (argc > 1) {
         std::vector<std::string> packs;
         for (int i = 3; i < argc; ++i) packs.push_back(argv[i]);

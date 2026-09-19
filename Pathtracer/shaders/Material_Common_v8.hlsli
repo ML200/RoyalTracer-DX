@@ -1,13 +1,44 @@
+// Tables store endpoint samples. Map them to texel centers before filtering.
+inline float2 MaterialEnergyUV(float roughness, float NdotV)
+{
+    return (saturate(float2(roughness, NdotV)) * 15.0f + 0.5f) / 16.0f;
+}
+
 inline float GetSheenLUT(float roughness, float NdotV)
 {
-    float3 uvw = float3(roughness, saturate(NdotV), SHEEN_LUT_INDEX);
+    float3 uvw = float3(MaterialEnergyUV(roughness, NdotV), SHEEN_LUT_INDEX);
     return g_LUT.SampleLevel(g_sampler_LUT, uvw, 0).r;
 }
 
 inline float GetEssLUT(float roughness, float NdotV)
 {
-    float3 uvw = float3(roughness, saturate(NdotV), GGX_ESS_LUT_INDEX);
+    float3 uvw = float3(MaterialEnergyUV(roughness, NdotV), GGX_ESS_LUT_INDEX);
     return g_LUT.SampleLevel(g_sampler_LUT, uvw, 0).r;
+}
+
+// Integral of unit-Fresnel GGX times {1, (1-V.H)^5, (1-V.H)^10}.
+// All three moments come from the same small texture fetch used for ESS.
+inline float3 GetGGXEnergyMoments(float roughness, float NdotV)
+{
+    return g_LUT.SampleLevel(g_sampler_LUT,
+        float3(MaterialEnergyUV(roughness, NdotV), GGX_ESS_LUT_INDEX), 0).rgb;
+}
+
+inline float GGXDirectionalReflectance(float roughness, float NdotV, float etai, float etat,
+                                     bool coat = false)
+{
+    // The legacy TIR branch can only increase reflection: reserve its upper bound.
+    if (etai > etat) return 1.0f;
+    float3 e = GetGGXEnergyMoments(roughness, NdotV);
+    float f0 = ComputeF0Dielectric(etai, etat).x;
+    float f1 = 1.0f - f0;
+    float reflected = f0 * e.x + f1 * e.y;
+    float kms = (1.0f - e.x) / max(e.x, 1e-6f);
+    if (coat)
+        reflected += kms * (f0 * f0 * e.x + 2.0f * f0 * f1 * e.y + f1 * f1 * e.z);
+    else
+        reflected *= 1.0f + f0 * kms;
+    return saturate(reflected);
 }
 
 inline float D_GGX(float3 N, float3 H, float alpha)

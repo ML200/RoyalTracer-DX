@@ -69,14 +69,14 @@ private:
     void lamp_cubes(int level, const MeshParams& p, ChunkMesh& out);
     static bool lamp_voxel(Voxel v, int level, const struct BlockInfo& info, float& sideBlocks);
     void emit_quad(const Vec3f p[4], const float uv[4][2], const Vec3f& n, uint16_t material, ChunkMesh& out, uint64_t omm0 = 0, uint64_t omm1 = 0);
-    void emit_face_quad(int face, const int corner[4][3], float s, float uvScale, float insetVoxels, uint16_t material, ChunkMesh& out, uint64_t omm0 = 0, uint64_t omm1 = 0);
+    void emit_face_quad(int face, const int corner[4][3], float s, float uvScale, float insetVoxels, uint16_t material, ChunkMesh& out, uint64_t omm0 = 0, uint64_t omm1 = 0, float waterTopOffset = 0.0f, float waterBottomOffset = 0.0f);
     void push_triangles(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t i3, uint16_t material, ChunkMesh& out, uint64_t omm0, uint64_t omm1);
 
     const BlockRegistry& m_reg;
     const VoxelStore&    m_store;
     std::vector<Voxel>   m_window;
     std::vector<Voxel>   m_child;
-    std::vector<uint32_t> m_mask;
+    std::vector<uint64_t> m_mask;
     struct Bucket { std::vector<uint32_t> idx, mat; std::vector<uint64_t> omm; void clear() { idx.clear(); mat.clear(); omm.clear(); } };
     Bucket m_opaqueLit, m_opaque, m_alphaLit, m_alpha;
     static constexpr int CORNERS = CHUNK_SIZE + 1;

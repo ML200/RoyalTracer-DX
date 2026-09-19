@@ -41,6 +41,11 @@ inline float LoadPr(uint matID)
     return FORCE_DIFFUSE ? 1.0f : float(g_mat[matID].PrPmPsPc & 0xFFu) * (1.0f / 255.0f);
 }
 
+inline float LoadDiffuseRoughness(uint matID)
+{
+    return float((g_mat[matID].texIDs_2 >> 19) & 31u) * (1.0f / 31.0f);
+}
+
 inline float LoadPm(uint matID)
 {
     return FORCE_DIFFUSE ? 0.0f : float((g_mat[matID].PrPmPsPc >> 8) & 0xFFu) * (1.0f / 255.0f);

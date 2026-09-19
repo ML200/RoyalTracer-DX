@@ -2,10 +2,11 @@
 float Avg3(float3 v) { return (v.x + v.y + v.z) / 3.0f; }
 float LoadKd_w(uint m) { return m == 5u || m == 6u ? 0.0f : 1.0f; }
 float LoadNi(uint m) { return m == 0u ? 1.0f : 1.5f; }
+float LoadDiffuseRoughness(uint m) { return testMode >= 100u ? testCamera.y : (m == 0u ? 0.0f : 0.5f); }
 float LoadAniso(uint m) { return m == 7u ? 0.8f : 0.0f; }
 float LoadAnisoRot(uint m) { return m == 7u ? 0.3f : 0.0f; }
 float LoadPc(uint m) { return m == 3u || m == 4u || m == 8u || m == 9u ? 0.75f : 0.0f; }
-float LoadPcr(uint m) { return m == 8u ? 0.06f : (m == 9u ? 0.0f : 0.2f); }
+float LoadPcr(uint m) { return testMode >= 100u ? testCamera.x : (m == 8u ? 0.06f : (m == 9u ? 0.0f : 0.2f)); }
 float LoadPs(uint m) { return m == 4u ? 0.6f : 0.0f; }
 bool LoadIsThinGlass(uint m) { return m == 6u; }
 float3 LoadTf(uint m) { return float3(0.7f, 0.8f, 0.9f); }
@@ -16,7 +17,9 @@ struct MaterialFixtureLut
 {
     float4 SampleLevel(uint samplerID, float3 uv, float lod)
     {
-        return float4(0.55f + 0.35f * saturate(uv.y) * (1.0f - 0.5f * uv.x), 0, 0, 0);
+        if (testMode >= 100u)
+            return uv.z == SHEEN_LUT_INDEX ? float4(testCamera.z, 0, 0, 0) : float4(asfloat(testPad), 0);
+        return float4(0.55f + 0.35f * saturate(uv.y) * (1.0f - 0.5f * uv.x), .04f, .01f, 0);
     }
 };
 static MaterialFixtureLut g_LUT;
@@ -105,6 +108,52 @@ void materialSamplingCheck(uint3 tid : SV_DispatchThreadID)
 {
     const float3 n = float3(0, 1, 0);
     uint seed = Hash32(tid.x + 0x6d61746cu);
+    if (testMode >= 100u)
+    {
+        float nv = asfloat(testIndex);
+        float3 v = float3(sqrt(1.0f - nv * nv), nv, 0);
+        half rough = (half)testCamera.x;
+        float4 sum = 0.0f;
+        const uint count = 32768u;
+        uint m = testMode == 101u ? 1u : (testMode == 102u ? 3u : 4u);
+        SamplingP p = CalculateStrategyProbabilities(m, v, n, (half)1.0f, (half)1.5f,
+                                                     1.0f, rough, (half)0.0f);
+        [loop] for (uint i = 0u; i < count; ++i)
+        {
+            float3 l = CosineUnitVectorInHemisphere(n, seed);
+            if (testMode == 100u)
+            {
+                // Independently integrate the legacy BRDF with its VNDF proposal.
+                float3 h = SampleVNDF_H((float)rough * (float)rough, v, n, seed);
+                float3 reflected = reflect(-v, h);
+                if (dot(n, reflected) > 0.0f)
+                {
+                    float weight = G1_SmithGGX(dot(n, reflected), (float)rough * (float)rough);
+                    float f = pow(saturate(1.0f - dot(v, h)), 5.0f);
+                    sum.xyz += weight * float3(1, f, f * f);
+                }
+                sum.w += EvaluateBRDF_SHEEN(4u, n, -l, v).x * PI / LoadPs(4u);
+            }
+            else if (testMode == 104u)
+            {
+                sum.x += EvaluateBRDF_Lambertian(m, n, n, -l, v, 1.0f, 1.5f, 1.0f).x * PI;
+            }
+            else
+            {
+                uint strategy;
+                l = SampleBRDF(p, m, v, n, n, 1.0f, rough, (half)0.0f, seed,
+                               (half)1.0f, (half)1.5f, false, strategy);
+                if (dot(l, l) > 0.0f)
+                {
+                    BrdfData b = EvaluateAndPdf_COMBINED(p, m, n, n, l, v, 1.0f,
+                                                       rough, (half)0.0f, (half)1.0f, (half)1.5f);
+                    if (b.pdf > 0.0f) sum.x += b.val.x * l.y / b.pdf;
+                }
+            }
+        }
+        results.Store4(tid.x * 16u, asuint(sum / float(count)));
+        return;
+    }
     float accepted = 0.0f, energy = 0.0f, maxError = 0.0f;
     if (testMode == 0u)
     {

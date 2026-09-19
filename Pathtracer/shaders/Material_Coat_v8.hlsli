@@ -54,15 +54,8 @@ inline float Transmittance_COAT(
     float NdotL = max(0.0f, dot(N, L));
     if (NdotV <= 0.0f || NdotL <= 0.0f) return 1.0f;
 
-    float  Pr   = LoadPcr(mID);
-    float  Fo = FresnelDielectric( V, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f);
-    float  Fi = FresnelDielectric( L, N, etai, etat).x;
-
     float pc = saturate(LoadPc(mID));
-
-    float  T_in  = saturate(1.0f - pc * Fi);
-    float  T_out = saturate(1.0f - pc * Fo);
-    return T_in * T_out;
+    return 1.0f - pc * GGXDirectionalReflectance(LoadPcr(mID), NdotV, etai, etat, true);
 }
 
 inline float Sampling_Weight_COAT(
@@ -91,14 +84,10 @@ inline float CoatTransmittance(
     const float NdotL = max(0.0f, dot(N, L));
     const half pc = (half)saturate(LoadPc(matID));
     if (pc <= (half)0.0) return 1.0f;
-    const float Pr_coat = LoadPcr(matID);
     float t = 1.0f;
     [branch] if (NdotV > 0.0f && NdotL > 0.0f)
     {
-        const half PrFactor = (half)(1.0f - Pr_coat * 0.7f);
-        const half Fo = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
-        const half Fi = (half)FresnelDielectric(L, N, etai, etat).x;
-        t = (float)(saturate((half)1.0 - pc * Fi) * saturate((half)1.0 - pc * Fo));
+        t = 1.0f - (float)pc * GGXDirectionalReflectance(LoadPcr(matID), NdotV, etai, etat, true);
     }
     return t;
 }
@@ -128,10 +117,7 @@ inline CoatResult EvalCoatAll(
 
     [branch] if (needTransmission && NdotV > 0.0f && NdotL > 0.0f)
     {
-        const half PrFactor = (half)(1.0f - Pr_coat * 0.7f);
-        const half Fo = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
-        const half Fi = (half)FresnelDielectric(L, N, etai, etat).x;
-        r.t = (float)(saturate((half)1.0 - pc * Fi) * saturate((half)1.0 - pc * Fo));
+        r.t = 1.0f - (float)pc * GGXDirectionalReflectance(Pr_coat, NdotV, etai, etat, true);
     }
 
     if (NdotV <= 0.0f || NdotL <= 0.0f) return r;

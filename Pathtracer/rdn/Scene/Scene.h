@@ -3,6 +3,7 @@
 #include "../Common.h"
 #include "../LightTree.h"
 #include "OmmBuilder.h"
+#include "BvhQuality.h"
 
 struct MeshGPU {
     ComPtr<ID3D12Resource> blas;
@@ -40,6 +41,7 @@ struct SceneInstance {
 };
 
 struct SceneModel {
+    bvh::Survey bvhSurvey; // Import-time geometry survey; model motion may change world-space overlap.
     std::string name = "Model";
     std::string filePath = "";
 

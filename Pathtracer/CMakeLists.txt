@@ -377,6 +377,16 @@ target_link_libraries(MinecraftTests PRIVATE DirectXTex)
 target_compile_features(MinecraftTests PRIVATE cxx_std_23)
 target_compile_definitions(MinecraftTests PRIVATE NOMINMAX)
 
+# Opt-in scene survey: exact LOD geometry counts and isolated DXR traversal timing.
+get_target_property(MINECRAFT_SURVEY_SOURCES MinecraftTests SOURCES)
+list(FILTER MINECRAFT_SURVEY_SOURCES EXCLUDE REGEX "tests/MinecraftTests.cpp$")
+add_executable(MinecraftBvhSurvey EXCLUDE_FROM_ALL
+    tests/MinecraftBvhSurvey.cpp rdn/planet/tlas_builder.cpp rdn/planet/blas_pool.cpp ${MINECRAFT_SURVEY_SOURCES})
+target_include_directories(MinecraftBvhSurvey PRIVATE ${CMAKE_SOURCE_DIR}/rdn ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(MinecraftBvhSurvey PRIVATE DirectXTex d3d12 dxgi)
+target_compile_features(MinecraftBvhSurvey PRIVATE cxx_std_23)
+target_compile_definitions(MinecraftBvhSurvey PRIVATE NOMINMAX)
+
 include(CTest)
 if(BUILD_TESTING)
     add_test(NAME PlanetTests COMMAND PlanetTests)

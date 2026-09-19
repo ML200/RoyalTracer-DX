@@ -5,6 +5,7 @@
 #include <limits>
 #include "AssetLoader.h"
 #include "OmmBuilder.h"
+#include "BvhQuality.h"
 #include "../DXRHelper.h"
 
 static constexpr UINT64 TEXTURE_BATCH_BYTES = 256ull << 20;
@@ -40,13 +41,25 @@ MeshSplitResult AssetLoader::SplitOpaqueAlpha(const std::vector<UINT>& indices, 
 }
 
 std::vector<LoadedMesh> AssetLoader::SplitMeshSpatial(LoadedMesh mesh, UINT maxTris) {
-    // Median splits cap BLAS work while preserving local mesh coordinates.
+    // Survey every sufficiently large mesh and split only when its predicted
+    // traversal cost improves substantially, or the hard triangle limit requires it.
     const UINT triCount = (UINT)mesh.indices.size() / 3;
-    if (triCount <= maxTris) {
+    auto keep = [&]() {
         std::vector<LoadedMesh> out;
         out.push_back(std::move(mesh));
         return out;
-    }
+    };
+    if (triCount <= maxTris && triCount < 4096) return keep();
+    auto boundsOf = [&](UINT t) {
+        bvh::Bounds b;
+        for (int k = 0; k < 3; ++k) {
+            const auto& p = mesh.vertices[mesh.indices[3*t+k]].position;
+            b.point(p.x, p.y, p.z);
+        }
+        return b;
+    };
+    const bvh::Split split = bvh::choose_split(triCount, boundsOf);
+    if (triCount <= maxTris && (split.axis < 0 || split.ratio > .65)) return keep();
 
     std::vector<XMFLOAT3> centroids(triCount);
     const float fMax = std::numeric_limits<float>::max();
@@ -73,6 +86,7 @@ std::vector<LoadedMesh> AssetLoader::SplitMeshSpatial(LoadedMesh mesh, UINT maxT
         axis = 1;
     else if (ez > ex && ez > ey)
         axis = 2;
+    if (split.axis >= 0) axis = split.axis;
 
     auto axisVal = [&](UINT t) -> float {
         return axis == 0 ? centroids[t].x : (axis == 1 ? centroids[t].y : centroids[t].z);
@@ -82,7 +96,18 @@ std::vector<LoadedMesh> AssetLoader::SplitMeshSpatial(LoadedMesh mesh, UINT maxT
     for (UINT t = 0; t < triCount; ++t)
         triIdx[t] = t;
     auto midIt = triIdx.begin() + triCount / 2;
-    std::nth_element(triIdx.begin(), midIt, triIdx.end(), [&](UINT a, UINT b) { return axisVal(a) < axisVal(b); });
+    if (split.axis >= 0)
+        midIt = std::partition(triIdx.begin(), triIdx.end(), [&](UINT t) { return boundsOf(t).center(axis) < split.position; });
+    else
+        std::nth_element(triIdx.begin(), midIt, triIdx.end(), [&](UINT a, UINT b) { return axisVal(a) < axisVal(b); });
+
+    // Coordinates far from the origin can round a bin boundary onto an endpoint.
+    // Always make progress, even when a candidate split collapses numerically.
+    if (midIt == triIdx.begin() || midIt == triIdx.end()) {
+        if (triCount <= maxTris) return keep();
+        midIt = triIdx.begin() + triCount / 2;
+        std::nth_element(triIdx.begin(), midIt, triIdx.end(), [&](UINT a, UINT b) { return axisVal(a) < axisVal(b); });
+    }
 
     std::vector<uint8_t> isLeft(triCount, 0);
     for (auto it = triIdx.begin(); it != midIt; ++it)
@@ -142,7 +167,7 @@ void AssetLoader::SplitOversizedMeshes(LoadedScene& scene, UINT maxTris) {
         const UINT triCount = (UINT)scene.meshes[i].indices.size() / 3;
         const UINT vtxCount = (UINT)scene.meshes[i].vertices.size();
         std::wcout << L"[Split]   mesh[" << i << L"] tris=" << triCount << L" verts=" << vtxCount
-                   << (triCount > maxTris ? L"  (SPLITTING)" : L"  (under threshold, keep as-is)") << std::endl;
+                   << (triCount > maxTris ? L"  (limit requires splitting)" : L"  (checking spatial cost)") << std::endl;
 
         auto pieces = SplitMeshSpatial(std::move(scene.meshes[i]), maxTris);
 
@@ -290,23 +315,32 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
         auto flushMerged = [&]() {
             if (mVerts.empty())
                 return;
-            const UINT opaqueTris = (UINT)mOpaqueIdx.size() / 3;
-            const UINT alphaTris = (UINT)mAlphaIdx.size() / 3;
             std::vector<UINT> idx = std::move(mOpaqueIdx);
             idx.insert(idx.end(), mAlphaIdx.begin(), mAlphaIdx.end());
             std::vector<UINT> mat = std::move(mOpaqueMat);
             mat.insert(mat.end(), mAlphaMat.begin(), mAlphaMat.end());
 
-            const UINT sceneMesh =
-                finalizeMesh(std::move(mVerts), std::move(idx), std::move(mat), opaqueTris, alphaTris);
-            SceneInstance si{};
-            si.meshIndex = sceneMesh;
-            si.modelIndex = (UINT)scene.models.size();
-            si.localTransform = XMMatrixIdentity();
-            si.worldTransform = modelXform;
-            si.prevWorldTransform = si.worldTransform;
-            si.name = model.name + "_merged" + std::to_string(mergedCount++);
-            scene.instances.push_back(si);
+            LoadedMesh merged;
+            merged.vertices = std::move(mVerts);
+            merged.indices = std::move(idx);
+            merged.perTriMaterialIDs = std::move(mat);
+            // Static submeshes that move with this model remain mergeable. Survey
+            // their combined geometry so distant parts do not create enormous,
+            // mostly empty BLAS bounds. Shared meshes retain instancing above.
+            auto pieces = SplitMeshSpatial(std::move(merged), MAX_TRIS_PER_MESH);
+            for (auto& piece : pieces) {
+                auto split = SplitOpaqueAlpha(piece.indices, piece.perTriMaterialIDs, scene.materials);
+                const UINT sceneMesh = finalizeMesh(std::move(piece.vertices), std::move(split.reorderedIndices),
+                    std::move(split.reorderedMaterialIDs), split.opaqueTriCount, split.alphaTriCount);
+                SceneInstance si{};
+                si.meshIndex = sceneMesh;
+                si.modelIndex = (UINT)scene.models.size();
+                si.localTransform = XMMatrixIdentity();
+                si.worldTransform = modelXform;
+                si.prevWorldTransform = si.worldTransform;
+                si.name = model.name + "_merged" + std::to_string(mergedCount++);
+                scene.instances.push_back(si);
+            }
 
             mVerts.clear();
             mOpaqueIdx.clear();
@@ -366,6 +400,36 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
 
         model.meshCount = (UINT)scene.meshes.size() - model.meshStart;
         model.instanceCount = (UINT)scene.instances.size() - model.instanceStart;
+        std::vector<bvh::Bounds> meshBounds(model.meshCount);
+        for (UINT i = 0; i < model.meshCount; ++i) {
+            const auto& mesh = scene.meshes[model.meshStart + i];
+            for (UINT index : mesh.cpuIndices) {
+                const auto& p = mesh.cpuVertices[index].position;
+                meshBounds[i].point(p.x, p.y, p.z);
+            }
+        }
+        std::vector<bvh::Bounds> bounds;
+        std::vector<uint32_t> triangleCounts;
+        for (UINT i = model.instanceStart; i < model.instanceStart + model.instanceCount; ++i) {
+            const auto& instance = scene.instances[i];
+            const auto& mesh = scene.meshes[instance.meshIndex];
+            bvh::Bounds b;
+            // Transform the local root's eight corners, not just mesh vertices:
+            // a rotated BLAS can have a larger TLAS bound than its geometry.
+            const auto& local = meshBounds[instance.meshIndex - model.meshStart];
+            for (UINT corner = 0; local.valid() && corner < 8; ++corner) {
+                const XMFLOAT3 v{(corner & 1) ? local.hi[0] : local.lo[0],
+                    (corner & 2) ? local.hi[1] : local.lo[1], (corner & 4) ? local.hi[2] : local.lo[2]};
+                XMFLOAT3 p;
+                XMStoreFloat3(&p, XMVector3TransformCoord(XMLoadFloat3(&v), instance.worldTransform));
+                b.point(p.x, p.y, p.z);
+            }
+            bounds.push_back(b); triangleCounts.push_back(mesh.indexCount / 3);
+        }
+        model.bvhSurvey = bvh::survey(bounds, triangleCounts);
+        std::wcout << L"[BVH survey] " << std::wstring(model.name.begin(), model.name.end())
+            << L": " << model.bvhSurvey.instances << L" instances, " << model.bvhSurvey.triangles
+            << L" triangles, " << model.bvhSurvey.overlapPairs << L" overlapping root-bound pairs" << std::endl;
 
         UINT modelIdx = (UINT)scene.models.size();
         for (UINT i = model.instanceStart; i < model.instanceStart + model.instanceCount; ++i)

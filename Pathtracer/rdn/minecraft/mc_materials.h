@@ -41,6 +41,7 @@ public:
 
 private:
     enum class Kind : uint8_t { Textured, Cutout, Glass, Water, Flat };
+    enum class Profile : uint8_t { Default, Foliage, ClearGlass };
 
     struct TexEntry {
         int   index      = -1;
@@ -51,17 +52,18 @@ private:
     struct MaterialKey {
         int      tex;
         uint8_t  kind;
+        uint8_t  profile;
         uint8_t  metal;
         uint8_t  gloss;
         uint32_t emissive;
         float    emissionScale;
         bool operator==(const MaterialKey& o) const {
-            return tex == o.tex && kind == o.kind && metal == o.metal && gloss == o.gloss && emissive == o.emissive && emissionScale == o.emissionScale;
+            return tex == o.tex && kind == o.kind && profile == o.profile && metal == o.metal && gloss == o.gloss && emissive == o.emissive && emissionScale == o.emissionScale;
         }
     };
     struct KeyHash {
         size_t operator()(const MaterialKey& k) const noexcept {
-            return (size_t)hash_u64(((uint64_t)(uint32_t)k.tex << 32) ^ ((uint64_t)k.kind << 8) ^ ((uint64_t)k.metal << 16) ^ ((uint64_t)k.gloss << 24) ^ ((uint64_t)k.emissive << 32) ^ (uint64_t)(k.emissionScale * 100.0f));
+            return (size_t)hash_u64(((uint64_t)(uint32_t)k.tex << 32) ^ ((uint64_t)k.kind << 8) ^ ((uint64_t)k.profile << 56) ^ ((uint64_t)k.metal << 16) ^ ((uint64_t)k.gloss << 24) ^ ((uint64_t)k.emissive << 32) ^ (uint64_t)(k.emissionScale * 100.0f));
         }
     };
 
@@ -71,7 +73,7 @@ private:
     const TexEntry& baked_texture(const std::vector<uint8_t>& rgba, int w, int h);
     uint16_t opaque_lod_material(const TexEntry& te, bool metal, bool gloss, float emit, const std::string& name, uint16_t fallback, bool force = false);
     bool quad_texels_opaque(const TexEntry& te, const RawQuad& q) const;
-    uint16_t material_for(const TexEntry& te, Kind kind, bool metal, bool gloss, uint32_t emissiveRgb, float emissionScale, const std::string& debugName);
+    uint16_t material_for(const TexEntry& te, Kind kind, bool metal, bool gloss, uint32_t emissiveRgb, float emissionScale, const std::string& debugName, bool allowFoliage = true);
     std::vector<Vec3f>* m_materialEmission = nullptr;
     std::vector<int32_t>* m_materialCutoutTexture = nullptr;
     std::vector<BlockRegistry::AlphaMask>* m_textureAlpha = nullptr;

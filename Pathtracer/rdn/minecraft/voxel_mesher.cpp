@@ -20,7 +20,7 @@ ChunkMesher::ChunkMesher(const BlockRegistry& reg, const VoxelStore& store)
 bool ChunkMesher::lamp_voxel(Voxel v, int level, const BlockInfo& info, float& sideBlocks) {
     if (level == 0 || !info.emissive || (v & VOX_ANY) == 0) return false;
     const float voxel = (float)(1 << level);
-    const uint32_t n = voxel_emissive(v);
+    const uint32_t n = voxel_emissive(v, info.water != 0);
     float side = std::sqrt((float)std::max(n, 1u));
     if (side >= 0.75f * voxel) return false;
     sideBlocks = std::min(side, voxel);
@@ -41,13 +41,14 @@ bool ChunkMesher::renderable(Voxel v, int level, const BlockInfo*& info) const {
 bool ChunkMesher::occludes(Voxel neighbour, Voxel self, int level, bool selfCullSame) const {
     const BlockId nid = voxel_id(neighbour);
     if (nid == AIR_ID) return false;
+    const BlockInfo& ni = m_reg.info(nid);
+    const bool same = nid == voxel_id(self) || (ni.water && m_reg.info(voxel_id(self)).water);
     if (level == 0) {
-        const BlockInfo& ni = m_reg.info(nid);
         if (ni.fullOpaque) return true;
-        return selfCullSame && nid == voxel_id(self) && ni.isCube;
+        return selfCullSame && same && ni.isCube;
     }
     if (neighbour & VOX_ALL) return true;
-    return selfCullSame && nid == voxel_id(self) && (neighbour & VOX_ANY);
+    return selfCullSame && same && (neighbour & VOX_ANY);
 }
 
 void ChunkMesher::push_triangles(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t i3, uint16_t material, ChunkMesh& out, uint64_t omm0, uint64_t omm1) {
@@ -86,7 +87,11 @@ constexpr const FaceProjection* FACE_AXES = FACE_PROJECTION;
 
 namespace {
 constexpr float VOLUME_INSET = 0.02f;
-constexpr uint32_t INSET_KEY_BIT = 1u << 24;
+constexpr uint32_t MATERIAL_KEY_MASK = 0xFFFFu;
+constexpr int WATER_HEIGHT_KEY_SHIFT = 16;
+constexpr uint32_t WATER_HEIGHT_KEY_MASK = 0xFFFu;
+constexpr uint32_t INSET_KEY_BIT = 1u << 28;
+constexpr int WATER_BOTTOM_KEY_SHIFT = 32;
 }
 
 void ChunkMesher::face_quad_uvs(int face, int w, int h, float uvScale, float uv[4][2]) {
@@ -110,24 +115,32 @@ void ChunkMesher::face_quad_uvs(int face, int w, int h, float uvScale, float uv[
 }
 
 void ChunkMesher::emit_face_quad(int face, const int corner[4][3], float s, float uvScale, float insetVoxels,
-                                 uint16_t material, ChunkMesh& out, uint64_t omm0, uint64_t omm1) {
+                                 uint16_t material, ChunkMesh& out, uint64_t omm0, uint64_t omm1, float waterTopOffset, float waterBottomOffset) {
     const FaceAxes& ax = FACE_AXES[face];
     const int dir = FACE_DIR[face][ax.na];
     const Vec3f n{ (float)FACE_DIR[face][0], (float)FACE_DIR[face][1], (float)FACE_DIR[face][2] };
     const uint32_t pn = pack_normal_oct16(n);
+    const int top = std::max({ corner[0][1], corner[1][1], corner[2][1], corner[3][1] });
+    const int bottom = std::min({ corner[0][1], corner[1][1], corner[2][1], corner[3][1] });
     uint32_t idx[4];
     for (int k = 0; k < 4; ++k) {
         const int cx = corner[k][0], cy = corner[k][1], cz = corner[k][2];
-        const bool shareable = insetVoxels == 0.0f && cx >= 0 && cx < CORNERS && cy >= 0 && cy < CORNERS && cz >= 0 && cz < CORNERS;
+        const bool shareable = insetVoxels == 0.0f && waterTopOffset == 0.0f && waterBottomOffset == 0.0f && cx >= 0 && cx < CORNERS && cy >= 0 && cy < CORNERS && cz >= 0 && cz < CORNERS;
         const size_t slot = shareable ? (((size_t)face * CORNERS + (size_t)cz) * CORNERS + (size_t)cy) * CORNERS + (size_t)cx : 0;
         if (shareable && m_cornerGen[slot] == m_gen) { idx[k] = m_cornerVertex[slot]; continue; }
         MeshVertex v;
         float pos[3] = { (float)cx * s, (float)cy * s, (float)cz * s };
         pos[ax.na] -= (float)dir * insetVoxels * s;
+        if (cy == top) pos[1] -= waterTopOffset;
+        if (cy == bottom) pos[1] += waterBottomOffset;
         v.px = pos[0]; v.py = pos[1]; v.pz = pos[2];
         v.packedNormal = pn;
         v.u = float_to_half(ax.su * (float)corner[k][ax.ua] * uvScale);
         v.v = float_to_half(ax.sv * (float)corner[k][ax.va] * uvScale);
+        if (ax.va == 1) {
+            const float waterOffset = (cy == bottom ? waterBottomOffset : 0.0f) - (cy == top ? waterTopOffset : 0.0f);
+            v.v = float_to_half(ax.sv * ((float)cy + waterOffset / s) * uvScale);
+        }
         idx[k] = (uint32_t)out.vertices.size();
         out.vertices.push_back(v);
         if (shareable) { m_cornerGen[slot] = m_gen; m_cornerVertex[slot] = idx[k]; }
@@ -149,7 +162,7 @@ void ChunkMesher::greedy_faces(int level, const MeshParams& p, ChunkMesh& out) {
                 int c[3];
                 c[ax.na] = slice; c[ax.ua] = a; c[ax.va] = b;
                 const Voxel v = at(c[0], c[1], c[2]);
-                uint32_t key = 0;
+                uint64_t key = 0;
                 const BlockInfo* bi = nullptr;
                 if (renderable(v, level, bi)) {
                     int nb[3] = { c[0], c[1], c[2] };
@@ -157,10 +170,21 @@ void ChunkMesher::greedy_faces(int level, const MeshParams& p, ChunkMesh& out) {
                     const Voxel nv = at(nb[0], nb[1], nb[2]);
                     bool hidden = occludes(nv, v, level, bi->cullSameId);
                     bool inset = false;
-                    if (hidden && bi->volume && voxel_id(nv) != voxel_id(v)) { hidden = false; inset = true; }
+                    uint32_t waterBottom = 0;
+                    if (bi->water && f >= FACE_NORTH && m_reg.info(voxel_id(nv)).water && (level == 0 || (nv & VOX_ANY))) {
+                        // Close only the exposed step between neighboring water tops.
+                        waterBottom = voxel_water_height(nv, level);
+                        hidden = waterBottom >= voxel_water_height(v, level);
+                    }
+                    if (hidden && bi->volume && voxel_id(nv) != voxel_id(v) && !(bi->water && m_reg.info(voxel_id(nv)).water)) { hidden = false; inset = true; }
                     if (!hidden) {
                         const uint16_t m = face_material(level, c, f, *bi, p.flatMaterials);
-                        if (m != NO_MATERIAL) { key = ((uint32_t)m + 1u) | (inset ? INSET_KEY_BIT : 0u); anyFace = true; }
+                        if (m != NO_MATERIAL) {
+                            const uint32_t height = bi->water && f != FACE_DOWN ? voxel_water_height(v, level) : 0u;
+                            key = ((uint32_t)m + 1u) | (height << WATER_HEIGHT_KEY_SHIFT) | (inset ? INSET_KEY_BIT : 0u)
+                                | ((uint64_t)waterBottom << WATER_BOTTOM_KEY_SHIFT);
+                            anyFace = true;
+                        }
                     }
                 }
                 m_mask[(size_t)b * CHUNK_SIZE + a] = key;
@@ -168,15 +192,16 @@ void ChunkMesher::greedy_faces(int level, const MeshParams& p, ChunkMesh& out) {
             if (!anyFace) continue;
             for (int b = 0; b < CHUNK_SIZE; ++b)
             for (int a = 0; a < CHUNK_SIZE; ) {
-                const uint32_t key = m_mask[(size_t)b * CHUNK_SIZE + a];
+                const uint64_t key = m_mask[(size_t)b * CHUNK_SIZE + a];
                 if (key == 0) { ++a; continue; }
-                const uint16_t mat = (uint16_t)((key & ~INSET_KEY_BIT) - 1u);
+                const uint16_t mat = (uint16_t)((key & MATERIAL_KEY_MASK) - 1u);
                 const int cutoutTex = (level <= OMM_MAX_LEVEL && mat < m_reg.materialCutoutTexture.size()) ? m_reg.materialCutoutTexture[mat] : -1;
                 const int cap = cutoutTex >= 0 ? omm_merge_cap(level) : CHUNK_SIZE;
+                const uint32_t waterBottom = (uint32_t)(key >> WATER_BOTTOM_KEY_SHIFT);
                 int w = 1;
                 while (a + w < CHUNK_SIZE && w < cap && m_mask[(size_t)b * CHUNK_SIZE + a + w] == key) ++w;
                 int h = 1;
-                for (; b + h < CHUNK_SIZE && h < cap; ++h) {
+                for (; b + h < CHUNK_SIZE && h < (waterBottom ? 1 : cap); ++h) {
                     bool ok = true;
                     for (int k = 0; k < w; ++k)
                         if (m_mask[(size_t)(b + h) * CHUNK_SIZE + a + k] != key) { ok = false; break; }
@@ -203,9 +228,11 @@ void ChunkMesher::greedy_faces(int level, const MeshParams& p, ChunkMesh& out) {
                     for (int c = 0; c < 3; ++c) { const int t = corner[1][c]; corner[1][c] = corner[3][c]; corner[3][c] = t; }
                 }
                 const bool ommable = cutoutTex >= 0 && !inset && uvScale == s;
+                const uint32_t waterHeight = (key >> WATER_HEIGHT_KEY_SHIFT) & WATER_HEIGHT_KEY_MASK;
+                const float waterTopOffset = waterHeight ? s - (float)waterHeight : 0.0f;
                 emit_face_quad(f, corner, s, uvScale, inset ? VOLUME_INSET / s : 0.0f, mat, out,
                                ommable ? omm_key_face((uint32_t)cutoutTex, f, w, h, level, 0) : 0ull,
-                               ommable ? omm_key_face((uint32_t)cutoutTex, f, w, h, level, 1) : 0ull);
+                               ommable ? omm_key_face((uint32_t)cutoutTex, f, w, h, level, 1) : 0ull, waterTopOffset, (float)waterBottom);
                 a += w;
             }
         }

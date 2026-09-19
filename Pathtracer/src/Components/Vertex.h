@@ -21,6 +21,7 @@ struct alignas(16) Material {
     DirectX::XMFLOAT3 Ke;
     float Ni;
     DirectX::XMFLOAT4 Pr_Pm_Ps_Pc;
+    float diffuseRoughness = 0.5f;
     DirectX::XMFLOAT3 Pcr_aniso_anisor;
     DirectX::XMFLOAT3 Tf;
     DirectX::XMFLOAT2 albedoUVScale = { 1.0f, 1.0f };
@@ -140,6 +141,7 @@ inline void PackOne(const Material& m, uint32_t dst[kMatPackedU32])
            | (m.invertAlpha ? (1u << 16) : 0u)
            | (m.sssEnable   ? (1u << 17) : 0u)
            | (m.thinGlass   ? (1u << 18) : 0u)
+           | (uint32_t(std::lround(std::clamp(m.diffuseRoughness, 0.0f, 1.0f) * 31.0f)) << 19)
            | (uint32_t(PackUnorm8(m.sssWeight)) << 24);
     dst[7] = uint32_t(PackHalf(m.albedoUVScale.x))
            | (uint32_t(PackHalf(m.albedoUVScale.y)) << 16);
@@ -160,6 +162,7 @@ struct MaterialSoA {
     std::vector<DirectX::XMFLOAT3> Ke;
     std::vector<float>             Ni;
     std::vector<DirectX::XMFLOAT4> Pr_Pm_Ps_Pc;
+    std::vector<float>             diffuseRoughness;
     std::vector<DirectX::XMFLOAT3> Pcr_aniso_anisor;
     std::vector<DirectX::XMFLOAT3> Tf;
     std::vector<DirectX::XMFLOAT2> albedoUVScale;
@@ -184,6 +187,7 @@ struct MaterialSoA {
     {
         Kd.reserve(n); Ke.reserve(n); Ni.reserve(n);
         Pr_Pm_Ps_Pc.reserve(n); Pcr_aniso_anisor.reserve(n); Tf.reserve(n);
+        diffuseRoughness.reserve(n);
         albedoUVScale.reserve(n); normalUVScale.reserve(n); rmaUVScale.reserve(n);
         albedoTexID.reserve(n); normalTexID.reserve(n); rmaTexID.reserve(n);
         alphaThreshold.reserve(n); invertAlpha.reserve(n); thinGlass.reserve(n);
@@ -196,6 +200,7 @@ struct MaterialSoA {
         Ke.push_back(m.Ke);
         Ni.push_back(m.Ni);
         Pr_Pm_Ps_Pc.push_back(m.Pr_Pm_Ps_Pc);
+        diffuseRoughness.push_back(m.diffuseRoughness);
         Pcr_aniso_anisor.push_back(m.Pcr_aniso_anisor);
         Tf.push_back(m.Tf);
         albedoUVScale.push_back(m.albedoUVScale);
@@ -225,6 +230,7 @@ struct MaterialSoA {
         Material m;
         m.Kd = Kd[i]; m.Ke = Ke[i]; m.Ni = Ni[i];
         m.Pr_Pm_Ps_Pc = Pr_Pm_Ps_Pc[i];
+        m.diffuseRoughness = i < diffuseRoughness.size() ? diffuseRoughness[i] : 0.5f;
         m.Pcr_aniso_anisor = Pcr_aniso_anisor[i];
         m.Tf = Tf[i];
         m.albedoUVScale = albedoUVScale[i];

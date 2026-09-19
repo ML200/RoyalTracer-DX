@@ -34,6 +34,31 @@ float srgb_to_linear(float c) {
     return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
 }
 
+bool foliage_block(std::string_view path) {
+    if (path.starts_with("potted_")) path.remove_prefix(7);
+    if (path.ends_with("_leaves") || path.ends_with("_sapling") || path.ends_with("_flower") ||
+        path.ends_with("_flowers") || path.ends_with("_tulip") || path.ends_with("_orchid") ||
+        path.ends_with("_grass") || path.ends_with("_fern") || path.ends_with("_bush") ||
+        path.ends_with("_vines") || path.ends_with("_vines_plant") || path.ends_with("_roots") ||
+        path.ends_with("_fungus") || path.ends_with("_mushroom") || path.ends_with("_sprouts") ||
+        path.ends_with("_plant") || path.ends_with("_crop") || path.ends_with("_blossom") ||
+        path.ends_with("_coral") || path.ends_with("_coral_fan") || path.ends_with("_coral_wall_fan") ||
+        path.ends_with("_dripleaf") || path.ends_with("_eyeblossom") || path.ends_with("_moss_carpet") ||
+        path.ends_with("_hanging_moss")) return true;
+    static constexpr std::string_view plants[] = {
+        "leaves", "grass", "fern", "vine", "bush", "azalea", "flowering_azalea",
+        "dandelion", "poppy", "allium", "azure_bluet", "oxeye_daisy", "cornflower",
+        "lily_of_the_valley", "wither_rose", "sunflower", "lilac", "peony", "torchflower",
+        "wildflowers", "pink_petals", "leaf_litter", "lily_pad", "glow_lichen", "moss_carpet",
+        "sugar_cane", "bamboo", "mangrove_propagule", "seagrass", "tall_seagrass", "kelp", "kelp_plant", "sea_pickle",
+        "wheat", "carrots", "potatoes", "beetroots", "nether_wart", "cocoa",
+        "melon_stem", "pumpkin_stem", "attached_melon_stem", "attached_pumpkin_stem",
+        "torchflower_crop", "pitcher_crop", "big_dripleaf_stem"
+    };
+    for (const std::string_view plant : plants) if (path == plant) return true;
+    return false;
+}
+
 // Filters decorative states that should disappear at coarse LODs.
 bool insignificant_block(std::string_view path) {
     static const char* subs[] = {
@@ -85,6 +110,11 @@ bool glass_block(std::string_view path) {
     return contains(path, "glass") || path == "ice" || contains(path, "tinted_glass");
 }
 float emission_scale(const BlockStateDesc& d) {
+    // Imported Night City surfaces carry emission independently of block colour.
+    const std::string_view importedEmission = d.prop("nightcity_emission");
+    if (importedEmission == "2") return 2.0f;
+    if (importedEmission == "6") return 6.0f;
+    if (importedEmission == "12") return 12.0f;
     const std::string_view p = d.path();
     if (contains(p, "coral") || contains(p, "torchflower") || contains(p, "firefly")) return 0.0f;
     if (contains(p, "glowstone") || contains(p, "sea_lantern") || contains(p, "shroomlight") || contains(p, "froglight")) return 6.0f;
@@ -294,8 +324,15 @@ uint16_t MaterialBuilder::opaque_lod_material(const TexEntry& te, bool metal, bo
 }
 
 uint16_t MaterialBuilder::material_for(const TexEntry& te, Kind kind, bool metal, bool gloss,
-                                       uint32_t emissiveRgb, float emissionScale, const std::string& debugName) {
-    MaterialKey key{ te.index, (uint8_t)kind, (uint8_t)metal, (uint8_t)gloss, emissiveRgb, emissionScale };
+                                       uint32_t emissiveRgb, float emissionScale, const std::string& debugName,
+                                       bool allowFoliage) {
+    // LOD/flat suffixes retain the block's shading profile. Include it in the
+    // cache key so shared pack textures do not merge foliage/solid or clear/tinted materials.
+    const std::string_view block = std::string_view(debugName).substr(0, debugName.find('#'));
+    const bool foliage = allowFoliage && foliage_block(block);
+    const Profile profile = foliage ? Profile::Foliage :
+        (kind == Kind::Glass && (block == "glass" || block == "glass_pane") ? Profile::ClearGlass : Profile::Default);
+    MaterialKey key{ te.index, (uint8_t)kind, (uint8_t)profile, (uint8_t)metal, (uint8_t)gloss, emissiveRgb, emissionScale };
     const auto it = m_matCache.find(key);
     if (it != m_matCache.end()) return it->second;
 
@@ -327,6 +364,10 @@ uint16_t MaterialBuilder::material_for(const TexEntry& te, Kind kind, bool metal
         m.Pr_Pm_Ps_Pc = DirectX::XMFLOAT4(0.03f, 0.0f, 0.0f, 0.0f);
         m.Tf = DirectX::XMFLOAT3(tintR, tintG, tintB);
         m.Kd = DirectX::XMFLOAT4(tintR, tintG, tintB, 0.0f);
+        if (profile == Profile::ClearGlass) {
+            m.Tf = DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f);
+            m.Kd = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f);
+        }
         alphaGeom = true;
         break;
     case Kind::Water:
@@ -341,6 +382,19 @@ uint16_t MaterialBuilder::material_for(const TexEntry& te, Kind kind, bool metal
     }
     if (metal && kind != Kind::Glass && kind != Kind::Water) {
         m.Pr_Pm_Ps_Pc = DirectX::XMFLOAT4(gloss ? 0.2f : 0.35f, 1.0f, 0.0f, 0.0f);
+    }
+    if (profile == Profile::Foliage) {
+        // Bright scattering colour follows the already tinted texture. A mean
+        // free path of one block lets light cross foliage without a long walk.
+        const float peak = std::max({ te.avg[0], te.avg[1], te.avg[2], 0.01f });
+        m.sssEnable = 1;
+        m.sssAlbedo = DirectX::XMFLOAT3(0.6f + 0.35f * te.avg[0] / peak,
+                                      0.6f + 0.35f * te.avg[1] / peak,
+                                      0.6f + 0.35f * te.avg[2] / peak);
+        m.sssRadius = 1.0f;
+        m.sssWeight = 0.65f;
+        m.sssPhaseG = 0.35f;
+        m.Ni = 1.4f;
     }
     if (emissionScale > 0.0f) {
         const float r = ((emissiveRgb >> 16) & 255) / 255.0f, g = ((emissiveRgb >> 8) & 255) / 255.0f, b = (emissiveRgb & 255) / 255.0f;
@@ -417,14 +471,9 @@ bool MaterialBuilder::build(BlockRegistry& reg, IResourceProvider& res,
             bi.isCube = true; bi.fullOpaque = true; bi.cullSameId = true; bi.sig = Significance::Full;
             bi.lodFaceSolid = 0x3F;
             bi.tint = lava ? TintKind::None : TintKind::Water;
+            bi.water = !lava && !bi.emissive;
             for (int f = 0; f < 6; ++f) { bi.faceMaterial[f] = m; bi.lodFaceMaterial[f] = m; bi.flatFaceMaterial[f] = flat; }
             ++stats.statesResolved; ++stats.cubes;
-            continue;
-        }
-
-        if (contains(path, "seagrass") || contains(path, "kelp")) {
-            ++stats.statesResolved; ++stats.invisible;
-            bi.sig = Significance::None;
             continue;
         }
 
@@ -463,8 +512,11 @@ bool MaterialBuilder::build(BlockRegistry& reg, IResourceProvider& res,
             if (glass) kind = Kind::Glass;
             else if (te.hasAlpha && !quad_texels_opaque(te, rq)) kind = Kind::Cutout;
             const uint32_t emRgb = ((uint32_t)std::lround(te.avg[0] * 255) << 16) | ((uint32_t)std::lround(te.avg[1] * 255) << 8) | (uint32_t)std::lround(te.avg[2] * 255);
-            qm[q].mat  = material_for(te, kind, metal, gloss, emit > 0 ? emRgb : 0, emit, std::string(path));
-            qm[q].flat = glass ? qm[q].mat : material_for(te, Kind::Flat, metal, gloss, emit > 0 ? emRgb : 0, emit, std::string(path) + "#flat");
+            // The soil and ceramic within a potted model are ordinary surfaces.
+            const bool allowFoliage = !path.starts_with("potted_") ||
+                (!rq.texture.ends_with("/flower_pot") && !rq.texture.ends_with("/dirt"));
+            qm[q].mat  = material_for(te, kind, metal, gloss, emit > 0 ? emRgb : 0, emit, std::string(path), allowFoliage);
+            qm[q].flat = glass ? qm[q].mat : material_for(te, Kind::Flat, metal, gloss, emit > 0 ? emRgb : 0, emit, std::string(path) + "#flat", allowFoliage);
             qm[q].full = full_cube_face(rq, qm[q].face);
             qm[q].opaqueTex = kind == Kind::Textured;
             qm[q].te = &te;
@@ -538,8 +590,10 @@ bool MaterialBuilder::build(BlockRegistry& reg, IResourceProvider& res,
                 const TexEntry& bte = baked_texture(faces[f].rgba, faces[f].size, faces[f].size);
                 const uint32_t bRgb = ((uint32_t)std::lround(bte.avg[0] * 255) << 16) | ((uint32_t)std::lround(bte.avg[1] * 255) << 8) | (uint32_t)std::lround(bte.avg[2] * 255);
                 const Kind lodKind = glass ? Kind::Glass : (bte.hasAlpha ? Kind::Cutout : Kind::Textured);
-                bi.lodFaceMaterial[f]  = material_for(bte, lodKind, metal, gloss, emit > 0 ? bRgb : 0, emit, std::string(path) + "#lod");
-                bi.flatFaceMaterial[f] = glass ? bi.lodFaceMaterial[f] : material_for(bte, Kind::Flat, metal, gloss, emit > 0 ? bRgb : 0, emit, std::string(path) + "#flat");
+                // A coarse potted face combines plant, soil and ceramic colours.
+                const bool allowFoliage = !path.starts_with("potted_");
+                bi.lodFaceMaterial[f]  = material_for(bte, lodKind, metal, gloss, emit > 0 ? bRgb : 0, emit, std::string(path) + "#lod", allowFoliage);
+                bi.flatFaceMaterial[f] = glass ? bi.lodFaceMaterial[f] : material_for(bte, Kind::Flat, metal, gloss, emit > 0 ? bRgb : 0, emit, std::string(path) + "#flat", allowFoliage);
             }
         }
         ++stats.modelBlocks;

@@ -202,6 +202,36 @@ int main(int argc, char** argv) try {
     Require(coatError < 0.01f, "Smooth coat PDF loses precision near the highlight");
     Require(floorError < 0.015f, "City floor BSDF sampling disagrees with independently integrated lighting");
     std::cout << "PASS: GGX sampling distribution, furnace energy and smooth-coat precision\n";
+    {
+        float worstDiffuse = 0.0f, worstLayered = 0.0f;
+        for (float nv : {0.15f, 0.8f, 1.0f}) for (float rough : {0.5f, 1.0f}) {
+            r.constants[15] = Bits(nv);
+            r.constants[12] = Bits(rough);
+            const auto moments = r.Query(100u, 12);
+            for (int component = 0; component < 4; ++component) {
+                float mean = 0.0f;
+                for (int lane = 0; lane < 64; ++lane) mean += moments[lane * 4 + component] / 64.0f;
+                r.constants[component == 3 ? 14 : 17 + component] = Bits(mean);
+            }
+            for (float dr : {0.0f, 0.5f, 1.0f}) {
+                r.constants[13] = Bits(dr);
+                for (uint32_t mode : {101u, 102u, 103u, 104u}) {
+                    const auto energy = r.Query(mode, 12);
+                    float mean = 0.0f;
+                    for (int lane = 0; lane < 64; ++lane) mean += energy[lane * 4] / 64.0f;
+                    Require(std::isfinite(mean), "Material furnace returned non-finite energy");
+                    if (mode == 104u) worstDiffuse = std::max(worstDiffuse, std::abs(mean - 1.0f));
+                    else worstLayered = std::max(worstLayered, std::abs(mean - 1.0f));
+                }
+            }
+        }
+        Require(worstDiffuse < 0.005f, "Oren-Nayar diffuse loses or adds white-furnace energy");
+        Require(worstLayered < 0.015f, "Layered material compensation loses or adds white-furnace energy");
+        std::cout << "PASS: Oren-Nayar furnace error " << worstDiffuse
+                  << ", layered GGX/coat/sheen furnace error " << worstLayered << '\n';
+        r.constants[12] = r.constants[13] = r.constants[14] = r.constants[15] = 0;
+        r.constants[17] = r.constants[18] = r.constants[19] = 0;
+    }
     r.Reset(); Require(r.Query(0)[3] == 0, "Fresh cache must miss");
     r.Train({0}); auto top = r.Query(0);
     Require(top[3] > 0.95f && std::abs(top[0] - 100.0f) < 0.01f, "Concurrent HDR accumulation/resolve failed");
