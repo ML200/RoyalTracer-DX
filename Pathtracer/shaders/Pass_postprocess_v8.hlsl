@@ -278,8 +278,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gOutput[uint3(DTid.xy, 1)] = float4(clean, 1.0f);
     gOutput[uint3(DTid.xy, 2)] = float4(gt, 0.0f);
 
-    gOutput[uint3(DTid.xy, 3)] = (dbg_dlssLayer != 0u)
-        ? float4(DlssInputDebugView(DTid.xy, dbg_dlssLayer), 0.0f)
+    const uint dlssLayer = dbg_dlssLayer & DLSS_DBG_LAYER_MASK;
+    gOutput[uint3(DTid.xy, 3)] = (dlssLayer != 0u)
+        ? float4(DlssInputDebugView(DTid.xy, dlssLayer), 0.0f)
         : float4(0.0f, 0.0f, 0.0f, 0.0f);
     gOutput[uint3(DTid.xy, 4)] = float4(refl, 0.0f);
     gOutput[uint3(DTid.xy, 5)] = float4(albedo, 0.0f);

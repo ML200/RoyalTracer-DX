@@ -36,6 +36,7 @@ inline float3 ClampEmitterLum(float3 c) {
     return (lum > DLSS_EMITTER_CAP) ? c * (DLSS_EMITTER_CAP / lum) : c;
 }
 
+// Legacy base surface: the primary hit, or the surface seen straight through thin glass panes.
 struct RRGuide { float3 x; float3 n; float3 Kd; float Pr; float Pm; uint instID; };
 
 inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3 camPos)
@@ -108,6 +109,200 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
     return g;
 }
 
+// Guides before primary surface replacement: everything describes the reflector, except that
+// thin glass takes depth, motion and albedo from the surface behind it.
+void WriteLegacyGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
+{
+    const uint   sInstID = load_instID(g_sample_current, pixelIdx);
+    const float3 sPos    = load_x1(g_sample_current, pixelIdx);
+    const SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, sPos, camPos);
+
+    const RRGuide rg = ResolveRRGuideThroughGlass(sv, sInstID, camPos);
+
+    g_dlssDepth[px] = DLSS_GuideDepthFromWorldPos(rg.x);
+
+    const float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
+    const float  reflW          = saturate(Luma(specularAlbedo));
+
+    g_dlssNormals[px] = float4(sv.n_s, sv.Pr);
+    g_dlssDiffuseAlbedo[px] = float4(rg.Kd, 1.0f);
+    g_dlssRoughness[px] = sv.Pr;
+#if SHADING_DEBUG_SLICES
+    gOutput[uint3(px, 5)] = float4(rg.Kd, 1.0f);
+#endif
+
+    const float2 mvPixels = SurfaceMotionVector(px, dims, rg.x, rg.instID);
+    g_dlssMVec[px] = mvPixels;
+    g_dlssSpecularAlbedo[px] = float4(specularAlbedo, 0.0f);
+
+    const float4 reflData   = gScratchPing[uint3(px, 4)];
+    const uint   reflInstID = asuint(reflData.w);
+    g_dlssSpecHitDist[px] = (reflInstID != 0xFFFFFFFFu)
+        ? min(length(reflData.xyz - sv.x), DLSS_SPEC_HIT_MAX)
+        : DLSS_SPEC_HIT_MAX;
+
+    float2 specMV = LoadIsThinGlass(sv.matID) ? SurfaceMotionVector(px, dims, sv.x, sInstID) : mvPixels;
+    if (reflW > 0.04f && sv.Pr < DLSS_SPEC_ROUGHNESS_THRESHOLD && reflInstID != 0xFFFFFFFFu)
+    {
+        const float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(reflData.xyz, prevView, prevProjection, dims, reflInstID);
+        const float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(reflData.xyz, view, projection, dims, reflInstID);
+        if (prevRefl.x > -1e8f && curRefl.x > -1e8f)
+            specMV = prevRefl - curRefl;
+    }
+    g_dlssSpecMVec[px] = specMV;
+}
+
+// Primary surface replacement. The pixel's energy is split into the mirror image of the near-delta
+// lobes and the part transmitted or scattered by the base surface. Both ends come from delta-chain
+// walks that stop at the first diffuse or rough surface, and every guide blends between the two by
+// their reflectance shares. Returns the bias hint.
+float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
+{
+    const uint   sInstID = load_instID(g_sample_current, pixelIdx);
+    const float3 sPos    = load_x1(g_sample_current, pixelIdx);
+    const SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, sPos, camPos);
+    const float NoV        = saturate(dot(sv.o, sv.n_s));
+    const bool  thin       = LoadIsThinGlass(sv.matID);
+    const bool  seeThrough = PsrSeeThroughMaterial(sv.matID);
+
+    // The mirror share is the material Fresnel toward the camera, not the sampler's pick probability.
+    float3 mirror;            // energy share of the mirror image
+    float3 residual;          // near-delta lobe energy the probe does not represent (roughness fade)
+    float3 baseT;             // energy share reaching the base surface
+    float  mirrorRoughness;   // roughness of the lobe forming the mirror image
+    PsrChainEnd base = PsrChainSurface(sv.x, sv.n_s, sv.Kd, sv.Pr, sv.Pm, sInstID);
+    if (seeThrough)
+    {
+        // Thin glass passes straight through, clear glass refracts; the pane reflection is the mirror.
+        const float3 F = thin ? FresnelDielectric(sv.o, sv.n_s, sv.etai, sv.etat)
+                              : FresnelDielectricTIR(sv.o, sv.n_s, sv.etai, sv.etat);
+        float3 dir = -sv.o;
+        const bool  passes = thin || RefractVector(sv.o, sv.n_s, sv.etai / sv.etat, dir);
+        const float fade   = PsrRoughnessFade(sv.Pr);
+        mirror          = F * fade;
+        residual        = F * (1.0f - fade);
+        mirrorRoughness = sv.Pr;
+        baseT = passes ? (1.0f - F) * (thin ? LoadTf(sv.matID) : 1.0f) : 0.0f;
+        // Until the chain reports a surface, the base is the pane itself: rough glass shows a blur on it.
+        base = PsrChainSurface(sv.x, sv.n_s, float3(1.0f, 1.0f, 1.0f), sv.Pr, 0.0f, sInstID);
+        if (passes && fade > 0.0f)
+        {
+            const bool enters = !thin && !load_backface(g_sample_current, pixelIdx);
+            base = PsrWalkDeltaChain(offset_ray(sv.x, -sv.n_s), dir, enters ? sv.matID : MEDIUM_INVALID,
+                                     PsrIdentity(), sv.x, -sv.o, true, DLSS_PSR_MAX_CHAIN, false);
+            baseT *= base.throughput;
+        }
+    }
+    else
+    {
+        // Coat over GGX over diffuse; each lower layer receives what the upper one does not reflect.
+        const bool   psrLobes = PsrCandidateMaterial(sv.matID, sv.Pr);
+        const float  pc       = LoadPc(sv.matID);
+        const float  pcr      = LoadPcr(sv.matID);
+        const float3 coatR    = (pc > 0.0f) ? pc * GGXDirectionalReflectance(pcr, NoV, sv.etai, sv.etat, true) : 0.0f;
+        const float3 ggxR     = (1.0f - coatR) * EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, NoV);
+        const float  coatFade = (psrLobes && pc > 0.0f) ? PsrRoughnessFade(pcr) : 0.0f;
+        const float  ggxFade  = psrLobes ? PsrRoughnessFade(sv.Pr) : 0.0f;
+        mirror          = coatR * coatFade + ggxR * ggxFade;
+        residual        = coatR * (1.0f - coatFade) + ggxR * (1.0f - ggxFade);
+        mirrorRoughness = (coatFade > 0.0f && Luma(coatR) * coatFade >= Luma(ggxR) * ggxFade) ? pcr : sv.Pr;
+        baseT           = saturate(1.0f - coatR - ggxR);
+    }
+
+    // The specular albedo guide is always the primary surface's own specular share: it tells RR how
+    // much of the pixel follows the specular motion, so it is never replaced or attenuated by the chain.
+    const float3 primarySpecular = mirror + residual;
+
+    // Everything reaching the base surface is treated as its diffuse content, including the rough
+    // specular of a surface seen through glass.
+    const bool   baseSky     = (base.flags & DLSS_PSR_FLAG_SKY) != 0u;
+    const bool   baseEmitter = (base.flags & DLSS_PSR_FLAG_EMITTER) != 0u;
+    const float3 baseAlbedo  = (seeThrough && !baseSky && !baseEmitter)
+        ? base.Kd * (1.0f - base.Pm) + EnvBRDFApprox2(base.Kd, base.Pr, base.Pm, saturate(dot(base.nVirtual, sv.o)))
+        : base.Kd * (1.0f - base.Pm);
+    const float3 baseDiffuse = baseT * baseAlbedo;
+
+    // Virtual surface: the end of the reflection chain, mirrored into the primary view. The plain
+    // first reflection hit stays the specular layer's own hit.
+    const float4   reflFirst  = gScratchPing[uint3(px, 4)];
+    const PsrProbe probe      = PsrProbeUnpack(gScratchPing[uint3(px, DLSS_PSR_PROBE_SLOT)]);
+    const bool     probeValid = (probe.flags & DLSS_PSR_FLAG_VALID) != 0u;
+    const float4   reflData   = probeValid ? gScratchPing[uint3(px, DLSS_PSR_CHAIN_SLOT)] : reflFirst;
+    const uint     reflInstID = asuint(reflData.w);
+    if (probeValid) mirror *= probe.throughput;
+    else { residual += mirror; mirror = 0.0f; }
+
+    const bool   virtualSky     = reflInstID == 0xFFFFFFFFu;
+    const bool   virtualEmitter = (probe.flags & DLSS_PSR_FLAG_EMITTER) != 0u;
+    const float3 nV  = virtualSky ? sv.o : probe.nVirtual;
+    const float3 KdV = virtualSky ? float3(1.0f, 1.0f, 1.0f) : probe.Kd;
+    const float  PrV = virtualSky ? 1.0f : probe.Pr;
+    const float  PmV = virtualSky ? 0.0f : probe.Pm;
+    const float3 xV  = virtualSky ? camPos - sv.o * cameraFar : reflData.xyz;
+    const float3 diffV = KdV * (1.0f - PmV);
+
+    // Every merged guide follows the mirror's Fresnel share of the pixel's reflectance: the delta part
+    // of the lobe, attenuated by the chain, against the base surface and the rough residual.
+    const float mirrorShare = Luma(mirror);
+    const float w = mirrorShare / max(mirrorShare + Luma(baseDiffuse + residual), 1e-4f);
+
+    // Diffuse albedo takes the mirror image in proportion to its ownership of the pixel.
+    const float3 diffuseAlbedo  = baseDiffuse + mirror * diffV * w;
+    const float3 specularAlbedo = primarySpecular;
+
+    // Glass shows the surface behind it; an opaque reflector shows its own mirror lobe.
+    const float baseRoughness = seeThrough ? base.Pr : mirrorRoughness;
+    const float roughness     = lerp(baseRoughness, PrV, w);
+
+    float3 n = lerp(base.nVirtual, nV, w);
+    n = (dot(n, n) > 1e-6f) ? normalize(n) : (w > 0.5f ? nV : base.nVirtual);
+
+    // Depth blends in the encoded reciprocal domain, so a distant mirror image only nudges a near surface.
+    const float depth = lerp(DLSS_GuideDepthFromWorldPos(base.xVirtual), DLSS_GuideDepthFromWorldPos(xV), w);
+
+    g_dlssDepth[px]          = depth;
+    g_dlssNormals[px]        = float4(n, roughness);
+    g_dlssRoughness[px]      = roughness;
+    g_dlssDiffuseAlbedo[px]  = float4(diffuseAlbedo, 1.0f);
+    g_dlssSpecularAlbedo[px] = float4(specularAlbedo, 0.0f);
+#if SHADING_DEBUG_SLICES
+    gOutput[uint3(px, 5)] = float4(diffuseAlbedo, 1.0f);
+#endif
+
+    // Base motion follows the chain end through the chain; a single primary reflection is re-mirrored
+    // exactly, longer reflection chains move the virtual point with the end surface's instance.
+    const float2 baseMV    = PsrChainMotionVector(px, dims, base);
+    float2 virtualMV = virtualSky ? SkyMotionVector(px, dims)
+        : (probe.bounces <= 1u
+            ? PsrVirtualMotionVector(reflData.xyz, reflInstID, sv.x, sv.n_s, sInstID, dims)
+            : SurfaceMotionVector(px, dims, reflData.xyz, reflInstID));
+    // A pane ending the reflection chain: its transmission moves with the pane, its reflection of
+    // distant surroundings appears at infinity along the primary ray and moves like the sky.
+    if ((probe.flags & DLSS_PSR_FLAG_GLASS) != 0u)
+        virtualMV = lerp(virtualMV, SkyMotionVector(px, dims), probe.paneF);
+
+    // Diffuse motion on opaque surfaces follows the same share; DLSS_PSR_MV_MIX moves it from a hard
+    // hand-over at half toward a proportional blend. Glass keeps the transmission target's motion
+    // unblended. The specular channel always follows the mirror image while the lobe is sharp.
+    const float mvWeight = lerp(w > 0.5f ? 1.0f : 0.0f, w, DLSS_PSR_MV_MIX);
+    const bool  mvBlend  = !seeThrough && (dbg_dlssLayer & DLSS_GUIDE_OPT_NO_MV_BLEND) == 0u;
+    g_dlssMVec[px] = mvBlend ? lerp(baseMV, virtualMV, mvWeight) : baseMV;
+
+    const bool   mirrorLayer = mirrorRoughness < DLSS_SPEC_ROUGHNESS_THRESHOLD && Luma(mirror + residual) > 0.02f;
+    const float2 surfaceMV   = seeThrough ? SurfaceMotionVector(px, dims, sv.x, sInstID) : baseMV;
+    g_dlssSpecMVec[px]    = mirrorLayer ? virtualMV : surfaceMV;
+    g_dlssSpecHitDist[px] = (asuint(reflFirst.w) != 0xFFFFFFFFu)
+        ? min(length(reflFirst.xyz - sv.x), DLSS_SPEC_HIT_MAX) : DLSS_SPEC_HIT_MAX;
+
+    // Emitters reached through delta chains are as deterministic as emitters seen directly.
+    float bias = 0.0f;
+    if (virtualEmitter && mirrorRoughness < SMOOTH_SPECULAR_THRESHOLD && (probe.flags & DLSS_PSR_FLAG_DELTA) != 0u)
+        bias += w;
+    if (seeThrough && baseEmitter && sv.Pr < SMOOTH_SPECULAR_THRESHOLD && (base.flags & DLSS_PSR_FLAG_DELTA) != 0u)
+        bias += 1.0f - w;
+    return saturate(bias);
+}
+
 #include "CumulusGuides_v8.hlsli"
 
 [numthreads(16, 16, 1)]
@@ -175,9 +370,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
 
-    uint  biasInstID;
-    float2 biasMV = float2(0, 0);
     bool  isEmitterSurface = false;
+    float psrBias = 0.0f;
 
     bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
@@ -191,17 +385,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             float3 emPos  = load_x1(g_sample_current, pixelIdx);
             g_dlssDepth[DTid.xy] = DLSS_GuideDepthFromWorldPos(emPos);
-
-            float2 curPix = DTid.xy;
-
-            float2 prevPix = GetLastFramePixelCoordinates_Unclamped(
-                emPos, prevView, prevProjection, dims, emInstID);
-            float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(
-                emPos, view, projection, dims, emInstID);
-            bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
-            float2 emMV = validPrev ? (prevPix - curPinholePix) : float2(0, 0);
-            g_dlssMVec[curPix] = emMV;
-            biasMV = emMV;
+            g_dlssMVec[DTid.xy] = SurfaceMotionVector(DTid.xy, dims, emPos, emInstID);
             isEmitterSurface = true;
 
             const float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
@@ -212,30 +396,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         {
             g_dlssDepth[DTid.xy] = 0.0f;
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
-
-            float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
-            float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-            float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
-            float3 prevViewDir = mul(prevView, float4(worldDir, 0)).xyz;
-            float2 skyMV = float2(0.0f, 0.0f);
-            if (prevViewDir.z < 0.0f) {
-                float4 prevClip = mul(prevProjection,
-                                      float4(prevViewDir * cameraFar, 1.0f));
-                if (prevClip.w > 0.0f) {
-                    float2 prevNdc = prevClip.xy / prevClip.w;
-                    float2 prevUV  = float2(prevNdc.x * 0.5f + 0.5f,
-                                            0.5f - prevNdc.y * 0.5f);
-                    float2 prevPix = prevUV * dims - 0.5f;
-
-                    skyMV = prevPix - float2(DTid.xy);
-                }
-            }
-            g_dlssMVec[DTid.xy] = skyMV;
-            biasMV = skyMV;
-
+            g_dlssMVec[DTid.xy] = SkyMotionVector(DTid.xy, dims);
         }
 
-        biasInstID = emInstID;
         g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
         const float3 emitterAlbedo = saturate(ScrubNonFiniteIn(dbgRawPrimary));
@@ -260,99 +423,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 #endif
     }
     else{
-        uint sInstID = load_instID(g_sample_current, pixelIdx);
-        float3 sPos  = load_x1(g_sample_current, pixelIdx);
-        SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, sPos, camPosWorld);
-
-        const RRGuide rg = ResolveRRGuideThroughGlass(sv, sInstID, camPosWorld);
-
-        g_dlssDepth[DTid.xy] = DLSS_GuideDepthFromWorldPos(rg.x);
-
-        float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
-        float  reflW          = saturate(Luma(specularAlbedo));
-
-        g_dlssNormals[DTid.xy] = float4(sv.n_s, sv.Pr);
-
-        g_dlssDiffuseAlbedo[DTid.xy] = float4(rg.Kd, 1.0f);
-        g_dlssRoughness[DTid.xy] = sv.Pr;
-
-#if SHADING_DEBUG_SLICES
-        gOutput[uint3(DTid.xy, 5)] = float4(rg.Kd, 1.0f);
-#endif
-
-        float2 curPix = DTid.xy;
-
-        float2 prevPix       = GetLastFramePixelCoordinates_Unclamped(rg.x, prevView, prevProjection, dims, rg.instID);
-        float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(rg.x, view, projection, dims, rg.instID);
-
-        bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
-
-        float2 mvPixels = validPrev ? (prevPix - curPinholePix) : float2(0.0, 0.0);
-
-        if (rg.instID == 0xFFFFFFFFu)
-        {
-            float2 dSky = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
-            float4 tSky = mul(projectionI, float4(dSky.x, -dSky.y, 1, 1));
-            float3 worldDirSky  = normalize(mul(viewI, float4(tSky.xyz, 0)).xyz);
-            float3 prevViewDirSky = mul(prevView, float4(worldDirSky, 0)).xyz;
-            float2 skyMV = float2(0.0f, 0.0f);
-            if (prevViewDirSky.z < 0.0f)
-            {
-                float4 prevClipSky = mul(prevProjection, float4(prevViewDirSky * cameraFar, 1.0f));
-                if (prevClipSky.w > 0.0f)
-                {
-                    float2 prevNdcSky = prevClipSky.xy / prevClipSky.w;
-                    float2 prevUVSky  = float2(prevNdcSky.x * 0.5f + 0.5f, 0.5f - prevNdcSky.y * 0.5f);
-                    float2 prevPixSky = prevUVSky * dims - 0.5f;
-
-                    skyMV = prevPixSky - float2(DTid.xy);
-                }
-            }
-            mvPixels = skyMV;
-        }
-
-        g_dlssMVec[curPix] = mvPixels;
-
-        biasInstID = sInstID;
-        biasMV = mvPixels;
-
-        g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
-
-        const float4 reflData   = gScratchPing[uint3(DTid.xy, 4)];
-        const uint   reflInstID = asuint(reflData.w);
-        g_dlssSpecHitDist[DTid.xy] = (reflInstID != 0xFFFFFFFFu)
-            ? min(length(reflData.xyz - sv.x), DLSS_SPEC_HIT_MAX)
-            : DLSS_SPEC_HIT_MAX;
-
-        float2 surfaceMV = mvPixels;
-        if (LoadIsThinGlass(sv.matID))
-        {
-            float2 gPrev = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
-            float2 gCur  = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
-            if (gPrev.x > -1e8f && gCur.x > -1e8f)
-                surfaceMV = gPrev - gCur;
-        }
-
-        float2 specMV = surfaceMV;
-        if (reflW > 0.04f && sv.Pr < DLSS_SPEC_ROUGHNESS_THRESHOLD)
-        {
-
-            if (reflInstID != 0xFFFFFFFFu)
-            {
-
-                float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
-                    reflData.xyz, prevView, prevProjection, dims, reflInstID);
-                float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(
-                    reflData.xyz, view, projection, dims, reflInstID);
-                if (prevRefl.x > -1e8f && curRefl.x > -1e8f)
-                    specMV = prevRefl - curRefl;
-            }
-        }
-        g_dlssSpecMVec[DTid.xy] = specMV;
+        if ((dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) != 0u)
+            WriteLegacyGuides(DTid.xy, pixelIdx, dims, camPosWorld);
+        else
+            psrBias = WritePsrGuides(DTid.xy, pixelIdx, dims, camPosWorld);
 
 #if ATM_DEBUG_RING == 4
 
-        g_dlssInput[DTid.xy] = float4(sv.n_s * 0.5f + 0.5f, 1.0f);
+        g_dlssInput[DTid.xy] = float4(g_dlssNormals[DTid.xy].xyz * 0.5f + 0.5f, 1.0f);
 #else
         g_dlssInput[DTid.xy] = float4(DlssEncode(accumulation), 1.0f);
 #endif
@@ -361,7 +439,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     ApplyCumulusGuides(DTid.xy,pixelIdx,camPosWorld);
     float cloudOpacity=gScratchPing[uint3(DTid.xy,CUMULUS_NORMAL_SLOT)].w;
-    g_dlssBiasHint[DTid.xy] = isEmitterSurface ? (1.0f-cloudOpacity) : 0.0f;
+    g_dlssBiasHint[DTid.xy] = (isEmitterSurface ? 1.0f : psrBias) * (1.0f-cloudOpacity);
 
     g_dlssTransparency[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 

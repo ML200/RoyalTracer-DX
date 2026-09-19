@@ -78,54 +78,19 @@ inline bool TraceCameraRay(
     }
 
     {
+        // Mirror probe: the reflection's virtual point feeds specular reprojection everywhere; near-delta
+        // reflectors also follow the reflection through delta surfaces for primary surface replacement.
         const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
         const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
-
-        bool  committed   = false;
-        float reflT       = 0.0f;
-        uint  reflInstID  = 0xFFFFFFFFu;
-        if (IsRayValid(reflOrigin, reflDir, 10000.0f))
-        {
-            RayDesc reflRay;
-            reflRay.Origin    = reflOrigin;
-            reflRay.Direction = reflDir;
-            reflRay.TMin      = 0.00001f;
-            reflRay.TMax      = RAY_TMAX_PLANET;
-
-            RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-            q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
-            uint16_t alphaIter = 0;
-            while (q.Proceed() && alphaIter < uint16_t(128))
-            {
-                ++alphaIter;
-                if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-                {
-                    const uint cInstID = q.CandidateInstanceIndex();
-                    const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-                    const uint cMatID  = GetMatIDFast(cInstID, cPrimID);
-                    if (LoadAlphaThreshold(cMatID) < 1.0f)
-                        q.CommitNonOpaqueTriangleHit();
-                }
-            }
-            if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
-            {
-                committed  = true;
-                reflT      = q.CommittedRayT();
-                reflInstID = q.CommittedInstanceID();
-            }
-        }
-
-        if (committed)
-        {
-
-            const float3 reflPos    = reflOrigin + reflDir * reflT;
-            const float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
-            gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(reflInstID));
-        }
-        else
-        {
-            gScratchPing[uint3(pixel, 4)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
-        }
+        const bool   psrCandidate = (dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) == 0u &&
+            PsrCandidateMaterial(matID, hitLocalPr);
+        const PsrChainEnd refl = PsrWalkDeltaChain(reflOrigin, reflDir, mediumMatID,
+            PsrReflectionMatrix(hinfo.hitNormal), hitPos, rayDir, psrCandidate,
+            psrCandidate ? DLSS_PSR_MAX_CHAIN : 1u, true);
+        gScratchPing[uint3(pixel, 4)] = float4(refl.xFirst, asfloat(refl.instFirst));
+        if (psrCandidate)
+            gScratchPing[uint3(pixel, DLSS_PSR_CHAIN_SLOT)] = float4(refl.xVirtual, asfloat(refl.instID));
+        gScratchPing[uint3(pixel, DLSS_PSR_PROBE_SLOT)] = psrCandidate ? PsrProbePack(refl) : float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
     if (isEmitter && hinfo.lightID != 0xFFFFFFFFu)

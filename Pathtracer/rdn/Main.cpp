@@ -69,9 +69,9 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            /*{"veach-ajar.glb",
+            /*{"scandinavian-studio.glb",
              XMMatrixIdentity(), "Modern Tank Garage"},*/
-            MinecraftWorld("C:/Users/Malte/Downloads/Grand Teton National Park/Grand Teton National Park",
+            MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
                            XMMatrixIdentity(), "Night City"),
         };
@@ -93,7 +93,7 @@ class MainScene : public SceneDefinition {
         cubes.spawnMin = {-0000.0f, 50.0f, -0000.0f};
         cubes.spawnMax = {6000.0f, 200.0f, 6000.0f};
         cubes.seed = 42;
-        m_emissiveCubes.Init(cubes, sm, r);
+        //m_emissiveCubes.Init(cubes, sm, r);
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {
         flyCam.Update(dt);

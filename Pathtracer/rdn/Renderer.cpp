@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Renderer.h"
+#include "../shaders/DlssGuideLayout.h"
 #include "ReuseTextureGen.h"
 #include "Diagnostics.h"
 #include "Core/PerformanceCapture.h"
@@ -1729,7 +1730,8 @@ void Renderer::PopulateCommandList() {
 
     rsConsts[29] = (UINT)std::clamp(rs.maxDiffuseBounces, 1, std::clamp(rs.maxBounces, 2, 32));
 
-    rsConsts[30] = (UINT)std::clamp(rs.dlssDebugLayer, 0, 13);
+    rsConsts[30] = (UINT)std::clamp(rs.dlssDebugLayer, 0, 13) | (m_dlss.guideOffPsr ? DLSS_GUIDE_OPT_NO_PSR : 0u) |
+                   (m_dlss.guideOffMvBlend ? DLSS_GUIDE_OPT_NO_MV_BLEND : 0u);
     {
         using DirectX::PackedVector::XMConvertFloatToHalf;
         const float dn = std::clamp(rs.dlssDebugDepthNear, 0.0f, 60000.0f);

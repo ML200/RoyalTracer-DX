@@ -1243,9 +1243,12 @@ void Editor::DrawDlssInputsPanel(IntegratorSettings& rs, DLSSManager& dlss) {
         guide("Diffuse albedo", dlss.guideOffAlbedo);
         guide("Specular albedo", dlss.guideOffSpecAlb);
         guide("Specular motion", dlss.guideOffSpecMV);
+        guide("Surface replacement", dlss.guideOffPsr);
+        guide("Motion blend", dlss.guideOffMvBlend);
         if (ImGui::Button("Restore all guides")) {
             dlss.guideOffDepth = dlss.guideOffMV = dlss.guideOffNormals = dlss.guideOffRough = false;
             dlss.guideOffAlbedo = dlss.guideOffSpecAlb = dlss.guideOffSpecMV = dlss.untagSpecMV = false;
+            dlss.guideOffPsr = dlss.guideOffMvBlend = false;
             dlss.ForceReset();
         }
     }

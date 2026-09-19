@@ -74,6 +74,8 @@ class DLSSManager {
     bool guideOffAlbedo = false;
     bool guideOffSpecAlb = false;
     bool guideOffSpecMV = false;
+    bool guideOffPsr = false;
+    bool guideOffMvBlend = false;
 
     bool untagSpecMV = false;
 

@@ -399,6 +399,7 @@ StructuredBuffer<LightSlotGpu>     gLT_Slot         : register(t7);
 
 #include "Camera_ray_v8.hlsli"
 #include "MIS_v8.hlsli"
+#include "PsrGuide_v8.hlsli"
 
 #ifdef COMPUTE_PASS
 RWTexture2D<float>  g_dlssDepth          : register(u11);
