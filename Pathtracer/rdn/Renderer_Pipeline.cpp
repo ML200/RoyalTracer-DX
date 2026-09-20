@@ -447,7 +447,7 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),
                                          {L"OpaqueHitGroup", L"AlphaHitGroup", L"TerrainHitGroup"});
 
-    pipeline.SetMaxPayloadSize(36); // TracePayload in Inline_RT_v8.hlsli
+    pipeline.SetMaxPayloadSize(4); // TracePayload in Inline_RT_v8.hlsli carries nothing
 
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
     pipeline.SetMaxRecursionDepth(1);
@@ -462,9 +462,21 @@ void Renderer::CreateRaytracingPipeline() {
         if (sz > rgStack)
             rgStack = sz;
     }
-    UINT64 missStack = m_rtStateObjectProps->GetShaderStackSize(L"Miss");
-    UINT64 total = (rgStack + missStack + 255) & ~255;
+    // The stack must hold the raygen plus the deepest shader it invokes: any-hit during the
+    // traversal, then closest-hit or miss. Undersizing it corrupts memory before the device fails.
+    auto stackOf = [&](const wchar_t* exportName) -> UINT64 {
+        const UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(exportName);
+        return sz >= 0xFFFFFFFFull ? 0ull : sz;
+    };
+    const UINT64 missStack = stackOf(L"Miss");
+    UINT64 hitStack = 0, anyHitStack = stackOf(L"AlphaHitGroup::anyhit");
+    for (const wchar_t* group : {L"OpaqueHitGroup", L"AlphaHitGroup", L"TerrainHitGroup"})
+        hitStack = std::max(hitStack, stackOf((std::wstring(group) + L"::closesthit").c_str()));
+    const UINT64 deepest = std::max(missStack, std::max(hitStack, anyHitStack));
+    UINT64 total = (rgStack + deepest + 255) & ~255;
     m_rtStateObjectProps->SetPipelineStackSize(total);
+    LOG(L"[RT] pipeline stack " << total << L" bytes: raygen " << rgStack << L", closest-hit " << hitStack
+                                << L", any-hit " << anyHitStack << L", miss " << missStack);
 }
 
 void Renderer::CreateRaytracingOutputBuffer() {

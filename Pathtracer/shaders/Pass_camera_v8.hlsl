@@ -30,7 +30,7 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     const uint  matID  = GetMatIDFast(instID, primID);
     BuiltInTriangleIntersectionAttributes attr;
     hitObj.GetAttributes(attr);
-    const HitInfo hinfo    = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
+    const HitInfo hinfo    = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, PixelConeAngle() * hitT);
     const float3  hitPos   = hinfo.hitPos;
     const float3  emission = GetEmissionFast(instID, primID);
     const bool    isEmitter = any(emission > 0.0f);
@@ -45,7 +45,7 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
         mediumMatID = flipIOR ? matID : MEDIUM_INVALID;
 
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
-        RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, 0u);
+        RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, hinfo.uvFootprint);
         psrCandidate = (dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) == 0u && PsrCandidateMaterial(matID, hitLocalPr);
 
         store_instID    (g_sample_current, pixelIdx, instID);

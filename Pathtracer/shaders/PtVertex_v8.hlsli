@@ -1,31 +1,21 @@
 #pragma once
-// Per-vertex work of the split path tracer, run by the closest-hit shader for every vertex,
-// including the primary one. The raygen only handles the compact result: the next direction, the
-// vertex normal for the ray offset, a throughput multiplier, one packed value and flags.
+// Per-vertex work of the split path tracer. The trace raygen reorders on the hit object and then
+// shades every vertex here itself, including the primary one and the escaped rays; the
+// closest-hit and miss shaders of the pipeline are empty. The path loop only handles the compact
+// result: the next direction, the vertex normal for the ray offset, a throughput multiplier, one
+// packed value and flags.
 #include "PtDefer_v8.hlsli"
 
 struct PtVertexIO {
     uint   flags;
     float  pdf;      // in: pdf of the previous scatter; out: updated MIS/footprint pdf
     float  spread;   // path footprint, in/out
+    float  dist;     // path length, in/out: with the pixel cone it sizes the texture footprint
     uint   dirPk;    // out: next direction
     uint   nPk;      // out: shading normal of the vertex the next ray leaves
     float3 color;    // out: throughput multiplier (see PV_CAPTURED), or sky radiance on a miss
     uint   auxPk;    // out: packed radiance or weight, see the result flags
 };
-
-PtVertexIO PtIoFromPayload(TracePayload p)
-{
-    PtVertexIO io;
-    io.flags = p.flags; io.pdf = p.pdf; io.spread = p.spread;
-    io.dirPk = p.dirPk; io.nPk = p.nPk; io.color = p.color; io.auxPk = p.auxPk;
-    return io;
-}
-void PtIoToPayload(PtVertexIO io, inout TracePayload p)
-{
-    p.flags = io.flags; p.pdf = io.pdf; p.spread = io.spread;
-    p.dirPk = io.dirPk; p.nPk = io.nPk; p.color = io.color; p.auxPk = io.auxPk;
-}
 
 // Input flags (raygen -> hit/miss shaders).
 #define PV_IN_DEPTH_SHIFT   0u   // 7 bits: depth of the vertex being shaded
@@ -340,4 +330,138 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     io.nPk   = PackNormal(outN);
     io.color = color;
     io.auxPk = auxPk;
+}
+
+// Shade the hit the raygen found. The primary vertex takes its surface from the camera record;
+// every other vertex evaluates the surface and material here. Both feed the vertex routine.
+void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex,
+    float2 barycentrics, float hitT, float3 rayDir, uint2 pixel, uint pixelIdx)
+{
+    const uint   depth    = (io.flags >> PV_IN_DEPTH_SHIFT) & 0x7Fu;
+    const uint primID = FlatPrimID(instID, geometryIndex, primitiveIndex);
+
+    HitContext ctx = (HitContext)0;
+    float3 geoN      = 0.0f;
+    bool   flipIOR   = false;
+    uint   presetOut = 0u;
+    bool   shade     = true;
+
+    if (depth == 1u)
+    {
+        // The camera pass resolved the primary surface (including primary surface replacement);
+        // only the geometric normal comes from the retraced triangle.
+        const SDRecord sd = load_SD(g_sample_current, pixelIdx);
+        float2 pIors; uint pMedium; float3 pAbsorb;
+        load_rg_primaryExtra(pixelIdx, pIors, pMedium, pAbsorb);
+        geoN = CandidateGeoNormalW(instID, primID);
+        if (dot(geoN, sd.n1_s) < 0.0f) geoN = -geoN;
+
+        ctx.hitPos         = sd.x1;
+        ctx.hitNormal      = sd.n1_s;
+        ctx.matID          = sd.matID;
+        ctx.instID         = sd.instID;
+        ctx.backface       = (sd.flags & SD_FLAG_BACKFACE) != 0u;
+        ctx.hitLocalKd     = (half3)sd.Kd;
+        ctx.hitLocalPr     = (half)sd.Pr;
+        ctx.hitLocalPm     = (half)sd.Pm;
+        ctx.iors           = (half2)pIors;
+        ctx.mediumMatID    = pMedium;
+        ctx.absorptionTint = (half3)pAbsorb;
+        flipIOR = pMedium != MEDIUM_INVALID;
+    }
+    else
+    {
+        const uint  matID = GetMatIDFast(instID, primID);
+        // The beam width at this hit: the pixel cone over the path length, plus the spread of the
+        // rough scatters so far and of the one that led here.
+        const float spreadHere = (io.flags & PV_IN_SPREAD) != 0u
+            ? hitT * sqrt(min(16.0f, rcp(max(io.pdf, 1e-6f)))) : 0.0f;
+        const float footprint = PixelConeAngle() * (io.dist + hitT) + io.spread + spreadHere;
+        io.dist += hitT;
+        const HitInfo hinfo = EvalSurfaceStateDir(instID, primID, barycentrics, rayDir, footprint);
+        const float3  emission = (hinfo.lightID != 0xFFFFFFFFu)
+            ? g_EmissiveTriangles[hinfo.lightID].emission * GLOBAL_EMISSION_STRENGTH
+            : float3(0, 0, 0);
+        if (any(emission > 0.0f))
+        {
+            const bool pending   = (io.flags & PV_IN_PENDING) != 0u;
+            const bool immediate = (io.flags & PV_IN_IMMEDIATE) != 0u;
+            if (pending && immediate)
+            {
+                // MIS against the deferred light sample is resolved by the light and material passes.
+                DvEmitter e;
+                e.lightID = hinfo.lightID;
+                e.inst = instID;
+                e.pos = hinfo.hitPos;
+                e.n = hinfo.hitNormal;
+                DvStoreEmitter(pixelIdx, e);
+                io.flags = PV_EMITTER_DEFERRED;
+            }
+            else
+            {
+                io.flags = PV_EMITTER;
+                io.auxPk = PvPackRadiance(emission);
+            }
+            shade = false;
+        }
+        else if ((io.flags & PV_IN_LAST) != 0u)
+        {
+            io.flags = PV_TERMINATE;
+            shade = false;
+        }
+        else
+        {
+            const float matNi        = LoadNi(matID);
+            const bool  transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
+            flipIOR = hinfo.backface && transmissive && !LoadIsThinGlass(matID);
+            float3 hitLocalKd; float hitLocalPr, hitLocalPm;
+            RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, hinfo.uvFootprint);
+
+            if (depth == 2u && (io.flags & PV_IN_LITE_VERTEX) != 0u)
+            {
+                // The first bounce parks the reuse point; its broad-lobe share is applied by the material pass.
+                const float3 liteNy = dot(hinfo.geometricNormal, -rayDir) < 0.0f
+                    ? -hinfo.geometricNormal : hinfo.geometricNormal;
+                LiteParkPointStore(pixelIdx, WorldToObjectPos(instID, hinfo.hitPos), instID,
+                    PackNormal(WorldToObjectNrm(instID, liteNy)), DvLoadScatterPdf(pixelIdx));
+                presetOut |= PV_LITE_PARKED;
+            }
+
+            if ((io.flags & PV_IN_SPREAD) != 0u)
+                io.spread += hitT * sqrt(min(16.0f, rcp(max(io.pdf * abs(dot(hinfo.geometricNormal, -rayDir)), 1e-6f))));
+            const float regularize = io.spread > 0.0f ? PT_REGULARIZE_ROUGHNESS : 0.0f;
+
+            geoN = hinfo.geometricNormal;
+            ctx.hitPos         = hinfo.hitPos;
+            ctx.hitNormal      = hinfo.hitNormal;
+            ctx.matID          = matID;
+            ctx.instID         = instID;
+            ctx.backface       = hinfo.backface;
+            ctx.hitLocalKd     = (half3)hitLocalKd;
+            ctx.hitLocalPr     = (half)max(hitLocalPr, regularize);
+            ctx.hitLocalPm     = (half)hitLocalPm;
+            ctx.iors           = (half2)(flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi));
+            ctx.mediumMatID    = flipIOR ? matID : MEDIUM_INVALID;
+            ctx.absorptionTint = (half3)(flipIOR ? CalculateAbsorptionThroughput(LoadTf(matID), hitT) : float3(1, 1, 1));
+        }
+    }
+
+    if (shade) PtVertexShade(io, ctx, geoN, rayDir, flipIOR, pixel, pixelIdx, presetOut);
+}
+
+// Escaped ray: sky and sun radiance with the sun MIS weight of the scatter the ray came from.
+// The raygen owns the throughput and the reuse candidate.
+void PtShadeMiss(inout PtVertexIO io, float3 rayOrigin, float3 rayDir)
+{
+    const bool underground = WorldPosIsUnderground(rayOrigin + sceneOriginWorld);
+    SetSkyObserver(InitOrigin() + sceneOriginWorld);
+    const float  sunSAPdf   = underground ? 0.0f : GetSunPdf(rayDir);
+    const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
+    const float  sunMisBsdf = (sunSAPdf > 0.0f)
+        ? ((io.flags & PV_IN_MIS_NONE) != 0u ? 1.0f : io.pdf / max(io.pdf + sunSAPdf, EPSILON)) : 0.0f;
+
+    io.flags = PV_MISS;
+    io.pdf   = sunSAPdf > 0.0f ? sunMisBsdf : 1.0f;
+    io.color = underground ? float3(0, 0, 0) : EvaluateSky(rayDir);
+    io.auxPk = PvPackRadiance(sunRad);
 }

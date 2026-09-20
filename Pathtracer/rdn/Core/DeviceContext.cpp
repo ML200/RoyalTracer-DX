@@ -118,10 +118,10 @@ void DeviceContext::ExecuteAndPresent() {
 #if ENABLE_D3D12_DIAGNOSTICS
         dxdiag::DumpNewMessages();
 
-        dxdiag::CheckDeviceRemoved(device.Get(), 1000);
+        dxdiag::CheckDeviceRemoved(NativeDevice(), 1000);
 #endif
 
-        if (FAILED(device->GetDeviceRemovedReason()))
+        if (FAILED(NativeDevice()->GetDeviceRemovedReason()))
             ThrowIfFailed(presentHr);
     }
 
@@ -132,7 +132,7 @@ void DeviceContext::ExecuteAndPresent() {
     frameIndex = swapChain->GetCurrentBackBufferIndex();
 
 #if ENABLE_D3D12_DIAGNOSTICS
-    dxdiag::CheckDeviceRemoved(device.Get());
+    dxdiag::CheckDeviceRemoved(NativeDevice());
     dxdiag::DumpNewMessages();
 #endif
 }
@@ -281,8 +281,13 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
                 break;
         }
         ThrowIfFailed(slCreateDevice(hardwareAdapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device)));
+        {
+            void* native = nullptr;
+            if (slGetNativeInterface(device.Get(), &native) == sl::Result::eOk && native)
+                nativeDevice.Attach(static_cast<ID3D12Device*>(native));
+        }
 #if ENABLE_D3D12_DIAGNOSTICS
-        dxdiag::HookDevice(device.Get());
+        dxdiag::HookDevice(NativeDevice());
 #endif
     }
 

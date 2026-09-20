@@ -6,9 +6,9 @@
 static const float PT_RETRACE_SCALE = 1e-4f;
 static const float PT_RETRACE_MIN   = 1e-3f;
 
-// Drive one sample of the pixel path. Every vertex is shaded by the closest-hit shader after
-// reordering; this kernel only keeps the path state, applies the compact results and finalizes
-// the deferred record for the light and material passes.
+// Drive one sample of the pixel path. Every vertex is shaded here after reordering on the hit
+// object; the path loop keeps the path state, applies the compact results and finalizes the
+// deferred record for the light and material passes.
 [shader("raygeneration")]
 void Pass_pt_trace_v8()
 {
@@ -49,7 +49,9 @@ void Pass_pt_trace_v8()
     // The camera pass resolved the primary vertex; a short ray through it hands it to the
     // closest-hit shader, so every vertex is shaded there and reordered alike.
     float3 pos    = load_x1(g_sample_current, pixelIdx);
-    float3 rayDir = normalize(pos - InitOrigin());
+    const float3 toPrimary = pos - InitOrigin();
+    float  pathDist = length(toPrimary);   // path length: with the pixel cone it sizes the texture footprint
+    float3 rayDir   = toPrimary / max(pathDist, 1e-6f);
     const float retrace = max(PT_RETRACE_MIN, PT_RETRACE_SCALE * length(pos));
     RayDesc ray;
     ray.Origin    = pos - rayDir * retrace;
@@ -62,11 +64,7 @@ void Pass_pt_trace_v8()
     for (;;)
     {
         // ---- trace, reorder, shade ----
-        TracePayload payload;
-        payload.flags  = inFlags;
-        payload.pdf    = prev_pdf;
-        payload.spread = pathSpread;
-        payload.dirPk  = 0u; payload.nPk = 0u; payload.color = 0.0f; payload.auxPk = 0u;
+        TracePayload payload = (TracePayload)0;
         dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE,
             0xFF, 0, 1, 0, ray, payload);
         dx::MaybeReorderThread(hitObj);
@@ -76,8 +74,18 @@ void Pass_pt_trace_v8()
             if (LITE_ENABLED && s == 0u) LiteMarkEmpty(pixelIdx);
             break;
         }
-        dx::HitObject::Invoke(hitObj, payload);
-        const PtVertexIO io = PtIoFromPayload(payload);
+        PtVertexIO io;
+        io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist;
+        io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u;
+        if (hitObj.IsHit())
+        {
+            BuiltInTriangleIntersectionAttributes attr;
+            hitObj.GetAttributes(attr);
+            PtShadeHit(io, hitObj.GetInstanceID(), hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex(),
+                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pixel, pixelIdx);
+        }
+        else
+            PtShadeMiss(io, ray.Origin, rayDir);
         if (depth == 1u)
         {
             if (LITE_ENABLED && s == 0u && (io.flags & PV_PRIMARY_LITE) == 0u) LiteMarkEmpty(pixelIdx);
@@ -176,6 +184,7 @@ void Pass_pt_trace_v8()
         ps = PtPsWith(ps, PT_PS_MIS_NONE, (io.flags & PV_MIS_NONE) != 0u);
         prev_pdf   = io.pdf;
         pathSpread = io.spread;
+        pathDist   = io.dist;
         if (result == PV_TERMINATE) break;
 
         // Russian roulette scales surviving paths after the configured depth (deferred scatters

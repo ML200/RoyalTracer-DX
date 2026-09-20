@@ -155,9 +155,10 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
         if (bounce == 0u) { xFirst = e.xVirtual; instFirst = inst; }
         if (!evaluate) break;
 
-        const HitInfo h = EvalSurfaceStateDir(inst, prim, q.CommittedTriangleBarycentrics(), dir, 1u);
+        const float   beam = PixelConeAngle() * (length(primaryHit - mul(viewI, float4(0, 0, 0, 1)).xyz) + pathLength);
+        const HitInfo h    = EvalSurfaceStateDir(inst, prim, q.CommittedTriangleBarycentrics(), dir, beam);
         float3 kd; float pr, pm;
-        RefetchMaterial(matID, h.uv, kd, pr, pm, 1u);
+        RefetchMaterial(matID, h.uv, kd, pr, pm, h.uvFootprint);
         e.nVirtual = mul(M, h.hitNormal);
         e.Kd = kd; e.Pr = pr; e.Pm = pm;
 

@@ -1,12 +1,8 @@
+// No shader stage carries data through the payload: the raygens read their hits from the hit
+// object and shade them themselves. The one field keeps the struct valid.
 struct [raypayload] TracePayload
 {
-    uint   flags  : read(caller, closesthit, miss) : write(caller, closesthit, miss);
-    float  pdf    : read(caller, closesthit, miss) : write(caller, closesthit, miss);
-    float  spread : read(caller, closesthit)       : write(caller, closesthit);
-    uint   dirPk  : read(caller)                   : write(caller, closesthit);
-    uint   nPk    : read(caller)                   : write(caller, closesthit);
-    float3 color  : read(caller)                   : write(caller, closesthit, miss);
-    uint   auxPk  : read(caller)                   : write(caller, closesthit, miss);
+    uint unused : read(caller) : write(caller);
 };
 
 static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
@@ -35,6 +31,7 @@ struct HitInfo {
     bool   backface;
     uint   lightID;
     float2 uv;
+    float  uvFootprint;   // width of the ray beam at the hit, in texture coordinates of the surface
 };
 
 
@@ -292,22 +289,33 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     return Nopt;
 }
 
-// Sample and sanitize material albedo at the requested ray level.
-float3 EvaluateAlbedo(uint matID, float2 uv, uint level)
+// The angle one pixel of the render subtends; times the path length it is the beam width.
+float PixelConeAngle() { return 2.0f / max(projection._m11 * float(IMG_H), 1e-6f); }
+
+// The mip whose texels match a beam of the given width in texture coordinates.
+float TexFootprintLod(Texture2D<float4> tex, float uvFootprint)
+{
+    uint w, h;
+    tex.GetDimensions(w, h);
+    return log2(max(uvFootprint * float(max(w, h)), 1e-8f)) + PT_TEXTURE_LOD_BIAS;
+}
+
+// Sample and sanitize material albedo for the beam width at the hit.
+float3 EvaluateAlbedo(uint matID, float2 uv, float uvFootprint)
 {
     float3 albedo = LoadKd_rgb(matID);
     const int texID = LoadAlbedoTexID(matID);
     if (texID != -1)
     {
-        float2 albedoUV = uv * LoadAlbedoUVScale(matID);
+        const float2 scale = LoadAlbedoUVScale(matID);
         Texture2D<float4> tex = ResourceDescriptorHeap[texID];
-        albedo = SampleMaterialTex(tex, albedoUV, level).rgb;
+        albedo = SampleMaterialTex(tex, uv * scale, TexFootprintLod(tex, uvFootprint * max(scale.x, scale.y))).rgb;
     }
     return albedo;
 }
 
 // Fetch roughness and metalness with material-specific texture rules.
-float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
+float2 EvaluatePBRProperties(uint matID, float2 uv, float uvFootprint)
 {
 
     if (FORCE_DIFFUSE)
@@ -319,9 +327,9 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
     const int rmaID = LoadRmaTexID(matID);
     if (rmaID != -1)
     {
-        float2 rmaUV = uv * LoadRmaUVScale(matID);
+        const float2 scale = LoadRmaUVScale(matID);
         Texture2D<float4> tex = ResourceDescriptorHeap[rmaID];
-        float4 rmaSample = SampleMaterialTex(tex, rmaUV, level);
+        float4 rmaSample = SampleMaterialTex(tex, uv * scale, TexFootprintLod(tex, uvFootprint * max(scale.x, scale.y)));
 
         pbrProps.x = rmaSample.g;
         pbrProps.y = rmaSample.b;
@@ -329,10 +337,10 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
     return pbrProps;
 }
 
-inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, uint level = 0)
+inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, float uvFootprint = 0.0f)
 {
-    localKd = EvaluateAlbedo(matID, uv, level);
-    float2 pbr = EvaluatePBRProperties(matID, uv, level);
+    localKd = EvaluateAlbedo(matID, uv, uvFootprint);
+    float2 pbr = EvaluatePBRProperties(matID, uv, uvFootprint);
     localPr = pbr.x;
     localPm = pbr.y;
 }
@@ -377,14 +385,15 @@ inline uint LightRecordOf(uint instID, uint primID)
     return gTriToLightId[base + primID];
 }
 
-// Interpolate hit attributes and derive the complete shading state.
+// Interpolate hit attributes and derive the complete shading state. `footprint` is the width of
+// the ray beam at the hit in world units; the textures are read at the mip that matches it.
 HitInfo EvalSurfaceStateImpl(
     uint   instID,
     uint   primID,
     float2 bc2,
     float3 originOrDir,
     bool   viewIsDir,
-    uint   level
+    float  footprint
 )
 {
 
@@ -467,6 +476,7 @@ HitInfo EvalSurfaceStateImpl(
     float3 geoNormW;
     float3 tangentW_geom;
     float3 bitangentW_geom;
+    float  uvPerWorld;   // texture coordinates per world unit along the triangle
 
     {
         const float3x4 M = instanceProps[instID].objectToWorld;
@@ -485,6 +495,9 @@ HitInfo EvalSurfaceStateImpl(
 
         const float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
         const float invDet = (abs(det) > 1e-8f) ? rcp(det) : 0.0f;
+        const float3 e1w = mul(R, e1_local);
+        const float3 e2w = mul(R, e2_local);
+        uvPerWorld = sqrt(abs(det) / max(length(cross(e1w, e2w)), 1e-20f));
 
         const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
         const float3 bitanO = (e2_local * dUV1.x - e1_local * dUV2.x) * invDet;
@@ -497,11 +510,17 @@ HitInfo EvalSurfaceStateImpl(
     HitInfo hit = (HitInfo)0.0f;
     hit.uv = uv;
 
+    float3 viewDir = viewIsDir ? originOrDir : (posW - originOrDir);
+    viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
+    // The beam stretches across the surface at grazing angles.
+    hit.uvFootprint = footprint * uvPerWorld / max(abs(dot(viewDir, geoNormW)), 0.05f);
+
     const int normalTexID = LoadNormalTexID(materialID);
     [branch]
     if (normalTexID != -1)
     {
-        const float2 normalUV = uv * LoadNormalUVScale(materialID);
+        const float2 normalScale = LoadNormalUVScale(materialID);
+        const float2 normalUV    = uv * normalScale;
 
         float3 tangentW = tangentW_geom - dot(tangentW_geom, normW) * normW;
         tangentW *= rsqrt(max(dot(tangentW, tangentW), 1e-20f));
@@ -511,15 +530,12 @@ HitInfo EvalSurfaceStateImpl(
         if (dot(bitangentW, bitangentW_geom) < 0.0f) bitangentW = -bitangentW;
 
         Texture2D<float4> nTex = ResourceDescriptorHeap[normalTexID];
-        const float3 n_tan =
-            SampleMaterialTex(nTex, normalUV, level).xyz * 2.0f - 1.0f;
+        const float3 n_tan = SampleMaterialTex(nTex, normalUV,
+            TexFootprintLod(nTex, hit.uvFootprint * max(normalScale.x, normalScale.y))).xyz * 2.0f - 1.0f;
 
         normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;
         normW *= rsqrt(max(dot(normW, normW), 1e-20f));
     }
-
-    float3 viewDir = viewIsDir ? originOrDir : (posW - originOrDir);
-    viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
 
     const bool   isBackface      = (dot(viewDir, geoNormW) > 0.0f);
     const float3 geoNormOriented = isBackface ? -geoNormW : geoNormW;
@@ -542,14 +558,14 @@ HitInfo EvalSurfaceStateImpl(
 }
 
 // Evaluate a surface from a ray origin and barycentric hit.
-HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3 origin, uint level)
+HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3 origin, float footprint = 0.0f)
 {
-    return EvalSurfaceStateImpl(instID, primID, bc2, origin, false, level);
+    return EvalSurfaceStateImpl(instID, primID, bc2, origin, false, footprint);
 }
 
-HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir, uint level)
+HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir, float footprint = 0.0f)
 {
-    return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, level);
+    return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, footprint);
 }
 
 inline float3 GetEmissionFast(in uint instID, in uint primID)

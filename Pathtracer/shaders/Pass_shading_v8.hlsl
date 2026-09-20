@@ -51,6 +51,7 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
     const float3 vdir = normalize(sv.x - camPos);
     float3 tint = LoadTf(sv.matID);
     float3 ro   = offset_ray(sv.x, -sv.n_s);
+    float  pathLength = length(sv.x - camPos);
 
     [loop]
     for (uint pane = 0u; pane < 16u; ++pane)
@@ -91,6 +92,7 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
         const uint   hp   = FlatPrimID(hi, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
         const uint   hm   = GetMatIDFast(hi, hp);
         const float3 hpos = ro + vdir * q.CommittedRayT();
+        pathLength += q.CommittedRayT();
 
         if (LoadIsThinGlass(hm))
         {
@@ -100,9 +102,9 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
             continue;
         }
 
-        HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), ro, 0u);
+        HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), ro, PixelConeAngle() * pathLength);
         float3 bKd; float bPr, bPm;
-        RefetchMaterial(hm, bh.uv, bKd, bPr, bPm, 0u);
+        RefetchMaterial(hm, bh.uv, bKd, bPr, bPm, bh.uvFootprint);
         g.x = bh.hitPos; g.n = bh.hitNormal; g.Kd = bKd * tint; g.Pr = bPr; g.Pm = bPm;
         g.instID = hi;
         return g;

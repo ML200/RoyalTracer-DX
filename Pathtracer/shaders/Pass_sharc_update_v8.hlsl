@@ -145,6 +145,7 @@ void Pass_sharc_update_v8()
     uint    rayDirPk     = PackNormal(normalize(sd.x1 - InitOrigin()));
     float3 geometricNormal = gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz;
     float pathSpread = 0.0f;
+    float pathDist   = length(sd.x1 - InitOrigin());   // one training path stands for a tile of pixels
     g_regularizeRoughness = 0.0f;
 
     [loop]
@@ -457,7 +458,13 @@ void Pass_sharc_update_v8()
                 hitObj.GetAttributes(attrB);
                 bary_n = attrB.barycentrics;
             }
-            hinfo_n  = EvalSurfaceStateDir(instID_n, primID_n, bary_n, rayDir, (uint)depth);
+            {
+                const float spreadHere = (ps & PT_PS_SPREAD) != 0u
+                    ? hitT_n * sqrt(min(16.0f, rcp(max(prev_pdf, 1e-6f)))) : 0.0f;
+                const float beam = PixelConeAngle() * float(sharc_updateStride) * (pathDist + hitT_n) + pathSpread + spreadHere;
+                hinfo_n = EvalSurfaceStateDir(instID_n, primID_n, bary_n, rayDir, beam);
+                pathDist += hitT_n;
+            }
             hitPos_n = hinfo_n.hitPos;
 
             const float3 emission_n = (hinfo_n.lightID != 0xFFFFFFFFu)
@@ -489,7 +496,7 @@ void Pass_sharc_update_v8()
             const uint   mediumMatID_n  = flipIOR_n ? matID_n : MEDIUM_INVALID;
 
             float3 hitLocalKd_n; float hitLocalPr_n, hitLocalPm_n;
-            RefetchMaterial(matID_n, hinfo_n.uv, hitLocalKd_n, hitLocalPr_n, hitLocalPm_n, (uint)depth);
+            RefetchMaterial(matID_n, hinfo_n.uv, hitLocalKd_n, hitLocalPr_n, hitLocalPm_n, hinfo_n.uvFootprint);
 
             const float3 absorptionTint_n = (mediumMatID_n != MEDIUM_INVALID)
                 ? CalculateAbsorptionThroughput(LoadTf(mediumMatID_n), hitT_n)

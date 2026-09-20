@@ -43,6 +43,8 @@ struct DeviceContext {
     ID3D12CommandQueue* PlanetComputeQueue() const { return planetComputeQueue.Get(); }
 
     ID3D12Device10* Device() const { return device.Get(); }
+    // Streamline hands out a proxy device; removal state and DRED data live on the native one.
+    ID3D12Device* NativeDevice() const { return nativeDevice ? nativeDevice.Get() : device.Get(); }
     ID3D12GraphicsCommandList10* CmdList() const { return cmdList.Get(); }
     ID3D12CommandQueue* CmdQueue() const { return cmdQueue.Get(); }
     IDXGISwapChain3* SwapChain() const { return swapChain.Get(); }
@@ -60,6 +62,8 @@ struct DeviceContext {
     HINSTANCE__* slModule = nullptr;
 
     ComPtr<ID3D12Device10> device;
+
+    ComPtr<ID3D12Device> nativeDevice;
     ComPtr<ID3D12GraphicsCommandList10> cmdList;
     ComPtr<ID3D12CommandQueue> cmdQueue;
 
