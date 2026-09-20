@@ -183,9 +183,6 @@ void Pass_sharc_update_v8()
 
         const bool performNEE = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || (float)ctx.hitLocalPr >= SMOOTH_SPECULAR_THRESHOLD);
-        // The light-tree receiver of this vertex, shared by its light sample and by the MIS
-        // weight of an emitter hit along the scatter.
-        const uint4 rcvPk = LT_PackVertexReceiver(ctx, -rayDir);
 
         // --- light sampling first: both shadow traversals run before any scatter state exists ---
         float3 directSum = float3(0, 0, 0);
@@ -209,8 +206,7 @@ void Pass_sharc_update_v8()
                 {
                     if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) == 0u)
                     {
-                        const LT_Sample treeSample = LT_SampleLight(LT_UnpackReceiver(rcvPk, ctx.hitPos, ctx.hitNormal),
-                            sNee, useLearnedLights);
+                        const LT_Sample treeSample = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee, useLearnedLights);
                         trainingToken = treeSample.learningToken;
                         const LT_LightSampleResult light = LT_SamplePointOnLightTree(ctx.hitPos, treeSample, sNee);
 
@@ -478,8 +474,7 @@ void Pass_sharc_update_v8()
                 const float3 prevNormalCur = ctx.hitNormal;
                 const bool   noPartner     = (ps & PT_PS_MIS_NONE) != 0u;
                 const float  lightPdfArea  = noPartner ? 0.0f
-                    : LT_Pdf_LightTree_Area(LT_UnpackReceiver(rcvPk, ctx.hitPos, prevNormalCur), hinfo_n.lightID,
-                        instID_n, useLearnedLights);
+                    : LT_Pdf_LightTree_Area(ctx.hitPos, prevNormalCur, hinfo_n.lightID, instID_n, useLearnedLights);
                 const float  cosLight      = max(dot(hinfo_n.hitNormal, -rayDir), 0.0f);
                 const float  dist2         = max(hitT_n * hitT_n, EPSILON);
                 const float  lightPdfSA    = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;

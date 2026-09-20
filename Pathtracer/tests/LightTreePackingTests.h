@@ -7,63 +7,50 @@ void VerifyLightPacking(Runner& runner) {
         random = 1664525u * random + 1013904223u;
         return float(random >> 8u) * (1.f / 16777216.f);
     };
-    // Root spheres of very different scales and offsets: ordinary, degenerate, tiny, far away,
-    // huge coordinates, and extreme extents.
-    struct Domain {
-        XMFLOAT3 center;
-        float extent;
-    };
-    const Domain cases[] = {{{0, 0, 0}, 16.f},
-                            {{0, 0, 0}, 0.f},
-                            {{0, 0, 0}, .001f},
-                            {{1000000, -2000000, 0}, 1.f},
-                            {{100000000, 100000000, -100000000}, 256.f},
-                            {{-1e30f, -1e20f, 1e-20f}, 1e20f}};
+    const lt::Aabb cases[] = {{{-16, -8, -2}, {16, 8, 2}},
+                              {{0, 0, 0}, {0, 0, 0}},
+                              {{0, 0, 0}, {.001f, .002f, 0}},
+                              {{1000000, -2000000, 0}, {1000001, -1999999, .01f}},
+                              {{100000000, 100000000, -100000000}, {100000256, 100000512, -99999488}},
+                              {{-1e30f, -1e20f, 1e-20f}, {1e30f, 1e20f, 2e-20f}}};
     std::vector<lt::LightBLASNodeGpu> nodes(count);
-    for (const auto& domain : cases) {
+    for (const auto& box : cases) {
         for (uint32_t i = 0; i < count; ++i) {
             auto& n = nodes[i];
             n = {};
-            // Every member sphere lies inside the root sphere, as the builder guarantees.
-            const XMFLOAT3 dir = lt::normalize3({unit() * 2 - 1, unit() * 2 - 1, unit() * 2 - 1});
-            const float offset = unit() * .9f * domain.extent;
-            n.mean = lt::add3(domain.center, lt::mul3(dir, offset));
-            n.radius = (i % 7u ? unit() : 1.f) * (domain.extent - offset);
-            const float sigma = (i % 3u ? unit() : 1.f) * n.radius;
-            n.variance = sigma * sigma;
-            const float length = i % 11u ? unit() * .9f : 0.f;
-            n.rbar = lt::mul3(lt::normalize3({unit() * 2 - 1, unit() * 2 - 1, unit() * 2 - 1}), length);
+            const float lo[3] = {box.mn.x, box.mn.y, box.mn.z}, hi[3] = {box.mx.x, box.mx.y, box.mx.z};
+            float lower[3], upper[3];
+            for (uint32_t a = 0; a < 3; ++a) {
+                const float t = unit(), u = i % 3u ? unit() : t;
+                lower[a] = (1.f - (std::min)(t, u)) * lo[a] + (std::min)(t, u) * hi[a];
+                upper[a] = (1.f - (std::max)(t, u)) * lo[a] + (std::max)(t, u) * hi[a];
+                lower[a] = std::clamp(lower[a], lo[a], hi[a]);
+                upper[a] = std::clamp(upper[a], lo[a], hi[a]);
+            }
+            n.bmin = {lower[0], lower[1], lower[2]};
+            n.bmax = {upper[0], upper[1], upper[2]};
+            n.axis = lt::normalize3({unit() * 2 - 1, unit() * 2 - 1, unit() * 2 - 1});
             n.cosTheta_o = i % 5u ? unit() * 2 - 1 : 1.f;
+            n.sinTheta_o = std::sqrt((std::max)(0.f, 1.f - n.cosTheta_o * n.cosTheta_o));
             n.power = std::ldexp(1.f + unit(), int(i % 101u) - 50);
             n.triFirst = i;
             n.triCount = 1;
         }
-        nodes[0].mean = domain.center;
-        nodes[0].radius = domain.extent;
-        nodes[0].variance = domain.extent * domain.extent / 9.f;
+        nodes[0].bmin = box.mn;
+        nodes[0].bmax = box.mx;
         nodes[0].firstChild = 1;
         nodes[0].childCount = 4;
         nodes[0].triCount = 0;
         auto packed = lt::PackBLAS(nodes, leafBase);
-        Require(packed.size() == nodes.size() + 1u, "Packed BLAS must have exactly one mesh header");
-        const float meshUnit = lt::LightBLASUnit(domain.extent);
+        Require(packed.size() == nodes.size() + 1u, "Packed BLAS must have exactly one bounds header");
         for (uint32_t i = 0; i < count; ++i) {
             const auto decoded = lt::UnpackBLASNode<lt::LightBLASNodeGpu>(packed.data(), i);
             const auto& original = nodes[i];
-            Require(std::memcmp(&decoded.mean, &original.mean, sizeof(XMFLOAT3)) == 0, "Packed light mean lost FP32 precision");
-            Require(decoded.radius >= original.radius && decoded.radius <= original.radius * 1.002f + 4e-7f * meshUnit,
-                    "CPU decoded light radius shrank or widened beyond the half rounding");
-            Require(decoded.variance >= original.variance * 0.999999f &&
-                        std::sqrt(decoded.variance) <= std::sqrt(original.variance) * 1.002f + 4e-7f * meshUnit,
-                    "CPU decoded light variance shrank or widened beyond the half rounding");
+            Require(decoded.bmin.x <= original.bmin.x && decoded.bmin.y <= original.bmin.y &&
+                        decoded.bmin.z <= original.bmin.z && decoded.bmax.x >= original.bmax.x &&
+                        decoded.bmax.y >= original.bmax.y && decoded.bmax.z >= original.bmax.z,
+                    "CPU decoded light bounds shrank");
             Require(decoded.power == original.power, "Light power lost FP32 precision");
-            Require(decoded.cosTheta_o <= original.cosTheta_o, "CPU decoded light cone narrowed");
-            const float lengthIn = lt::length3(original.rbar), lengthOut = lt::length3(decoded.rbar);
-            Require(lengthOut <= lengthIn * 1.00001f + 1e-7f && lengthOut >= lengthIn * .999f - 1e-3f,
-                    "Mean resultant length sharpened or lost too much precision");
-            if (lengthIn > 1e-3f)
-                Require(lt::dot3(lt::normalize3(decoded.rbar), lt::normalize3(original.rbar)) > std::cos(2e-3f),
-                        "Mean resultant axis lost the octahedral precision");
         }
         // Exercise nonzero mesh offsets and streamed leaf-index rebasing.
         packed.insert(packed.begin(), headerOffset, lt::LightBLASNodePacked{});
@@ -86,10 +73,10 @@ void VerifyLightPacking(Runner& runner) {
         for (uint32_t mode : {47u, 48u}) {
             const auto results = runner.LearningSamples(count, count, mode, headerOffset, 0);
             for (const auto& r : results) {
-                Require(r.x == 1, "GPU decoded light extent shrank or lost the mean");
+                Require(r.x == 1, "GPU decoded light bounds shrank");
                 Require(r.y == 1, "GPU light power changed");
                 Require(r.z == 1, "GPU packed topology/rebased leaf index changed");
-                Require(r.w == 1, "GPU packed cone or emission lobe lost its support");
+                Require(r.w == 1, "GPU packed cone lost angular support");
             }
         }
         // The disabled path must preserve full-precision values, with no mesh header.
@@ -106,7 +93,7 @@ void VerifyLightPacking(Runner& runner) {
             const auto results=runner.LearningSamples(count,count,mode,headerOffset,0);
             for (const auto& r:results)
                 Require(r.x==1 && r.y==1 && r.z==1 && r.w==1,
-                        "GPU full-precision decoding lost extent, power, topology, cone or lobe");
+                        "GPU full-precision decoding lost bounds, power, topology or cone support");
         }
         runner.compactNodes=true;
     }
@@ -128,33 +115,24 @@ void VerifyLightPacking(Runner& runner) {
     });
     // Normal refits preserve IDs. Packing also keeps tombstone slot sentinels.
     std::vector<lt::TLASExtraLeaf> leaves(16);
-    auto placeLeaf = [](lt::TLASExtraLeaf& l, float y) {
-        l.aabb = {{float(l.slot), y, 0}, {float(l.slot) + 1, y + 1, 1}};
-        l.sg.mean = {float(l.slot) + .5f, y + .5f, .5f};
-        l.sg.radius = .87f;
-        l.sg.variance = .25f;
-        l.sg.rbar = {0, 0, .5f};
-        l.sg.theta_o = 0.f;
-        l.sg.power = 1.f;
-    };
     for (uint32_t i = 0; i < leaves.size(); ++i) {
         auto& l = leaves[i];
         l.slot = i;
+        l.aabb = {{float(i), 0, 0}, {float(i) + 1, 1, 1}};
         l.power = 1;
-        placeLeaf(l, 0.f);
     }
     lt::IncrementalTLAS tree;
     tree.rebuild(leaves, 32);
     VerifyNoUnreachableNodes(tree.nodes());
     const auto before = tree.nodes();
     const auto trails = tree.trails();
-    for (auto& l : leaves)
-        placeLeaf(l, 2.f);
+    for (auto& l : leaves) {
+        l.aabb.mn.y += 2;
+        l.aabb.mx.y += 2;
+    }
     tree.update(leaves, 32);
     Require(lt::SameLightTreeTopology(before, tree.nodes()) && trails == tree.trails(),
             "Refit changed stable node identities");
-    Require(tree.nodes()[0].mean.y > before[0].mean.y + 1.5f && tree.nodes()[0].power == before[0].power,
-            "Refit did not move the root cluster with its leaves");
     leaves.erase(leaves.begin() + 3);
     tree.update(leaves, 32);
     const auto after = DecodeTLAS(lt::PackTLAS(tree.nodes()));
@@ -169,6 +147,6 @@ void VerifyLightPacking(Runner& runner) {
     while (!manager.PollResult(result))
         std::this_thread::yield();
     Require(!result.nodes.empty() && result.packedNodes.empty(), "Disabled compaction still encodes refit nodes");
-    std::cout << "Packed light nodes: CPU/GPU conservative extents, lobes and cones, FP32 means and power, stream "
-                 "offsets, compact topology and stable refits passed\n";
+    std::cout << "Packed light nodes: CPU/GPU conservative bounds and cones, FP32 power, stream offsets, compact "
+                 "topology and stable refits passed\n";
 }

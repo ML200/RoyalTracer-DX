@@ -17,8 +17,6 @@ struct PtVertexIO {
     uint   auxPk;    // out: packed radiance or weight, see the result flags
     float3 nee;      // out: direct light of an in-place vertex from its own light sample (PV_NEE)
     float3 neeLite;  // out: the same for the reuse suffix (broad lobes only at the parked vertex)
-    uint4  rcvPk;    // out: packed light-tree receiver of the vertex, for the MIS weight of the
-                     //      emitter hits along the next ray
 };
 
 // Input flags (raygen -> hit/miss shaders).
@@ -68,16 +66,13 @@ uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
 // deferred record is taken, so the vertex resolves its own here, as every vertex did before the
 // split. One light-tree pick and the sun, each with its shadow ray and the MIS weight against the
 // BSDF sample that continues from the vertex; the pick also trains the light tree. liteBroadOnly
-// restricts the reuse-suffix share to the broad lobes, as at the parked vertex. rcvPk is the
-// packed light-tree receiver of the vertex; the pick and the emitter MIS along the next ray
-// unpack the same words, with the normal the next ray carries.
-void PtInlineNee(HitContext ctx, uint4 rcvPk, SamplingP spPath, float3 rayDir, uint pathSeed, uint depth, bool blue,
+// restricts the reuse-suffix share to the broad lobes, as at the parked vertex.
+void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed, uint depth, bool blue,
     uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath, out float3 direct, out float3 liteDirect)
 {
     direct = 0.0f;
     liteDirect = 0.0f;
     const bool useLearnedLights = LTC_UseSurfaceLearning();
-    const LT_Receiver receiver = LT_UnpackReceiver(rcvPk, ctx.hitPos, UnpackNormal(PackNormal(ctx.hitNormal)));
     uint sNee = RcBounceSeed(pathSeed, depth, RC_STREAM_NEE);
     [loop]
     for (uint tech = 0u; tech < 2u; ++tech)
@@ -89,7 +84,7 @@ void PtInlineNee(HitContext ctx, uint4 rcvPk, SamplingP spPath, float3 rayDir, u
         if (tech == 0u)
         {
             if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u) continue;
-            const LT_Sample pick = LT_SampleLight(receiver, sNee, useLearnedLights);
+            const LT_Sample pick = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee, useLearnedLights);
             token = pick.learningToken;
             const LT_LightSampleResult light = LT_SamplePointOnLightTree(ctx.hitPos, pick, sNee);
             const float3 toLight = light.position - ctx.hitPos;
@@ -229,9 +224,6 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     uint sBsdf = RcBounceSeed(pathSeed, depth, RC_STREAM_BSDF);
     SamplingP spPath = CalculateStrategyProbabilities(ctx.matID, -rayDir, n, ctx.iors.x, ctx.iors.y,
         ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm);
-    // The light-tree receiver of this vertex: its light sample and the MIS weight of the
-    // emitter hits along the next ray share these words.
-    const uint4 rcvPk = LT_PackVertexReceiver(ctx, -rayDir);
     const bool liteX2 = depth == 2u && liteVertex;
 
     // --- radiance cache: a diffuse hit ends the path here, or leaves a specular continuation.
@@ -319,7 +311,7 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         {
             // In place after the deferred vertex, and the cache did not end the path here (or it
             // left only the narrow lobes): the vertex takes its own light sample.
-            PtInlineNee(ctx, rcvPk, spPath, rayDir, pathSeed, depth, blue, pixel, blueIndex, liteX2 && cacheSurface,
+            PtInlineNee(ctx, spPath, rayDir, pathSeed, depth, blue, pixel, blueIndex, liteX2 && cacheSurface,
                 depth >= 2u && liteVertex, nee, neeLite);
             res |= PV_NEE;
         }
@@ -440,7 +432,6 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     io.auxPk   = auxPk;
     io.nee     = nee;
     io.neeLite = neeLite;
-    io.rcvPk   = rcvPk;
 }
 
 // Shade the primary vertex from the camera record: the camera pass resolved its surface
@@ -472,11 +463,10 @@ void PtShadePrimary(inout PtVertexIO io, float3 rayDir, uint2 pixel, uint pixelI
 }
 
 // Shade a secondary hit the raygen found: evaluate the surface and the material, then feed the
-// vertex routine. prevPos, prevN and prevRcv are the vertex the ray left, for the MIS weight of
-// an emitter hit against that vertex's light sample.
+// vertex routine. prevPos and prevN are the vertex the ray left, for the MIS weight of an emitter
+// hit against that vertex's light sample.
 void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex,
-    float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, float3 prevN, uint4 prevRcv,
-    uint2 pixel, uint pixelIdx)
+    float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, float3 prevN, uint2 pixel, uint pixelIdx)
 {
     const uint   depth    = (io.flags >> PV_IN_DEPTH_SHIFT) & 0x7Fu;
     const uint primID = FlatPrimID(instID, geometryIndex, primitiveIndex);
@@ -520,8 +510,8 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
             float misWeight = 1.0f;
             if ((io.flags & PV_IN_MIS_NONE) == 0u)
             {
-                const float lightPdfArea = LT_Pdf_LightTree_Area(LT_UnpackReceiver(prevRcv, prevPos, prevN),
-                    hinfo.lightID, instID, LTC_UseSurfaceLearning());
+                const float lightPdfArea = LT_Pdf_LightTree_Area(prevPos, prevN, hinfo.lightID, instID,
+                    LTC_UseSurfaceLearning());
                 const float cosLight   = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
                 const float lightPdfSA = (cosLight > EPSILON) ? (lightPdfArea * max(hitT * hitT, EPSILON) / cosLight) : 0.0f;
                 misWeight = io.pdf / max(io.pdf + lightPdfSA, EPSILON);

@@ -241,10 +241,13 @@ bool LTC_Update(uint cell,uint cellSlot) {
         [unroll] for(uint k=0;k<4u;++k) if(k<children) {
             uint destination=LTC_Cluster(cell,k==0u?j:count+k-1u);
             float ratio=priorSum>0?priors[k]/priorSum:1.0f/float(children);
-
-            float A=pow(1.0f-alpha,ratio*float(visits));
-            float calibratedPrior=ratio*parentQ;
-            float q=A*calibratedPrior+(1.0f-A)*parentQ;
+            // A child starts with the share of its parent's learned weight that the prior
+            // predicts for it, so a split leaves the mass of the cut where it was and its own
+            // rewards take the child over within a few updates. Starting every child at the
+            // parent's whole weight instead, to have them all sampled until those rewards
+            // arrive, multiplies the weight of a freshly split region by its child count and
+            // costs far more variance than the exploration is worth.
+            float q=ratio*parentQ;
             LTC_ClearCluster(destination);LTC_StoreNode(destination,LTC_Child(parent,first,k));
             g_sharc.Store(LTC_Stats(destination)+LT_ST_Q,asuint(q));
         }

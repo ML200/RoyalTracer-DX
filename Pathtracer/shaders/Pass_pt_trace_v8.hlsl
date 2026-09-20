@@ -64,7 +64,6 @@ void Pass_pt_trace_v8()
     // record itself.
     uint inFlags = PvInputFlags(ps, false, false, false);
     float3 prevN = float3(0.0f, 0.0f, 1.0f);   // shading normal of the vertex the ray left
-    uint4  prevRcv = 0u;                       // its packed light-tree receiver
 
     [loop]
     for (;;)
@@ -76,7 +75,6 @@ void Pass_pt_trace_v8()
         PtVertexIO io;
         io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist;
         io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u; io.nee = 0.0f; io.neeLite = 0.0f;
-        io.rcvPk = 0u;
         if (depth == 1u)
             PtShadePrimary(io, rayDir, pixel, pixelIdx);
         else if (hitObj.IsHit())
@@ -84,7 +82,7 @@ void Pass_pt_trace_v8()
             BuiltInTriangleIntersectionAttributes attr;
             hitObj.GetAttributes(attr);
             PtShadeHit(io, hitObj.GetInstanceID(), hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex(),
-                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pos, prevN, prevRcv, pixel, pixelIdx);
+                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pos, prevN, pixel, pixelIdx);
         }
         else
             PtShadeMiss(io, ray.Origin, rayDir);
@@ -210,7 +208,6 @@ void Pass_pt_trace_v8()
         rayDir = UnpackNormal(io.dirPk);
         const float3 vertexN = UnpackNormal(io.nPk);
         prevN = vertexN;
-        prevRcv = io.rcvPk;
         ray.Origin    = offset_ray(pos, (dot(rayDir, vertexN) >= 0.0f) ? vertexN : -vertexN);
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;

@@ -176,12 +176,10 @@ private:
         uint64_t recOff = 0, recCount = 0;
         uint64_t nodeOff = 0, nodeCount = 0;
         uint32_t litOpaque = 0, litAlpha = 0;
-        // The root SG light cluster of the chunk's mesh tree, in chunk space.
         float bmin[3] = {}, bmax[3] = {};
-        float mean[3] = {}, variance = 0.0f;
-        float rbar[3] = {}, radius = 0.0f;
         float power = 0.0f;
-        float cosTheta = -1.0f;
+        float axis[3] = { 0, 0, 1 };
+        float cosTheta = -1.0f, sinTheta = 0.0f;
         uint32_t gen = 0;
         bool compactNodes = true;
         bool valid() const { return recCount > 0; }

@@ -346,10 +346,7 @@ void VerifyBoundaryTree(Runner& runner, uint32_t depth, bool deepTlas) {
     std::vector<uint32_t> indices;
     std::vector<float> expected;
     std::function<void(uint32_t, uint32_t, uint64_t, float)> build = [&](uint32_t ni, uint32_t d, uint64_t path, float p) {
-        // Identical isotropic clusters: every level picks uniformly, and a receiver facing away
-        // from them (mode 0) culls them all, which also picks uniformly.
-        nodes[ni].mean = {0,0,.5f}; nodes[ni].radius = 1.5f; nodes[ni].variance = .5f;
-        nodes[ni].rbar = {0,0,0}; nodes[ni].cosTheta_o = -1.f; nodes[ni].power = 1.f;
+        nodes[ni].bmin = {-1,-1,0}; nodes[ni].bmax = {1,1,1}; nodes[ni].axis = {0,0,1};
         if (d == depth) {
             nodes[ni].triFirst = UINT(indices.size()); nodes[ni].triCount = 1;
             indices.push_back(UINT(indices.size())); trails.push_back(path); expected.push_back(invalidTree ? 0.0f : p);
@@ -412,10 +409,8 @@ void VerifyBoundaryTree(Runner& runner, uint32_t depth, bool deepTlas) {
 
 void VerifyConeGeometry(Runner& runner) {
     auto metrics=runner.LearningSamples(2,2,5,0,0);
-    Require(metrics[0].x>0 && std::isfinite(metrics[0].x),"Front-facing SG importance is not positive");
-    Require(metrics[0].y==0,"Back-facing emission cone was not culled");
-    Require(metrics[0].z==0,"Cluster below the receiver's horizon was not culled");
-    Require(std::abs(metrics[0].w-4)<.2f,"Far-field SG importance does not fall off with the inverse square distance");
+    Require(std::abs(metrics[0].x-.5f)<1e-6 && metrics[0].y==0,"Back-facing cone importance is incorrect");
+    Require(std::abs(metrics[0].z-4*metrics[0].w)<1e-4,"Near-field distance regularization is not scale consistent");
     const auto normal=lt::normalize3({2,3,4});
     Require(lt::length3(lt::sub3({metrics[1].x,metrics[1].y,metrics[1].z},normal))<1e-6f && metrics[1].w==0,"Receiver-normal transform incorrect");
     lt::Cone ca,cb;ca.axis={1,0,0};ca.theta_o=.7f;cb.axis={-1,0,0};cb.theta_o=.1f;
@@ -425,11 +420,6 @@ void VerifyConeGeometry(Runner& runner) {
     LightTriangle tri{};tri.x={0,0,0};tri.y={0,2,0};tri.z={3,0,0};tri.weight=2;tri.meshID=0;
     std::vector<LightTriangle> tris{tri};auto roots=lt::ComputeBLASLocalRoots(tris);
     Require(roots.size()==1 && roots[0].localCone.theta_o==0,"Refit cone lost the emitter orientation");
-    Require(roots[0].sg.theta_o==0 && std::abs(lt::length3(roots[0].sg.rbar)-.5f)<1e-6f && roots[0].sg.power==tri.weight &&
-        std::abs(roots[0].sg.mean.x-1.f)<1e-6f && std::abs(roots[0].sg.mean.y-2.f/3.f)<1e-6f,
-        "Refit cluster lost the triangle's mean, flux or emission lobe");
-    Require(std::abs(roots[0].sg.variance-(4.f+9.f)/18.f)<1e-6f && roots[0].sg.radius>=2.f,
-        "Refit cluster variance or enclosing radius is wrong");
     std::vector<InstanceXformCPU> transforms(1);
     XMStoreFloat4x4(&transforms[0].objectToWorld,XMMatrixScaling(-2,3,4)*XMMatrixRotationY(.4f)*XMMatrixTranslation(100,200,-300));
     lt::LightTreeBuilder builder;builder.Build(tris,transforms);builder.UploadAll(runner.device.Get(),runner.commands.Get());
@@ -437,42 +427,18 @@ void VerifyConeGeometry(Runner& runner) {
     auto initial=DecodeTLAS(runner.Read<lt::LightTLASNodePacked>(builder.GetGpu().TLASNodes.Get()));
     lt::TLASRebuilder rebuilder;auto refit=rebuilder.Build(roots,transforms);
     const auto& a=initial[0];const auto& b=refit.nodes[0];
-    auto rebased=initial;rebased[0].mean.x-=1000;
+    auto rebased=initial;rebased[0].bmin.x-=1000;rebased[0].bmax.x-=1000;
     Require(lt::SameLightTreeTopology(initial,rebased),"Origin rebase invalidates unchanged light topology");
     rebased[0].slot+=1;
     Require(!lt::SameLightTreeTopology(initial,rebased),"Changed leaf identity retained learned node references");
     std::vector<lt::LightTLASNodeGpu> topology(3);topology[0].childCount=2;topology[0].firstChild=1;
     auto changedTopology=topology;changedTopology[0].firstChild=2;
     Require(!lt::SameLightTreeTopology(topology,changedTopology),"Changed edge retained learned node references");
-    // The packed top level keeps the mean, variance, radius and flux in FP32.
-    Require(std::memcmp(&a.mean,&b.mean,sizeof(XMFLOAT3))==0 && a.variance==b.variance && a.radius==b.radius &&
-        a.power==b.power,"Initial/refit world clusters disagree");
-    Require(a.variance>0 && a.radius>0 && std::abs(a.variance*1.f)<a.radius*a.radius,"Transformed cluster lost its extent");
+    Require(std::memcmp(&a.bmin,&b.bmin,sizeof(XMFLOAT3))==0 && std::memcmp(&a.bmax,&b.bmax,sizeof(XMFLOAT3))==0,"Initial/refit world bounds disagree");
     lt::LightTreeRefitManager manager;
     manager.RequestRefit(roots,transforms);manager.DiscardPending();
     lt::TLASRefitResult discarded;Require(!manager.IsPending() && !manager.PollResult(discarded),"Obsolete refit survived an emission rebuild");
     std::cout<<"Cone support and initial/refit affine transforms passed\n";
-}
-// The GPU node importance against a float64 evaluation of the same formulas: a diffuse receiver
-// facing a small cluster, a glossy one seen at a slant, an anisotropic one at grazing incidence,
-// and a receiver inside a broad cluster.
-void VerifyImportanceReference(Runner& runner) {
-    struct Case { const char* name; XMFLOAT4 records[7]; float expected; };
-    const Case cases[] = {
-        {"diffuse, facing", {{0,0,-2,1.f},{0,0,1,0.f},{0,0,1,1.f},{1,0,0,1.f},{.3f,.1f,0,1e-3f},{0,0,-1,.5f},{2.f,.15f,1.f,0}}, 4.4872800e-02f},
-        {"glossy 0.3, slanted", {{0,0,-2,.4f},{0,0,1,.6f},{.6f,.1f,.8f,.3f},{1,0,0,.3f},{-1.2f,-.2f,0,2e-2f},{.2f,0,-1,.5f},{3.f,.3f,1.f,0}}, 1.6117747e-02f},
-        {"anisotropic, grazing", {{0,0,-1,.2f},{0,0,1,.8f},{.9f,.2f,.3f,.05f},{0,1,0,.4f},{-3.f,-.5f,.5f,.5f},{.3f,.1f,-1,.3f},{5.f,1.f,.7f,0}}, 2.6391929e-03f},
-        {"inside cluster", {{0,0,-.1f,.7f},{.1f,0,1,.3f},{0,0,1,.5f},{1,0,0,.5f},{0,0,0,4.f},{0,0,-1,.1f},{10.f,3.f,-1.f,0}}, 5.9607769e-02f},
-    };
-    std::vector<XMFLOAT4> records;
-    for (const auto& c : cases) for (const auto& r : c.records) records.push_back(r);
-    auto input=runner.Upload(records);runner.Srv(input.Get(),19,sizeof(XMFLOAT4));runner.Flush();
-    const auto values=runner.LearningSamples(1,4,49,0,0);
-    for (size_t i=0;i<4;++i) {
-        const float got=values[i].x,want=cases[i].expected;
-        std::cout<<"Importance "<<cases[i].name<<": "<<got<<" (reference "<<want<<")\n";
-        Require(std::isfinite(got) && std::abs(got-want)<=want*2e-3f,"GPU node importance departs from the reference implementation");
-    }
 }
 uint32_t LearningHash(uint32_t v) {v^=v>>16;v*=0x7feb352du;v^=v>>15;v*=0x846ca68bu;return v^(v>>16);}
 void VerifyAdaptiveCells(Runner& runner) {
@@ -1143,16 +1109,12 @@ void VerifyAtomicAccumulation(Runner& runner) {
     std::cout<<"Native atomic sums: full FP32 exponent range, exact carries, 1080p contention, zeros and record reuse passed\n";
 }
 
-// lights beyond the 128-light fixture spread over the receivers' 16 m extent, in one mesh or in
-// meshes of meshLights each, so the traversal runs at scene depth.
-void BenchmarkLearning(Runner& runner, bool hotOnly=false, UINT lights=128u, UINT meshLights=0u) {
-    constexpr UINT receiversCount=512,work=1920*1080;
+void BenchmarkLearning(Runner& runner, bool hotOnly=false) {
+    constexpr UINT lights=128,receiversCount=512,work=1920*1080;
     std::vector<LightTriangle> tris(lights);
-    const UINT cols=lights==128u?16u:(UINT)std::ceil(std::sqrt((double)lights));
-    const float spacing=lights==128u?.025f:16.0f/float(cols),size=lights==128u?.01f:spacing*.4f;
     for(UINT i=0;i<lights;++i) {
-        auto& t=tris[i];float x=float(i%cols)*spacing,y=float(i/cols)*spacing;
-        t.x={x,y,0};t.y={x,y+size,0};t.z={x+size,y,0};t.weight=1;t.meshID=meshLights?i/meshLights:0u;
+        auto& t=tris[i];float x=float(i%16)*.025f,y=float(i/16)*.025f;
+        t.x={x,y,0};t.y={x,y+.01f,0};t.z={x+.01f,y,0};t.weight=1;t.meshID=0;
     }
     lt::LightTreeBuilder builder;builder.Build(tris);builder.UploadAll(runner.device.Get(),runner.commands.Get());
     builder.WriteSrvs(runner.device.Get(),runner.Handle(9));builder.WriteLookupSrvs(runner.device.Get(),runner.Handle(16));builder.WriteSlotSrv(runner.device.Get(),runner.Handle(7));
@@ -1204,16 +1166,6 @@ void BenchmarkLearning(Runner& runner, bool hotOnly=false, UINT lights=128u, UIN
         const char* label=mode==14?"sample":mode==13?"feedback":mode==15?"sample+feedback":"sample+PDF";
         std::cout<<(divergent?"scattered ":"coherent ")<<label<<" "<<(flags?"learning":"ordinary")<<": "<<ms[2]<<" ms\n";
     }
-    // The same queries for a glossy receiver, whose importance also evaluates the filtered lobe.
-    for(UINT divergent:{0u,0x80000000u}) for(UINT mode : {50u,51u}) for(UINT flags : {0u,UINT(LT_FLAG_LEARNING)}) {
-        auto warmup=runner.LearningSamples(receiversCount,work,mode,123u|divergent,flags);
-        if(mode==51u) for(const auto& value:warmup)
-            Require(value.y>0 && std::abs(value.y-value.z)<value.y*3e-5f,"Glossy-receiver sampling and matching PDF disagree");
-        std::array<double,5> ms{};
-        for(UINT i=0;i<ms.size();++i) runner.LearningSamples(receiversCount,work,mode,(54321+i)|divergent,flags,&ms[i]);
-        std::sort(ms.begin(),ms.end());
-        std::cout<<(divergent?"scattered ":"coherent ")<<(mode==50u?"glossy sample":"glossy sample+PDF")<<" "<<(flags?"learning":"ordinary")<<": "<<ms[2]<<" ms\n";
-    }
     for(bool idle:{false,true}) {
         std::array<double,5> ms{};
         for(UINT i=0;i<ms.size();++i) {
@@ -1244,7 +1196,7 @@ void BenchmarkLearning(Runner& runner, bool hotOnly=false, UINT lights=128u, UIN
 }
 int main(int argc, char** argv) {
     try {
-        Require(argc >= 2 && argc <= 5, "Expected shader directory and optional --benchmark [lights [lights per mesh]]");
+        Require(argc == 2 || argc == 3, "Expected shader directory and optional --benchmark");
         for (uint32_t d = 0; d < LT_TRAIL_MAX_DEPTH; ++d) {
             const uint32_t capacity = uint32_t(uint64_t{1} << (31u - d));
             Require(!lt::LightTreeNeedsBalancedSplit(capacity, d), "Unnecessary median split");
@@ -1257,8 +1209,7 @@ int main(int argc, char** argv) {
         Runner runner(argv[1]);
         if(argc==3 && std::string(argv[2])=="--surface") {VerifySurfaceLearning(runner);return 0;}
         if(argc==3 && std::string(argv[2])=="--cold-lod") {VerifyColdLodTransition(runner);return 0;}
-        if(argc>=3) {std::string option=argv[2];if(option=="--grid-review"){VerifyGridReview(runner);return 0;}if(option=="--lod"){VerifyIntermediateDistance(runner);return 0;}if(option=="--recovery"){VerifyCutRecovery(runner);VerifyCutRecovery(runner,true);return 0;}Require(option=="--benchmark" || option=="--hot-benchmark","Unknown option");
-            BenchmarkLearning(runner,option=="--hot-benchmark",argc>=4?(UINT)std::atoi(argv[3]):128u,argc>=5?(UINT)std::atoi(argv[4]):0u);return 0;}
+        if(argc==3) {std::string option=argv[2];if(option=="--grid-review"){VerifyGridReview(runner);return 0;}if(option=="--lod"){VerifyIntermediateDistance(runner);return 0;}if(option=="--recovery"){VerifyCutRecovery(runner);VerifyCutRecovery(runner,true);return 0;}Require(option=="--benchmark" || option=="--hot-benchmark","Unknown option");BenchmarkLearning(runner,option=="--hot-benchmark");return 0;}
         D3D12_SHADER_RESOURCE_VIEW_DESC nullSrv{};
         nullSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         nullSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1294,7 +1245,6 @@ int main(int argc, char** argv) {
             VerifyBuiltTree(runner, builder, tris, instances, false);
         }
         VerifyConeGeometry(runner);
-        VerifyImportanceReference(runner);
         runner.compactNodes=false;
         VerifyLearning(runner,false);
         VerifyLearning(runner,true);

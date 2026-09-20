@@ -49,105 +49,14 @@ inline float PackedLightCosine(float cosine) {
     return (std::max)(-1.f, std::nextafter(float(expanded), -std::numeric_limits<float>::infinity()));
 }
 
-// IEEE half conversions, with a directed variant for the conservatively rounded fields.
-inline uint16_t FloatToHalfBits(float value) {
-    uint32_t f;
-    std::memcpy(&f, &value, sizeof(f));
-    const uint32_t sign = (f >> 16u) & 0x8000u;
-    const uint32_t exponent = (f >> 23u) & 0xFFu;
-    uint32_t mantissa = f & 0x7FFFFFu;
-    if (exponent == 0xFFu)
-        return uint16_t(sign | 0x7C00u | (mantissa ? 0x200u : 0u));
-    const int32_t e = int32_t(exponent) - 127 + 15;
-    if (e >= 31)
-        return uint16_t(sign | 0x7C00u);
-    if (e <= 0) {
-        if (e < -10)
-            return uint16_t(sign);
-        mantissa |= 0x800000u;
-        const uint32_t shift = uint32_t(14 - e);
-        uint32_t half = mantissa >> shift;
-        const uint32_t remainder = mantissa & ((1u << shift) - 1u), halfway = 1u << (shift - 1u);
-        if (remainder > halfway || (remainder == halfway && (half & 1u)))
-            ++half;
-        return uint16_t(sign | half);
-    }
-    uint32_t half = (uint32_t(e) << 10u) | (mantissa >> 13u);
-    const uint32_t remainder = mantissa & 0x1FFFu;
-    if (remainder > 0x1000u || (remainder == 0x1000u && (half & 1u)))
-        ++half;
-    return uint16_t(sign | half);
-}
-inline float HalfBitsToFloat(uint16_t h) {
-    const uint32_t sign = uint32_t(h & 0x8000u) << 16u;
-    uint32_t exponent = (h >> 10u) & 0x1Fu, mantissa = h & 0x3FFu, f;
-    if (exponent == 0u) {
-        if (mantissa == 0u)
-            f = sign;
-        else {
-            exponent = 1u;
-            while ((mantissa & 0x400u) == 0u) {
-                mantissa <<= 1u;
-                --exponent;
-            }
-            f = sign | ((exponent + 127u - 15u) << 23u) | ((mantissa & 0x3FFu) << 13u);
-        }
-    } else if (exponent == 31u)
-        f = sign | 0x7F800000u | (mantissa << 13u);
-    else
-        f = sign | ((exponent + 127u - 15u) << 23u) | (mantissa << 13u);
-    float value;
-    std::memcpy(&value, &f, sizeof(value));
-    return value;
-}
-// The half nearest to value, moved one ulp towards +inf (up) or -inf (down) when it fell on the
-// other side, and kept finite.
-inline uint16_t HalfDirected(float value, bool up) {
-    value = std::clamp(value, -65504.f, 65504.f);
-    uint16_t h = FloatToHalfBits(value);
-    const float back = HalfBitsToFloat(h);
-    if ((up && back < value) || (!up && back > value)) {
-        const bool negative = (h & 0x8000u) != 0u;
-        if ((h & 0x7FFFu) == 0u)
-            h = up ? 0x0001u : 0x8001u;
-        else if (negative == up)
-            --h;
-        else
-            ++h;
-        if ((h & 0x7FFFu) >= 0x7C00u)
-            h = uint16_t((h & 0x8000u) | 0x7BFFu);
-    }
-    return h;
-}
-inline uint32_t PackHalf2(float low, bool lowUp, float high, bool highUp) {
-    return uint32_t(HalfDirected(low, lowUp)) | (uint32_t(HalfDirected(high, highUp)) << 16u);
-}
-inline float UnpackHalfLow(uint32_t v) { return HalfBitsToFloat(uint16_t(v & 0xFFFFu)); }
-inline float UnpackHalfHigh(uint32_t v) { return HalfBitsToFloat(uint16_t(v >> 16u)); }
-
-inline float MeanResultantLength(const DirectX::XMFLOAT3& r) { return std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z); }
-inline DirectX::XMFLOAT3 MeanResultantAxis(const DirectX::XMFLOAT3& r) {
-    const float len = MeanResultantLength(r);
-    return len > 1e-9f ? DirectX::XMFLOAT3{r.x / len, r.y / len, r.z / len} : DirectX::XMFLOAT3{0, 0, 1};
-}
-inline DirectX::XMFLOAT3 MeanResultantOf(uint32_t axis, float length) {
-    const DirectX::XMFLOAT3 a = UnpackLightAxis(axis);
-    return {a.x * length, a.y * length, a.z * length};
-}
-// The mean resultant length rounds down (a blurrier lobe) and the cone cosine rounds down (a
-// wider cone): both towards the conservative side.
-inline uint32_t PackLengthCosine(const DirectX::XMFLOAT3& rbar, float cosTheta_o) {
-    return PackHalf2((std::min)(MeanResultantLength(rbar), 1.f), false, PackedLightCosine(cosTheta_o), false);
-}
-
 template <class Node> inline LightTLASNodePacked PackTLASNode(const Node& n) {
     LightTLASNodePacked p{};
-    p.mean = n.mean;
+    p.bmin = n.bmin;
+    p.bmax = n.bmax;
     p.power = n.power;
-    p.variance = n.variance;
-    p.radius = n.radius;
-    p.axis = PackLightAxis(MeanResultantAxis(n.rbar));
-    p.lengthCos = PackLengthCosine(n.rbar, n.cosTheta_o);
+    p.axis = PackLightAxis(n.axis);
+    p.cosTheta_o = PackedLightCosine(n.cosTheta_o);
+    p.sinTheta_o = std::sqrt((std::max)(0.f, 1.f - p.cosTheta_o * p.cosTheta_o));
     p.index = n.childCount ? n.firstChild : n.slot;
     p.childCount = n.childCount;
     return p;
@@ -161,45 +70,59 @@ template <class Node> inline std::vector<LightTLASNodePacked> PackTLAS(const std
 }
 template <class Node> inline Node UnpackTLASNode(const LightTLASNodePacked& p) {
     Node n{};
-    n.mean = p.mean;
+    n.bmin = p.bmin;
+    n.bmax = p.bmax;
     n.power = p.power;
-    n.variance = p.variance;
-    n.radius = p.radius;
-    n.rbar = MeanResultantOf(p.axis, UnpackHalfLow(p.lengthCos));
-    n.cosTheta_o = UnpackHalfHigh(p.lengthCos);
+    n.axis = UnpackLightAxis(p.axis);
+    n.cosTheta_o = p.cosTheta_o;
+    n.sinTheta_o = p.sinTheta_o;
     n.firstChild = p.childCount ? p.index : UINT32_MAX;
     n.childCount = p.childCount;
     n.slot = p.childCount ? UINT32_MAX : p.index;
     return n;
 }
 
-// The unit of a packed mesh: twice its root radius, which every member radius and standard
-// deviation stays below.
-inline float LightBLASUnit(float rootRadius) { return (std::max)(2.f * rootRadius, 1e-30f); }
-
+inline uint32_t QuantizeLightBounds(float low, float high, float origin, float end) {
+    if (origin == end)
+        return 0u;
+    const double scale = 65535.0 / (double(end) - double(origin));
+    // An extra grid unit covers FP32 lerp error, including fused vs unfused
+    // decode. Endpoints decode to the exact header bounds in both languages.
+    const auto lo = uint32_t(std::clamp(std::floor((double(low) - origin) * scale) - 1.0, 0.0, 65535.0));
+    const auto hi = uint32_t(std::clamp(std::ceil((double(high) - origin) * scale) + 1.0, 0.0, 65535.0));
+    return lo | (hi << 16u);
+}
+inline float UnpackLightBound(uint32_t q, float origin, float end, bool upper) {
+    if (q == 0u)
+        return origin;
+    if (q == 65535u)
+        return end;
+    const float t = float(q) * (1.f / 65535.f);
+    const float v = (1.f - t) * origin + t * end;
+    const float direction = upper ? std::numeric_limits<float>::infinity() : -std::numeric_limits<float>::infinity();
+    return std::clamp(std::nextafter(std::nextafter(v, direction), direction), origin, end);
+}
 template <class Node>
 inline std::vector<LightBLASNodePacked> PackBLAS(const std::vector<Node>& nodes, uint32_t leafBase = 0u) {
     if (nodes.empty())
         return {};
     std::vector<LightBLASNodePacked> result(nodes.size() + 1u);
-    const float unit = LightBLASUnit(nodes[0].radius);
-    const float header[8] = {unit, 0, 0, 0, 0, 0, 0, 0};
+    const auto lo = nodes[0].bmin, hi = nodes[0].bmax;
+    const float header[8] = {lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, 0, 0};
     std::memcpy(&result[0], header, sizeof(header));
     for (size_t i = 0; i < nodes.size(); ++i) {
         const auto& n = nodes[i];
         auto& p = result[i + 1u];
         if (!n.childCount && n.triCount != 1u)
             throw std::logic_error("Packed light BLAS requires one triangle per leaf");
-        const uint32_t index = n.childCount ? n.firstChild : n.triFirst + leafBase;
-        if (index > LT_PACKED_INDEX_MASK || n.childCount > 4u)
-            throw std::logic_error("Packed light BLAS index does not fit its field");
-        p.mean = n.mean;
+        p.boundsX = QuantizeLightBounds(n.bmin.x, n.bmax.x, lo.x, hi.x);
+        p.boundsY = QuantizeLightBounds(n.bmin.y, n.bmax.y, lo.y, hi.y);
+        p.boundsZ = QuantizeLightBounds(n.bmin.z, n.bmax.z, lo.z, hi.z);
         p.power = n.power;
-        p.axis = PackLightAxis(MeanResultantAxis(n.rbar));
-        // A wider cluster is the conservative one: both round up.
-        p.sigmaRadius = PackHalf2(std::sqrt((std::max)(n.variance, 0.f)) / unit, true, n.radius / unit, true);
-        p.lengthCos = PackLengthCosine(n.rbar, n.cosTheta_o);
-        p.indexCount = index | (n.childCount << LT_PACKED_INDEX_BITS);
+        p.axis = PackLightAxis(n.axis);
+        p.cosTheta_o = PackedLightCosine(n.cosTheta_o);
+        p.index = n.childCount ? n.firstChild : n.triFirst + leafBase;
+        p.childCount = n.childCount;
     }
     return result;
 }
@@ -208,18 +131,20 @@ template <class Node> inline Node UnpackBLASNode(const LightBLASNodePacked* mesh
     std::memcpy(h, mesh, sizeof(h));
     const auto& p = mesh[index + 1u];
     Node n{};
-    n.mean = p.mean;
+    n.bmin = {UnpackLightBound(p.boundsX & 65535u, h[0], h[3], false),
+              UnpackLightBound(p.boundsY & 65535u, h[1], h[4], false),
+              UnpackLightBound(p.boundsZ & 65535u, h[2], h[5], false)};
+    n.bmax = {UnpackLightBound(p.boundsX >> 16u, h[0], h[3], true),
+              UnpackLightBound(p.boundsY >> 16u, h[1], h[4], true),
+              UnpackLightBound(p.boundsZ >> 16u, h[2], h[5], true)};
     n.power = p.power;
-    const float sigma = UnpackHalfLow(p.sigmaRadius) * h[0];
-    n.variance = sigma * sigma;
-    n.radius = UnpackHalfHigh(p.sigmaRadius) * h[0];
-    n.rbar = MeanResultantOf(p.axis, UnpackHalfLow(p.lengthCos));
-    n.cosTheta_o = UnpackHalfHigh(p.lengthCos);
-    const uint32_t count = p.indexCount >> LT_PACKED_INDEX_BITS, idx = p.indexCount & LT_PACKED_INDEX_MASK;
-    n.firstChild = count ? idx : UINT32_MAX;
-    n.childCount = count;
-    n.triFirst = count ? 0u : idx;
-    n.triCount = count ? 0u : 1u;
+    n.axis = UnpackLightAxis(p.axis);
+    n.cosTheta_o = p.cosTheta_o;
+    n.sinTheta_o = std::sqrt((std::max)(0.f, 1.f - p.cosTheta_o * p.cosTheta_o));
+    n.firstChild = p.childCount ? p.index : UINT32_MAX;
+    n.childCount = p.childCount;
+    n.triFirst = p.childCount ? 0u : p.index;
+    n.triCount = p.childCount ? 0u : 1u;
     return n;
 }
 } // namespace lt

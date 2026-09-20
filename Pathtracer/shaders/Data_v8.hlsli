@@ -54,41 +54,24 @@ struct MatPacked {
 
 #include "LightTreePacked.h"
 
-// Full-precision storage of the SG light clusters (matches lt::LightTLASNodeGpu and
-// lt::LightBLASNodeGpu on the host); the compact layouts live in LightTreePacked.h.
-struct LightTLASNodeFull
-{
-    float3 mean;     float variance;
-    float3 rbar;     float power;
-    float  radius;   float cosTheta_o; uint firstChild; uint childCount;
-    uint   slot;     uint3 _pad;
-};
-struct LightBLASNodeFull
-{
-    float3 mean;     float variance;
-    float3 rbar;     float power;
-    float  radius;   float cosTheta_o; uint firstChild; uint childCount;
-    uint   triFirst; uint  triCount;   uint2 _pad;
-};
-
-// Traversal values; the selected GPU layout is decoded by LightTreeDecode.hlsli. The mean
-// resultant vector of the emission directions becomes the vMF axis and sharpness.
+// Traversal values; the selected GPU layout is decoded by LightTreeDecode.hlsli.
 struct LightTLASNodeGpu
 {
-    float3 mean;     float variance;
-    float3 axis;     float kappa;
-    float  power;    float radius;   float cosTheta_o;
+    float3 bmin;     float power;
+    float3 bmax;     float cosTheta_o;
+    float3 axis;     float sinTheta_o;
 
     uint   firstChild;
     uint   childCount;
     uint   slot;
+    uint   _pad;
 };
 
 struct LightBLASNodeGpu
 {
-    float3 mean;     float variance;
-    float3 axis;     float kappa;
-    float  power;    float radius;   float cosTheta_o;
+    float3 bmin;     float power;
+    float3 bmax;     float cosTheta_o;
+    float3 axis;     float sinTheta_o;
 
     uint   firstChild;
     uint   childCount;

@@ -253,13 +253,11 @@ float LTC_Probability(uint address,uint count,float sum,float powerSum) {
     return sum>0?0.95f*LTC_Weight(address)/sum+0.05f*explore:explore;
 }
 float LTC_FrozenProbability(uint address) { return asfloat(g_sharc.Load(address+LT_FZ_PROBABILITY)); }
-float LTC_Prior(LTC_Node c,LT_Receiver R) {
-    if(c.slot==LT_SENTINEL) return LT_NodeImportance_TLAS(LT_LoadTLAS(c.node),R);
+float LTC_Prior(LTC_Node c,float3 x,float3 n) {
+    if(c.slot==LT_SENTINEL) return LT_NodeImportance_TLAS(LT_LoadTLAS(c.node),x,n);
     LightSlotGpu s=gLT_Slot[c.slot];
-    return LT_NodeImportance_BLAS(LT_LoadBLAS(s.nodeOffset,c.node),R,s.worldToLocal)*s.powerScale;
+    return LT_NodeImportance_BLAS(LT_LoadBLAS(s.nodeOffset,c.node),x,n,s.worldToLocal)*s.powerScale;
 }
-// A cell stands for many materials and view directions: its prior is the diffuse importance.
-float LTC_Prior(LTC_Node c,float3 x,float3 n) { return LTC_Prior(c,LT_DiffuseReceiver(x,n)); }
 uint LTC_Children(inout LTC_Node c,out uint first) {
     first=0;
     if(c.slot==LT_SENTINEL) {
@@ -303,7 +301,7 @@ uint LTC_ClusterForTriangle(uint cell,uint count,uint tri,uint slot) {
 }
 
 // Evaluate a triangle PDF inside one frozen cut.
-float LTC_CellPdf(LT_Receiver R,uint cell,uint tri,uint slot,out uint token) {
+float LTC_CellPdf(float3 x,float3 n,uint cell,uint tri,uint slot,out uint token) {
     token=0u;
     uint node=0u,start=LT_SENTINEL,depth=0u;float probability=1.0f;
     uint count=cell==LT_SENTINEL?0u:g_sharc.Load(cell+4u);
@@ -313,10 +311,7 @@ float LTC_CellPdf(LT_Receiver R,uint cell,uint tri,uint slot,out uint token) {
         LTC_Node c=LTC_LoadNode(a);
         node=c.node;start=c.slot;depth=c.depth;probability=LTC_FrozenProbability(a);
     }
-    return probability*LT_PdfSubtree(R,tri,slot,node,start,depth);
-}
-float LTC_CellPdf(float3 x,float3 n,uint cell,uint tri,uint slot,out uint token) {
-    return LTC_CellPdf(LT_DiffuseReceiver(x,n),cell,tri,slot,token);
+    return probability*LT_PdfSubtree(x,n,tri,slot,node,start,depth);
 }
 uint LTC_RefreshToken(float3 x,float3 n,uint cell,uint tri,uint slot,uint ticket) {
     if(ticket>=4u || LTC_Index(cell)>=LT_GRID_CAPACITY) return 0u;
@@ -329,8 +324,8 @@ uint LTC_RefreshToken(float3 x,float3 n,uint cell,uint tri,uint slot,uint ticket
     return a==LT_SENTINEL?0u:LTC_ClusterIndex(a)+1u;
 }
 // Sample the learned mixture, then attach training tokens.
-LT_Sample LT_SampleLight(LT_Receiver R,inout uint rng,bool useLearning=true) {
-    const float3 x=R.x,n=R.n;
+LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true) {
+
     LTC_Proposal proposal=(LTC_Proposal)0;
     const bool learned=useLearning && LTC_GetProposal(x,n,proposal,true);
     uint cell=LT_SENTINEL,chosen=0u,node=0u,start=LT_SENTINEL;
@@ -376,7 +371,7 @@ LT_Sample LT_SampleLight(LT_Receiver R,inout uint rng,bool useLearning=true) {
     }
 
     uint sampleSlot;
-    LT_Sample sample=LT_SampleSubtree(R,rng,node,start,sampleSlot);
+    LT_Sample sample=LT_SampleSubtree(x,n,rng,node,start,sampleSlot);
     if(cell!=LT_SENTINEL) {
         sample.pdf*=probability;
         // A pick that finds no light (the cluster lies behind the receiver) still trains its
@@ -390,7 +385,7 @@ LT_Sample LT_SampleLight(LT_Receiver R,inout uint rng,bool useLearning=true) {
     else if(proposal.coarse!=proposal.fine) pdfCell=proposal.coarse;
     if(pdfCell!=LT_SENTINEL) {
         uint otherToken;
-        float other=LTC_CellPdf(R,pdfCell,sample.id,sampleSlot,otherToken);
+        float other=LTC_CellPdf(x,n,pdfCell,sample.id,sampleSlot,otherToken);
         if(proposal.blend>0.0f) {
             sample.pdf=useCoarse?lerp(other,sample.pdf,proposal.blend):lerp(sample.pdf,other,proposal.blend);
             sample.learningToken.y=useCoarse?sample.learningToken.x:otherToken;
@@ -402,28 +397,22 @@ LT_Sample LT_SampleLight(LT_Receiver R,inout uint rng,bool useLearning=true) {
     } else sample.learningToken.y=LTC_RefreshToken(x,n,proposal.fine,sample.id,sampleSlot,refreshTicket);
     return sample;
 }
-LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true) {
-    return LT_SampleLight(LT_DiffuseReceiver(x,n),rng,useLearning);
-}
 
 // Match learned sampling with its mixture PDF.
-float LT_PdfSelectTriangle(LT_Receiver R,uint tri,uint inst,bool useLearning=true) {
+float LT_PdfSelectTriangle(float3 x,float3 n,uint tri,uint inst,bool useLearning=true) {
     const uint slot=LT_SlotOfInstance(inst);
     if(tri==LT_SENTINEL || slot==LT_SENTINEL || (rs_flags & RS_FLAG_NO_MESH_LIGHTS)!=0u) return 0;
     LTC_Proposal proposal=(LTC_Proposal)0;
-    const bool learned=useLearning && LTC_GetProposal(R.x,R.n,proposal);
+    const bool learned=useLearning && LTC_GetProposal(x,n,proposal);
 
     float pdf=0.0f;
     [loop] for(uint pass=0u;pass<2u;++pass) {
         uint ignored;
-        float p=LTC_CellPdf(R,!learned?LT_SENTINEL:(pass==0u?proposal.fine:proposal.coarse),tri,slot,ignored);
+        float p=LTC_CellPdf(x,n,!learned?LT_SENTINEL:(pass==0u?proposal.fine:proposal.coarse),tri,slot,ignored);
         if(pass==0u) {pdf=p;if(!learned || !(proposal.blend>0.0f)) break;}
         else pdf=lerp(pdf,p,proposal.blend);
     }
     return pdf;
-}
-float LT_PdfSelectTriangle(float3 x,float3 n,uint tri,uint inst,bool useLearning=true) {
-    return LT_PdfSelectTriangle(LT_DiffuseReceiver(x,n),tri,inst,useLearning);
 }
 uint LTC_BatchAddress(uint cluster) {
     uint index=LTC_ClusterIndex(cluster);

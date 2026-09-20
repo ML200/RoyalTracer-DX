@@ -15,7 +15,6 @@ struct BLASRootLocal {
     Aabb localAabb;
     float power = 0.f;
     Cone localCone;
-    SgCluster sg;
     uint32_t primCount = 0;
     float sumPower = 0.f;
     float sumPowerSq = 0.f;
@@ -27,7 +26,6 @@ struct TLASExtraLeaf {
     Aabb aabb{};
     float power = 0.f;
     Cone cone{};
-    SgCluster sg;
     uint32_t primCount = 0;
     float sumPower = 0.f, sumPowerSq = 0.f;
     LightSlotGpu record{};
@@ -58,12 +56,9 @@ inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(const std::vector<LightT
         BLASRootLocal root{};
         root.meshID = meshID;
 
-        std::vector<SgCluster> leaves;
-        leaves.reserve(idxs.size());
         bool first = true;
         for (uint32_t ti : idxs) {
             const auto& t = tris[ti];
-            leaves.push_back(sgTriangle(t));
 
             Aabb ta;
             ta.mn = min3(t.x, min3(t.y, t.z));
@@ -96,7 +91,6 @@ inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(const std::vector<LightT
             }
             root.localCone = root.primCount == 1 ? tc : coneUnion(root.localCone, tc);
         }
-        root.sg = sgMerge(leaves);
 
         roots.push_back(std::move(root));
     }
@@ -148,7 +142,6 @@ class TLASRebuilder {
             leaf.cone.axis = transformNormalW(root.localCone.axis, norm33);
             leaf.cone.theta_o = similarityTransform(world) ? root.localCone.theta_o : LT_PI;
             leaf.cone.theta_e = root.localCone.theta_e;
-            leaf.sg = sgTransform(root.sg, world, norm33, scale);
             leaf.primCount = root.primCount;
             leaf.sumPower = root.sumPower * scale;
             leaf.sumPowerSq = root.sumPowerSq * scale * scale;
@@ -202,7 +195,6 @@ class TLASRebuilder {
             it.c = aabbCenter(worldAabb);
             it.p = root.power * scale;
             it.cone = worldCone;
-            it.sg = sgTransform(root.sg, world, norm33, scale);
 
             it.primCount = root.primCount;
             it.sumP = root.sumPower * scale;
@@ -220,7 +212,6 @@ class TLASRebuilder {
             it.c = aabbCenter(e.aabb);
             it.p = e.power;
             it.cone = e.cone;
-            it.sg = e.sg;
             it.primCount = e.primCount;
             it.sumP = e.sumPower;
             it.sumP2 = e.sumPowerSq;
@@ -270,7 +261,6 @@ class TLASRebuilder {
         XMFLOAT3 c;
         float p;
         Cone cone;
-        SgCluster sg;
         uint32_t primCount;
         float sumP, sumP2;
     };
@@ -333,14 +323,17 @@ class TLASRebuilder {
             aggAdd(parent, it[i]);
 
         auto& N0 = m_tlas[nodeIdx];
-        sgToGpu(N0, sgMerge(it.begin() + begin, it.begin() + end,
-                            [](const TItem& t) -> const SgCluster& { return t.sg; }));
+        N0.bmin = parent.a.mn;
+        N0.bmax = parent.a.mx;
+        N0.power = parent.E;
+        N0.axis = parent.cone.axis;
+        N0.cosTheta_o = std::cos(lt::clampf(parent.cone.theta_o, 0.f, lt::LT_PI));
+        N0.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - N0.cosTheta_o * N0.cosTheta_o));
 
         N0.firstChild = 0xFFFFFFFF;
         N0.childCount = 0;
         N0.slot = UINT32_MAX;
         N0._pad = 0;
-        N0._reserved[0] = N0._reserved[1] = 0;
 
         const uint32_t count = end - begin;
         if (count == 1) {

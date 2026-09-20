@@ -21,9 +21,11 @@ class IncrementalTLAS {
         for (size_t i = 0; i < r.nodes.size(); ++i) {
             const LightTLASNodeGpu& g = r.nodes[i];
             Node& n = m_nodes[i];
-            n.sg = sgFromGpu(g);
-            n.aabb = boxOf(n.sg);
+            n.aabb = {g.bmin, g.bmax};
             n.power = g.power;
+            n.cone.axis = g.axis;
+            n.cone.theta_o = safe_acosf(g.cosTheta_o);
+            n.cone.theta_e = LT_HALF_PI;
             n.firstChild = g.firstChild;
             n.childCount = g.childCount;
             n.capacity = g.childCount;
@@ -66,7 +68,7 @@ class IncrementalTLAS {
                 Node& nd = m_nodes[n];
                 nd.aabb = l.aabb;
                 nd.power = l.power;
-                nd.sg = l.sg;
+                nd.cone = l.cone;
             } else {
                 insert(l);
             }
@@ -91,7 +93,7 @@ class IncrementalTLAS {
     struct Node {
         Aabb aabb{};
         float power = 0.f;
-        SgCluster sg{};
+        Cone cone{};
         uint32_t parent = NONE;
         uint32_t firstChild = 0, childCount = 0, capacity = 0;
         uint32_t slot = NONE;
@@ -103,15 +105,11 @@ class IncrementalTLAS {
     std::vector<LightTreeTrail> m_trails;
     uint32_t m_liveLeaves = 0, m_tombstones = 0, m_maxDepth = 0;
 
-    static Aabb boxOf(const SgCluster& c) {
-        const XMFLOAT3 r{c.radius, c.radius, c.radius};
-        return {sub3(c.mean, r), add3(c.mean, r)};
-    }
     static Node make_leaf(const Leaf& l, uint32_t parent) {
         Node n;
         n.aabb = l.aabb;
         n.power = l.power;
-        n.sg = l.sg;
+        n.cone = l.cone;
         n.parent = parent;
         n.slot = l.slot;
         return n;
@@ -129,8 +127,6 @@ class IncrementalTLAS {
         nd.slot = NONE;
         nd.power = 0.f;
         nd.aabb = {c, c};
-        nd.sg = SgCluster{};
-        nd.sg.mean = c;
         m_leafOfSlot[slot] = NONE;
         --m_liveLeaves;
         ++m_tombstones;
@@ -201,7 +197,6 @@ class IncrementalTLAS {
     }
 
     void refit_all() {
-        std::vector<SgCluster> members;
         for (uint32_t i = (uint32_t)m_nodes.size(); i-- > 0;) {
             Node& n = m_nodes[i];
             if (n.leaf())
@@ -209,28 +204,28 @@ class IncrementalTLAS {
             bool first = true;
             Aabb box{};
             float power = 0.f;
-            members.clear();
+            Cone cone{};
             for (uint32_t c = 0; c < n.childCount; ++c) {
                 const Node& ch = m_nodes[n.firstChild + c];
                 if (!(ch.power > 0.f))
                     continue;
                 if (first) {
                     box = ch.aabb;
+                    cone = ch.cone;
                     first = false;
-                } else
+                } else {
                     box = unionAabb(box, ch.aabb);
+                    cone = coneUnion(cone, ch.cone);
+                }
                 power += ch.power;
-                members.push_back(ch.sg);
             }
             if (first) {
                 const XMFLOAT3 c = aabbCenter(n.aabb);
                 box = {c, c};
-                n.sg = SgCluster{};
-                n.sg.mean = c;
-            } else
-                n.sg = sgMerge(members);
+            }
             n.aabb = box;
             n.power = power;
+            n.cone = cone;
         }
     }
 
@@ -254,13 +249,16 @@ class IncrementalTLAS {
             stack.pop_back();
             const Node& n = m_nodes[it.node];
             LightTLASNodeGpu& g = m_gpu[it.node];
-            sgToGpu(g, n.sg);
+            g.bmin = n.aabb.mn;
+            g.bmax = n.aabb.mx;
             g.power = n.power;
+            g.axis = n.cone.axis;
+            g.cosTheta_o = std::cos(clampf(n.cone.theta_o, 0.f, LT_PI));
+            g.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - g.cosTheta_o * g.cosTheta_o));
             g.firstChild = n.childCount ? n.firstChild : 0xFFFFFFFFu;
             g.childCount = n.childCount;
             g.slot = (n.leaf() && n.slot != NONE) ? n.slot : UINT32_MAX;
             g._pad = 0;
-            g._reserved[0] = g._reserved[1] = 0;
             m_maxDepth = (std::max)(m_maxDepth, it.depth);
             if (n.leaf()) {
                 if (n.slot != NONE && n.slot < m_trails.size())
