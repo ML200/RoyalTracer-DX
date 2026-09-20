@@ -18,30 +18,13 @@ void PassSystem::Build(const std::vector<std::wstring>& tokens) {
 uint32_t PassSystem::RequiredFeatures(const std::wstring& file) {
     using namespace pass_feature;
     if (file == L"Pass_light_learning_v8.hlsl")
-        return PathTracer | MeshLights | LightLearning;
+        return MeshLights | LightLearning;
+    if (file == L"Pass_sharc_debug_v8.hlsl")
+        return Sharc | SharcDebug;
     if (file.rfind(L"Pass_sharc_", 0) == 0)
-        return PathTracer | Sharc;
+        return Sharc;
     if (file.rfind(L"Pass_lite_", 0) == 0)
-        return PathTracer | DiffuseReuse | (file == L"Pass_lite_shift_v8.hlsl" ? SpatialReuse : 0u);
-    if (file.rfind(L"Pass_cumulus_", 0) == 0) {
-        uint32_t features = Clouds;
-        if (file == L"Pass_cumulus_secondary_v8.hlsl")
-            features |= PathTracer;
-        if (file == L"Pass_cumulus_noise_v8.hlsl")
-            features |= CloudNoise;
-        if (file == L"Pass_cumulus_density_v8.hlsl")
-            features |= CloudDensity;
-        if (file == L"Pass_cumulus_ambient_v8.hlsl")
-            features |= CloudAmbient;
-        return features;
-    }
-    if (file == L"Pass_pt_nee_v8.hlsl")
-        return PathTracer | MeshLights;
-    if (file == L"Pass_pt_v8.hlsl" || file == L"Pass_pt_skybake_v8.hlsl")
-        return PathTracer;
-    if (file == L"Pass_raygen_v8.hlsl" || file == L"Pass_temp_gi_v8.hlsl" || file == L"Pass_shift_v8.hlsl" ||
-        file == L"Pass_temp_merge_v8.hlsl" || file == L"Pass_dup_gi_v8.hlsl" || file.rfind(L"Pass_spmis_", 0) == 0)
-        return LegacyReSTIR;
+        return DiffuseReuse | (file == L"Pass_lite_shift_v8.hlsl" ? SpatialReuse : 0u);
     return 0;
 }
 
@@ -52,16 +35,8 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
         p.stage = Stage::Barrier;
         return p;
     }
-    if (token == L"pingswap") {
-        p.stage = Stage::PingSwap;
-        return p;
-    }
     if (token == L"endloop") {
         p.stage = Stage::LoopEnd;
-        return p;
-    }
-    if (token == L"clearsort") {
-        p.stage = Stage::ClearSort;
         return p;
     }
     if (token == L"dlss") {
@@ -71,8 +46,15 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
 
     if (token.rfind(L"loop:", 0) == 0) {
         p.stage = Stage::LoopStart;
-        if (swscanf_s(token.c_str() + 5, L"%u", &p.loopCount) != 1)
+        const std::wstring count = token.substr(5);
+        if (count.empty())
             throw std::runtime_error("Invalid loop count");
+        if (iswdigit(count[0])) {
+            if (swscanf_s(count.c_str(), L"%u", &p.loopCount) != 1)
+                throw std::runtime_error("Invalid loop count");
+        } else {
+            p.loopTag = count; // resolved by the renderer each frame
+        }
         return p;
     }
 
@@ -83,31 +65,8 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
 
     const std::wstring tail = token.substr(bar + 1);
 
-    if (tail == L"rg" || tail == L"raygen")
+    if (tail == L"rg")
         return p;
-
-    if (tail.rfind(L"rg:", 0) == 0) {
-        p.dispatchTag = tail.substr(3);
-        return p;
-    }
-    if (tail == L"call") {
-        p.stage = Stage::Callable;
-        return p;
-    }
-
-    if (tail.rfind(L"wg:", 0) == 0) {
-        p.stage = Stage::Compute;
-        p.isWorkGraph = true;
-        swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY);
-        return p;
-    }
-    if (tail.rfind(L"wf:", 0) == 0) {
-        p.stage = Stage::Wavefront;
-        if (swscanf_s(tail.c_str() + 3, L"%u", &p.groupX) != 1)
-            throw std::runtime_error("Invalid wf size");
-        p.groupY = 1;
-        return p;
-    }
     if (tail.rfind(L"cs:", 0) == 0) {
         p.stage = Stage::Compute;
         if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2)

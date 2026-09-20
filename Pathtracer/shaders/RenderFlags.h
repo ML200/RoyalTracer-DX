@@ -1,7 +1,7 @@
-#ifndef RENDER_FLAGS_H
-#define RENDER_FLAGS_H
+#pragma once
 
-#define RS_FLAG_NO_MESH_LIGHTS 0x80u
+// Bits of the rs_flags root constant shared by the host and the shaders.
 #define RS_FLAG_COMPACT_LIGHT_TREE 0x4u
-
-#endif
+#define RS_FLAG_NO_MESH_LIGHTS 0x80u
+#define RS_FLAG_CLAMP_EMITTERS 0x100u
+#define RS_FLAG_FORCE_DIFFUSE 0x20000u

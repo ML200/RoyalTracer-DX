@@ -1,5 +1,4 @@
-#ifndef MATERIAL_DECODER_V8_HLSLI
-#define MATERIAL_DECODER_V8_HLSLI
+#pragma once
 
 inline float3 LoadKd_rgb(uint matID)
 {
@@ -182,4 +181,3 @@ inline bool MaterialIsFreeBounce(uint matID)
     return isGlass || isTranslucent;
 }
 
-#endif

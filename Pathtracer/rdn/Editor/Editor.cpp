@@ -91,9 +91,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
             ImGui::Text("%.1f fps | %.2f ms", fps, fps > 0 ? 1000.0f / fps : 0.0f);
         }
         ImGui::Separator();
-        ImGui::TextDisabled("%s", restir.integratorMode == 0
-                                      ? (restir.sharcEnabled ? "Path tracer + SHARC" : "Path tracer")
-                                      : "ReSTIR (legacy)");
+        ImGui::TextDisabled("%s", restir.sharcEnabled ? "Path tracer + SHARC" : "Path tracer");
         ImGui::SetItemTooltip("%u instances | %u meshes | CPU %.2f ms | GPU wait %.2f ms", stats.instanceCount,
                               stats.meshCount, stats.cpuFrameMs, stats.gpuWaitMs);
         ImGui::EndMainMenuBar();
@@ -360,8 +358,7 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
     ImGui::Checkbox("Show inactive passes", &m_showInactivePasses);
     ImGui::TextDisabled("Previous frame");
 
-    const char* stageNames[] = {"RayGen",  "Compute",  "FixedCompute", "Wavefront", "Barrier", "LoopStart",
-                                "LoopEnd", "PingSwap", "ClearSort",    "Callable",  "DLSS"};
+    const char* stageNames[] = {"RayGen", "Compute", "FixedCompute", "Barrier", "LoopStart", "LoopEnd", "DLSS"};
 
     for (size_t i = 0; i < passes.Passes().size(); ++i) {
         auto& p = passes.Passes()[i];
@@ -401,7 +398,7 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
             char fileStr[256];
             WideCharToMultiByte(CP_UTF8, 0, p.file.c_str(), -1, fileStr, 256, nullptr, nullptr);
             ImGui::Text("[%2zu] %s: %s", i, stageName, fileStr);
-            if (p.stage == Stage::Compute && !p.isWorkGraph)
+            if (p.stage == Stage::Compute)
                 ImGui::SameLine(), ImGui::TextDisabled("(%ux%u)", p.groupX, p.groupY);
         }
         ImGui::PopStyleColor();
@@ -1050,8 +1047,6 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
     }
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.46f);
 
-    const char* modes[] = {"Path tracer", "ReSTIR (legacy)"};
-    ImGui::Combo("Method", &rs.integratorMode, modes, IM_ARRAYSIZE(modes));
     ImGui::SliderInt("Samples per pixel", &rs.initialSamples, 1, 8);
     if (ImGui::CollapsingHeader("Path limits")) {
         ImGui::SliderInt("Maximum depth", &rs.maxBounces, 2, 32);
@@ -1067,131 +1062,95 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
     ImGui::SeparatorText("Light sampling");
     ImGui::Checkbox("Compact light tree", &rs.compactLightTree);
     ImGui::SetItemTooltip("Uses less GPU memory; performance depends on the scene. Changing this rebuilds light buffers.");
-    if (rs.integratorMode == 0) {
-        ImGui::Checkbox("Learn light clusters", &rs.lightTreeLearning);
-        ImGui::SetItemTooltip("Learns visible light contributions per receiver cell at all distances; every receiver "
-                              "samples from the learned cuts.");
-        if (rs.lightTreeLearning) {
-            ImGui::Text("Lighting capacity: %u cells (%.0f MiB)", LT_GRID_CAPACITY,
-                        double(LT_LEARNING_BYTES) / (1024.0 * 1024.0));
-            ImGui::SliderFloat("Training roughness floor", &rs.lightTreeLearnRoughness, 0.0f, 0.8f, "%.2f");
-            ImGui::SetItemTooltip("Lobes at least this rough feed the learning; the diffuse lobe always does, so "
-                                  "polished surfaces train with their diffuse part only.\n"
-                                  "Every receiver samples from the learned cuts (one MIS technique: this only trades "
-                                  "variance, never bias).");
-            ImGui::SliderInt("Minimum lighting cell size (log2 m)", &rs.lightTreeCellExponent, -4, 8);
-            ImGui::SliderFloat("Lighting cell growth", &rs.lightTreeLodScale, 0.005f, 0.2f, "%.3f");
-            ImGui::SetItemTooltip("Cells grow with distance from the camera. Coarser learned cells cover new regions "
-                                  "while finer cells are prepared.");
-            ImGui::Checkbox("Show learning coverage", &rs.lightTreeDebug);
-            if (rs.lightTreeDebug)
-                ImGui::TextWrapped("Green: requested detail. Blue: coarser cell. Orange: shared fallback. Gray: "
-                                   "ordinary light tree; fading color shows partial learned sampling. Brightness shows "
-                                   "completed updates. Red: unavailable.");
-            if (ImGui::Button("Reset learned lighting"))
-                rs.lightTreeReset = true;
-        }
-        ImGui::SeparatorText("SHARC");
-        ImGui::Checkbox("Radiance cache", &rs.sharcEnabled);
-        ImGui::BeginDisabled(!rs.sharcEnabled);
-        ImGui::Checkbox("Path guiding", &rs.sharcGuideEnabled);
-        ImGui::SliderInt("Training tile width", &rs.sharcUpdateStride, 2, 8);
-        ImGui::SetItemTooltip("One training path per tile. Smaller tiles fill the cache faster.");
-        if (ImGui::Button("Clear cache"))
-            rs.sharcReset = true;
+    ImGui::Checkbox("Learn light clusters", &rs.lightTreeLearning);
+    ImGui::SetItemTooltip("Learns visible light contributions per receiver cell at all distances; every receiver "
+                          "samples from the learned cuts.");
+    if (rs.lightTreeLearning) {
+        ImGui::Text("Lighting capacity: %u cells (%.0f MiB)", LT_GRID_CAPACITY,
+                    double(LT_LEARNING_BYTES) / (1024.0 * 1024.0));
+        ImGui::SliderFloat("Training roughness floor", &rs.lightTreeLearnRoughness, 0.0f, 0.8f, "%.2f");
+        ImGui::SetItemTooltip("Lobes at least this rough feed the learning; the diffuse lobe always does, so "
+                              "polished surfaces train with their diffuse part only.\n"
+                              "Every receiver samples from the learned cuts (one MIS technique: this only trades "
+                              "variance, never bias).");
+        ImGui::SliderInt("Minimum lighting cell size (log2 m)", &rs.lightTreeCellExponent, -4, 8);
+        ImGui::SliderFloat("Lighting cell growth", &rs.lightTreeLodScale, 0.005f, 0.2f, "%.3f");
+        ImGui::SetItemTooltip("Cells grow with distance from the camera. Coarser learned cells cover new regions "
+                              "while finer cells are prepared.");
+        ImGui::Checkbox("Show learning coverage", &rs.lightTreeDebug);
+        if (rs.lightTreeDebug)
+            ImGui::TextWrapped("Green: requested detail. Blue: coarser cell. Orange: shared fallback. Gray: "
+                               "ordinary light tree; fading color shows partial learned sampling. Brightness shows "
+                               "completed updates. Red: unavailable.");
+        if (ImGui::Button("Reset learned lighting"))
+            rs.lightTreeReset = true;
+    }
+    ImGui::SeparatorText("SHARC");
+    ImGui::Checkbox("Radiance cache", &rs.sharcEnabled);
+    ImGui::BeginDisabled(!rs.sharcEnabled);
+    ImGui::Checkbox("Path guiding", &rs.sharcGuideEnabled);
+    ImGui::SliderInt("Training tile width", &rs.sharcUpdateStride, 2, 8);
+    ImGui::SetItemTooltip("One training path per tile. Smaller tiles fill the cache faster.");
+    if (ImGui::Button("Clear cache"))
+        rs.sharcReset = true;
 
-        if (ImGui::CollapsingHeader("Cache tuning")) {
-            ImGui::SliderInt("Cell size (log2 m)", &rs.sharcCellSizeExponent, -6, 4);
-            ImGui::SliderFloat("Distance scale", &rs.sharcLodScale, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SliderInt("Training depth", &rs.sharcTrainBounces, 4, 64);
-            ImGui::SliderInt("Training roulette", &rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
-            ImGui::SliderInt("Minimum samples", &rs.sharcMinSamples, 8, 256);
-            ImGui::SliderInt("History length", &rs.sharcHistoryFrames, 8, 256);
-            ImGui::SliderInt("Retention (frames)", &rs.sharcMaxAge, 32, 4096);
-            ImGui::SliderFloat("Query footprint", &rs.sharcQueryFootprint, 0.5f, 8.0f, "%.1f");
-            ImGui::SetItemTooltip("Minimum path spread in cache-cell widths. Higher values trace further.");
+    if (ImGui::CollapsingHeader("Cache tuning")) {
+        ImGui::SliderInt("Cell size (log2 m)", &rs.sharcCellSizeExponent, -6, 4);
+        ImGui::SliderFloat("Distance scale", &rs.sharcLodScale, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderInt("Training depth", &rs.sharcTrainBounces, 4, 64);
+        ImGui::SliderInt("Training roulette", &rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
+        ImGui::SliderInt("Minimum samples", &rs.sharcMinSamples, 8, 256);
+        ImGui::SliderInt("History length", &rs.sharcHistoryFrames, 8, 256);
+        ImGui::SliderInt("Retention (frames)", &rs.sharcMaxAge, 32, 4096);
+        ImGui::SliderFloat("Query footprint", &rs.sharcQueryFootprint, 0.5f, 8.0f, "%.1f");
+        ImGui::SetItemTooltip("Minimum path spread in cache-cell widths. Higher values trace further.");
+    }
+    if (rs.sharcGuideEnabled && ImGui::CollapsingHeader("Guiding tuning")) {
+        ImGui::SliderFloat("Maximum guide probability", &rs.sharcGuideMax, 0.0f, 0.9f, "%.2f");
+        ImGui::SetItemTooltip(
+            "Share of broad-lobe samples the learned lobes may take; the BSDF sampler keeps the rest.");
+        ImGui::SliderInt("Receiver level", &rs.sharcGuideLevelOffset, 1, 6);
+        ImGui::SliderInt("Guided vertices", &rs.sharcGuideDepth, 1, 7);
+        ImGui::SliderInt("Freshness half-life", &rs.sharcGuideFreshness, 8, 2048);
+        ImGui::SetItemTooltip(
+            "Frames without new training evidence after which a receiver guides at half strength.");
+        ImGui::Checkbox("Guide training paths", &rs.sharcGuideTrain);
+        ImGui::SetItemTooltip(
+            "Training paths sample the learned mixture too, so newly discovered lobes are measured faster.");
+    }
+    if (ImGui::CollapsingHeader("Cache inspection")) {
+        const char* views[] = {"Off", "Cells", "Cell lighting", "Guiding"};
+        ImGui::Combo("View", &rs.sharcDebugMode, views, IM_ARRAYSIZE(views));
+        if (rs.sharcDebugMode != 0) {
+            ImGui::Checkbox(rs.sharcDebugMode == SHARC_DEBUG_GUIDING ? "Show lobe directions" : "Other query level",
+                            &rs.sharcDebugCoarse);
         }
-        if (rs.sharcGuideEnabled && ImGui::CollapsingHeader("Guiding tuning")) {
-            ImGui::SliderFloat("Maximum guide probability", &rs.sharcGuideMax, 0.0f, 0.9f, "%.2f");
-            ImGui::SetItemTooltip(
-                "Share of broad-lobe samples the learned lobes may take; the BSDF sampler keeps the rest.");
-            ImGui::SliderInt("Receiver level", &rs.sharcGuideLevelOffset, 1, 6);
-            ImGui::SliderInt("Guided vertices", &rs.sharcGuideDepth, 1, 7);
-            ImGui::SliderInt("Freshness half-life", &rs.sharcGuideFreshness, 8, 2048);
-            ImGui::SetItemTooltip(
-                "Frames without new training evidence after which a receiver guides at half strength.");
-            ImGui::Checkbox("Guide training paths", &rs.sharcGuideTrain);
-            ImGui::SetItemTooltip(
-                "Training paths sample the learned mixture too, so newly discovered lobes are measured faster.");
-        }
-        if (ImGui::CollapsingHeader("Cache inspection")) {
-            const char* views[] = {"Off", "Cells", "Cell lighting", "Guiding"};
-            ImGui::Combo("View", &rs.sharcDebugMode, views, IM_ARRAYSIZE(views));
-            if (rs.sharcDebugMode != 0) {
-                ImGui::Checkbox(rs.sharcDebugMode == SHARC_DEBUG_GUIDING ? "Show lobe directions" : "Other query level",
-                                &rs.sharcDebugCoarse);
-            }
-        }
+    }
+    ImGui::EndDisabled();
+
+    if (ImGui::CollapsingHeader("Diffuse resampling")) {
+        ImGui::Checkbox("Resample direct and indirect diffuse", &rs.liteEnabled);
+        ImGui::BeginDisabled(!rs.liteEnabled);
+        ImGui::Checkbox("Spatial reuse", &rs.liteSpatial);
+        ImGui::BeginDisabled(!rs.liteSpatial);
+        ImGui::SliderInt("Partners", &rs.liteSpatSlots, 0, 3);
+        ImGui::SliderFloat("Pair radius (px)", &rs.liteReuseSigma, 2.0f, 40.0f, "%.1f");
+        ImGui::SliderInt("Confidence cap", &rs.liteSpatMcap, 1, 64);
         ImGui::EndDisabled();
-
-        if (ImGui::CollapsingHeader("Diffuse resampling")) {
-            ImGui::Checkbox("Resample direct and indirect diffuse", &rs.liteEnabled);
-            ImGui::BeginDisabled(!rs.liteEnabled);
-            ImGui::Checkbox("Spatial reuse", &rs.liteSpatial);
-            ImGui::BeginDisabled(!rs.liteSpatial);
-            ImGui::SliderInt("Partners", &rs.liteSpatSlots, 0, 3);
-            ImGui::SliderFloat("Pair radius (px)", &rs.liteReuseSigma, 2.0f, 40.0f, "%.1f");
-            ImGui::SliderInt("Confidence cap", &rs.liteSpatMcap, 1, 64);
-            ImGui::EndDisabled();
-            ImGui::SliderFloat("Normal similarity", &rs.tempNormalSimCos, -1.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Plane tolerance", &rs.tempPlaneDist, 0.0f, 0.5f, "%.3f");
-            ImGui::Checkbox("Show resampled contribution", &rs.liteDebugView);
-            ImGui::EndDisabled();
-        }
-    } else {
-        if (ImGui::CollapsingHeader("Temporal reuse", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Checkbox("Enabled##temporal", &rs.enableTempGI);
-            ImGui::BeginDisabled(!rs.enableTempGI);
-            ImGui::SliderInt("History cap", &rs.tempMcapGI, 0, 128);
-            ImGui::SliderFloat("Normal similarity", &rs.tempNormalSimCos, -1.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Plane tolerance", &rs.tempPlaneDist, 0.0f, 1.0f, "%.3f");
-            ImGui::SliderFloat("Jacobian limit", &rs.tempJacClamp, 1.0f, 100.0f, "%.1f");
-            ImGui::EndDisabled();
-        }
-        if (ImGui::CollapsingHeader("Spatial reuse")) {
-            ImGui::Checkbox("Enabled##spatial", &rs.enableSpatGI);
-            ImGui::BeginDisabled(!rs.enableSpatGI);
-            ImGui::SliderInt("Samples", &rs.spmisReuseN, 1, 8);
-            ImGui::SliderInt("Tile size", &rs.spmisTileSize, 4, 128);
-            ImGui::SliderInt("Search steps", &rs.spmisSearchIters, 4, 32);
-            ImGui::SliderFloat("Normal similarity##spatial", &rs.spmisNormalSimCos, -1.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Plane tolerance##spatial", &rs.spmisPlaneDist, 0.0f, 1.0f, "%.3f");
-            ImGui::EndDisabled();
-        }
-        if (ImGui::CollapsingHeader("Reconnection")) {
-            ImGui::Checkbox("Hybrid shift", &rs.hybridShift);
-            ImGui::SliderFloat("Minimum roughness", &rs.reconnectRoughnessMin, 0.0f, 1.0f, "%.2f");
-            ImGui::BeginDisabled(!rs.hybridShift);
-            ImGui::SliderInt("Maximum pin depth", &rs.rcMaxK, 2, rs.lobeIndexedPss ? 8 : 10);
-            ImGui::Checkbox("Footprint criteria", &rs.rcFootprint);
-            if (rs.rcFootprint)
-                ImGui::SliderFloat("Footprint scale", &rs.rcFpKappa, 0.001f, 2.56f, "%.4f",
-                                   ImGuiSliderFlags_Logarithmic);
-            else
-                ImGui::SliderFloat("Minimum distance", &rs.reconnectDistMin, 0.0f, 0.25f, "%.4f");
-            ImGui::EndDisabled();
-        }
+        ImGui::SliderFloat("Normal similarity", &rs.liteNormalSimCos, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Plane tolerance", &rs.litePlaneDist, 0.0f, 0.5f, "%.3f");
+        ImGui::Checkbox("Show resampled contribution", &rs.liteDebugView);
+        ImGui::EndDisabled();
     }
 
     if (stats.cacheTimingMask != 0 && ImGui::CollapsingHeader("GPU timings")) {
         const char* labels[] = {"Cache prepare",    "Cache training",      "Cache resolve", "Path tracing",
-                                "Diffuse shift",    "Diffuse merge",       "Cloud cache",   "Sky / atmosphere",
-                                "Secondary clouds", "Light cluster update"};
+                                "Diffuse shift",    "Diffuse merge",       "Sky / atmosphere", "Light cluster update"};
         static_assert(IM_ARRAYSIZE(labels) == FrameStats::GpuTimingCount);
         for (int i = 0; i < IM_ARRAYSIZE(labels); ++i)
             if (stats.cacheTimingMask & (1u << i))
                 ImGui::Text("%s: %.3f ms", labels[i], stats.cachePassMs[i]);
-        if (stats.cacheTimingMask & (1u << 9)) {
+        if (stats.cacheTimingMask & (1u << 7)) {
             ImGui::TextDisabled("Light sampling and feedback are included in the path/cache times.");
         }
     }
@@ -1223,7 +1182,7 @@ void Editor::DrawDlssInputsPanel(IntegratorSettings& rs, DLSSManager& dlss) {
     if (rs.dlssDebugLayer == 3 || rs.dlssDebugLayer == 10)
         ImGui::DragFloatRange2("Range (m)", &rs.dlssDebugDepthNear, &rs.dlssDebugDepthFar, 0.25f, 0.0f, 65000.0f,
                                "near %.2f", "far %.2f");
-    if (rs.sharcEnabled && rs.integratorMode == 0 && rs.sharcDebugMode != 0) {
+    if (rs.sharcEnabled && rs.sharcDebugMode != 0) {
         ImGui::TextDisabled("SHARC inspection is active.");
         if (ImGui::Button("Show DLSS buffer instead"))
             rs.sharcDebugMode = 0;
@@ -1300,7 +1259,6 @@ void Editor::DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats,
     }
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.46f);
     auto& s = camera.sunSettings;
-    auto& c = camera.cumulusSettings;
     ImGui::SeparatorText("Light sources");
     ImGui::Checkbox("Mesh lights", &scene.lightClassEnabled[Scene::LightClassScene]);
     ImGui::SetItemTooltip("Emissive triangles of the loaded meshes. Off: they leave the light tree and stop glowing.");
@@ -1324,54 +1282,6 @@ void Editor::DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats,
         ImGui::SliderFloat("Time speed", &s.simSpeed, 0.0f, 10000.0f, "%.1fx", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Night speedup", &s.nightSpeedup, 1.0f, 10.0f, "%.1fx");
     }
-    ImGui::SeparatorText("Clouds");
-    bool enabled = c.enabled > 0.5f;
-    if (ImGui::Checkbox("Cumulus", &enabled))
-        c.enabled = enabled ? 1.0f : 0.0f;
-    ImGui::BeginDisabled(!enabled);
-    ImGui::SliderFloat("Coverage", &c.coverage, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Base altitude", &c.baseKm, 0.2f, 8.0f, "%.2f km");
-    ImGui::SliderFloat("Height", &c.thicknessKm, 0.3f, 8.0f, "%.2f km");
-    ImGui::SliderFloat("Size", &c.scale, 0.25f, 3.0f, "%.2fx");
-    ImGui::SliderFloat("Density", &c.extinction, 1.0f, 40.0f, "%.1f");
-    if (ImGui::CollapsingHeader("Cloud detail")) {
-        ImGui::SliderFloat("Edge detail", &c.detail, 0.0f, 1.5f, "%.2f");
-        ImGui::SliderFloat("Distortion", &c.fineDetail, 0.0f, 2.0f, "%.2f");
-        ImGui::SliderFloat("Internal scattering", &c.multipleScattering, 0.0f, 3.0f, "%.2f");
-        ImGui::SliderFloat("Ambient light", &c.ambient, 0.0f, 3.0f, "%.2f");
-        ImGui::SliderFloat("Wind X", &c.windX, -40.0f, 40.0f, "%.1f m/s");
-        ImGui::SliderFloat("Wind Z", &c.windZ, -40.0f, 40.0f, "%.1f m/s");
-        ImGui::SliderFloat("Seed", &c.seed, 0.0f, 100.0f, "%.0f");
-    }
-    if (ImGui::CollapsingHeader("Cloud quality")) {
-        int view = (int)c.viewSteps, reflection = (int)c.reflectionSteps, lighting = (int)c.lightingSamples;
-        if (ImGui::SliderInt("Sky samples", &view, 16, 160))
-            c.viewSteps = (float)view;
-        if (ImGui::SliderInt("Reflection samples", &reflection, 4, 32))
-            c.reflectionSteps = (float)reflection;
-        if (ImGui::SliderInt("Lighting samples", &lighting, 0, 4))
-            c.lightingSamples = (float)lighting;
-        ImGui::SetItemTooltip("0 evaluates lighting at every occupied sky sample.");
-        ImGui::Checkbox("Density cache (experimental)", &camera.cumulusDensityCache);
-        ImGui::SliderFloat("Guide threshold", &c.guideThreshold, 0.15f, 0.9f, "%.2f");
-        int viewMode = (int)c.debugView;
-        if (ImGui::Combo("Inspect", &viewMode, "Off\0Opacity\0Normals\0Depth\0Motion\0Depth spread\0"))
-            c.debugView = (float)viewMode;
-        if ((stats.cacheTimingMask & 0x1C0u) != 0u)
-            ImGui::TextDisabled("Cache %.2f ms | Rays %.2f ms", stats.cachePassMs[6],
-                                stats.cachePassMs[7] + stats.cachePassMs[8]);
-    }
-    if (ImGui::Button("Reset clouds"))
-        c = CumulusSettings{};
-    ImGui::SameLine();
-    if (ImGui::Button("Tall towers")) {
-        c = CumulusSettings{};
-        c.coverage = 0.48f;
-        c.thicknessKm = 4.5f;
-        c.scale = 1.0f;
-        c.extinction = 12.0f;
-    }
-    ImGui::EndDisabled();
     if (ImGui::CollapsingHeader("Night sky")) {
         ImGui::SliderFloat("Stars", &s.skyStarIntensity, 0.0f, 5.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Star contrast", &s.skyStarGamma, 1.0f, 4.0f, "%.2f");

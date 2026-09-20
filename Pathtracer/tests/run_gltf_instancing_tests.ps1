@@ -32,8 +32,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Instancing test compilation failed. Use a VS D
 & "$OutputDirectory/GltfInstancingTests.exe" "$OutputDirectory/fixtures"
 if ($LASTEXITCODE -ne 0) { throw 'Instancing regression failed' }
 
-foreach ($shader in @('Pass_pt_v8.hlsl', 'Pass_shading_v8.hlsl')) {
-    $shaderTarget = if ($shader -eq 'Pass_shading_v8.hlsl') { @('-T', 'cs_6_9', '-E', 'main') } else { @('-T', 'lib_6_9') }
+foreach ($shader in @('Pass_pt_trace_v8.hlsl', 'Pass_pt_shade_v8.hlsl', 'Pass_shading_v8.hlsl')) {
+    $shaderTarget = if ($shader -eq 'Pass_pt_trace_v8.hlsl') { @('-T', 'lib_6_9') } else { @('-T', 'cs_6_9', '-E', 'main') }
     & "$projectRoot/include/dxc.exe" @shaderTarget -HV 2021 -enable-16bit-types -O3 -D MAX_REGS=96 `
         -I "$projectRoot/shaders" -I "$projectRoot/include" `
         "$projectRoot/shaders/$shader" -Fo "$OutputDirectory/$shader.dxil"

@@ -10,6 +10,7 @@
 #include "Scene/AssetLoader.h"
 #include "Camera/Camera.h"
 #include "Raytracing/PassSystem.h"
+#include "../shaders/PathStateLayout.h"
 #include "PostProcess/DLSSManager.h"
 #include "PostProcess/DLSSNRManager.h"
 #include <sl_reflex.h>
@@ -34,9 +35,6 @@
 #include "minecraft/voxel_streamer.h"
 
 // Byte strides shared with the shader SoA layouts.
-struct Reservoir_GI {
-    uint8_t pad[80];
-};
 struct SampleData {
     uint8_t pad[36];
 };
@@ -46,9 +44,7 @@ inline UINT TileAlignedPx(UINT w, UINT h) {
     return ((w + 7u) / 8u) * ((h + 3u) / 4u) * 32u;
 }
 
-constexpr UINT kSpmisSplitMaxDraws = 4;
-// Path-state storage also backs the SPMIS job planes.
-constexpr UINT kPathStateBytesPerPx = 8 + (kSpmisSplitMaxDraws + 1) * 32;
+constexpr UINT kPathStateBytesPerPx = PS_PATH_STATE_BYTES;
 
 class Renderer {
   public:
@@ -114,7 +110,6 @@ class Renderer {
     IntegratorSettings m_integratorSettings;
     IntegratorSettings m_previousIntegratorSettings;
     bool m_integratorHistoryValid = false;
-    int m_previousIntegratorMode = -1;
 
     bool m_liteReusePending = false;
     float m_liteReuseSigma = 0.0f;
@@ -206,18 +201,9 @@ class Renderer {
     ComPtr<ID3D12StateObject> m_rtStateObject;
     ComPtr<ID3D12StateObjectProperties> m_rtStateObjectProps;
     std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
-    std::vector<std::wstring> m_callableShaderNames;
     nv_helpers_dx12::ShaderBindingTableGenerator m_sbtHelper;
     ComPtr<ID3D12Resource> m_sbtStorage;
 
-    struct WgRuntimeData {
-        D3D12_PROGRAM_IDENTIFIER id;
-        D3D12_GPU_VIRTUAL_ADDRESS_RANGE backing;
-        ComPtr<ID3D12Resource> backingRes;
-    };
-    std::vector<WgRuntimeData> m_wgRuntime;
-    std::vector<ComPtr<ID3D12StateObject>> m_wgStateObjects;
-    std::vector<ComPtr<ID3D12WorkGraphProperties>> m_wgProps;
 
     ComPtr<ID3D12RootSignature> CreateRayGenSignature();
     ComPtr<ID3D12RootSignature> CreateComputeSignature();
@@ -230,14 +216,14 @@ class Renderer {
     ComPtr<ID3D12Resource> m_permanentDataTexture;
     ComPtr<ID3D12Resource> m_scratchPing;
     ComPtr<ID3D12Resource> m_pathStateBuffer;
-    ComPtr<ID3D12Resource> m_spmisBuffer;
+    ComPtr<ID3D12Resource> m_skyBakeBuffer;
     ComPtr<ID3D12Resource> m_autoExposeBuffer;
 
     ComPtr<ID3D12Resource> m_sentinelReadback[3];
     const uint32_t* m_sentinelMapped[3] = {nullptr, nullptr, nullptr};
     uint64_t m_sentinelFrame = 0;
 
-    ComPtr<ID3D12Resource> m_reservoirBuffer_3, m_reservoirBuffer_4;
+    ComPtr<ID3D12Resource> m_liteReservoirs;
 
     ComPtr<ID3D12DescriptorHeap> m_samplerHeap;
     ComPtr<ID3D12Resource> m_sampleBuffer_current, m_sampleBuffer_last;
@@ -248,13 +234,7 @@ class Renderer {
     void CreateShaderResourceHeap();
     void CreatePathStateBuffer();
 
-    ComPtr<ID3D12Resource> m_stackBuffers[MAX_STACKS];
-    ComPtr<ID3D12Resource> m_globalCounterBuffer;
-    ComPtr<ID3D12Resource> m_indirectArgsBuffer;
-    ComPtr<ID3D12Resource> m_zeroBuffer;
-    ComPtr<ID3D12CommandSignature> m_commandSignature;
 
-    ComPtr<ID3D12Resource> m_raygenQueueBuffer;
     ComPtr<ID3D12Resource> m_sharcBuffer;
     GpuProfiler m_gpuProfiler;
     bool m_sharcResetPending = true;
@@ -271,23 +251,9 @@ class Renderer {
         UINT meshIndex;
     };
     std::vector<SharcInstanceState> m_sharcInstanceState;
-    ComPtr<ID3D12Resource> m_raysIndirectArgs;
 
-    ComPtr<ID3D12Resource> m_raysArgsTemplate;
-    ComPtr<ID3D12CommandSignature> m_raysCommandSignature;
-    void WriteRaysIndirectTemplate();
-    ComPtr<ID3D12PipelineState> m_psoSetupIndirect, m_psoSetupIndirectNoClear;
-    ComPtr<ID3D12RootSignature> m_rsSetupIndirect;
 
-    ComPtr<ID3D12Resource> m_sortCountBuffer, m_sortOffsetBuffer, m_sortBoundsBuffer;
-    ComPtr<ID3D12Resource> m_sortBoundsResetBuffer;
-    D3D12_GPU_DESCRIPTOR_HANDLE m_sortCountGpuHandle{}, m_sortOffsetGpuHandle{}, m_sortBoundsGpuHandle{};
-    D3D12_CPU_DESCRIPTOR_HANDLE m_sortCountCpuHandle{}, m_sortOffsetCpuHandle{}, m_sortBoundsCpuHandle{};
 
-    void CreateStreamingCompactionBuffers();
-    void CreateIndirectCommandSignature();
-    void CompileSetupIndirectShader();
-    void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
 
     ComPtr<ID3D12Resource> m_lutTextureArray;
     std::vector<ComPtr<ID3D12Resource>> m_lutUploadHeaps;
@@ -323,22 +289,12 @@ class Renderer {
     float m_skyLutTurbidity = -1.0f;
     void InitSkyLUTBake();
     void RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd);
-    ComPtr<ID3D12Resource> m_cumulusNoise, m_cumulusLight, m_cumulusEnvironment, m_cumulusAmbient, m_cumulusQueries;
-    ComPtr<ID3D12Resource> m_cumulusNoiseBA;
-    ComPtr<ID3D12Resource> m_cumulusDensity, m_cumulusDensityTags;
-    bool m_previousDensityCacheEnabled = true;
-    bool m_cumulusNoiseReady = false;
-    bool m_cumulusAmbientReady = false;
-    std::array<float, 5> m_cumulusAmbientKey{};
-    bool m_cumulusSettingsValid = false;
-    CumulusSettings m_previousCumulusSettings;
-    void InitCumulusResources();
 
     UINT m_currentDisplayLevel = 0;
     std::vector<UINT> m_displayLevels = {0, 1, 2, 4, 5};
 
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
-    static constexpr UINT DLSS_UAV_HEAP_START = 39;
+    static constexpr UINT DLSS_UAV_HEAP_START = 33;
     float m_fps = 0.0f;
     int m_dlssModeChangedFrames = 0;
 

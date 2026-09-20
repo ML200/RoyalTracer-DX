@@ -1,4 +1,3 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
 RWTexture2D<float4> gTransmittanceLUTOut : register(u25);

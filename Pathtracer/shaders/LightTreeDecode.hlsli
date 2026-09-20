@@ -1,5 +1,4 @@
-#ifndef LIGHT_TREE_DECODE_HLSLI
-#define LIGHT_TREE_DECODE_HLSLI
+#pragma once
 
 bool LT_CompactNodes() { return (rs_flags & RS_FLAG_COMPACT_LIGHT_TREE) != 0u; }
 
@@ -74,4 +73,3 @@ LightBLASNodeGpu LT_LoadBLAS(uint offset,uint index,LT_BlasFrame f) {
 LightBLASNodeGpu LT_LoadBLAS(uint offset,uint index) {
     return LT_LoadBLAS(offset,index,LT_LoadBlasFrame(offset));
 }
-#endif

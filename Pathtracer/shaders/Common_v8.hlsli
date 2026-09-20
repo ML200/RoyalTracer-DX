@@ -59,7 +59,6 @@ inline int2 UnmapPixelID(uint pixelID, uint2 dims)
     return int2(globalX, globalY);
 }
 
-#include "Temporal_ReuseMath_v8.hlsli"
 
 // Ray Tracing Gems, chapter 32.
 float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)

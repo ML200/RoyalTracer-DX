@@ -1,5 +1,4 @@
-#ifndef SHARC_LAYOUT_H
-#define SHARC_LAYOUT_H
+#pragma once
 
 // Cache offsets are shared by all SHaRC passes.
 #define SHARC_CAPACITY (1u << 20u)
@@ -26,9 +25,7 @@
 #define LITE_REUSE_TEXELS (LITE_REUSE_SIZE0 * LITE_REUSE_SIZE0 + \
     LITE_REUSE_SIZE1 * LITE_REUSE_SIZE1 + LITE_REUSE_SIZE2 * LITE_REUSE_SIZE2)
 #include "LightTreeLearningLayout.h"
-#ifndef LT_BUFFER_OFFSET
 #define LT_BUFFER_OFFSET (LITE_REUSE_OFFSET + LITE_REUSE_TEXELS * 4u)
-#endif
 #define SHARC_BUFFER_BYTES (LT_BUFFER_OFFSET + LT_LEARNING_BYTES)
 
 #define LITE_FLAG_ENABLED 0x1u
@@ -37,11 +34,12 @@
 #define LITE_FLAG_DEBUG 0x10000u
 
 #define LITE_REUSE_FLAGS_SHIFT 16u
+#define LITE_RESERVOIR_BYTES 32u
 #define LITE_SLOTS_MAX 3u
 #define SHARC_MAX_LEVEL 24u
 #define SHARC_GROUP_SIZE 256u
 #define SHARC_RESOLVE_GROUPS (SHARC_CAPACITY / SHARC_GROUP_SIZE)
-#define SHARC_ROOT_CONSTANTS 57u
+#define SHARC_ROOT_CONSTANTS 36u
 
 #define SHARC_DEBUG_MODE_SHIFT 1u
 #define SHARC_DEBUG_MODE_MASK 3u
@@ -62,11 +60,11 @@
 #ifdef __cplusplus
 static_assert((SHARC_CAPACITY & (SHARC_CAPACITY - 1u)) == 0u);
 static_assert(SHARC_CAPACITY % SHARC_BUCKET_SIZE == 0u);
+static_assert(SHARC_BUCKET_SIZE <= 32u, "bucket occupancy masks are one word");
 static_assert(SHARC_CAPACITY % SHARC_GROUP_SIZE == 0u);
 static_assert(SHARC_DIRTY_WORDS % SHARC_GROUP_SIZE == 0u);
 static_assert((GUIDE_CAPACITY & (GUIDE_CAPACITY - 1u)) == 0u);
 static_assert(GUIDE_CAPACITY % SHARC_BUCKET_SIZE == 0u);
 static_assert(GUIDE_CAPACITY <= SHARC_CAPACITY);
 static_assert(SHARC_ROOT_CONSTANTS + 7u <= 64u);
-#endif
 #endif

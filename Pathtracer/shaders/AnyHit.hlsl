@@ -4,10 +4,6 @@
 void AlphaTestAnyHit(inout TracePayload payload,
                      in BuiltInTriangleIntersectionAttributes attr)
 {
-#if DISABLE_ALPHA_TEST
-    // Alpha testing is disabled for fallback renders.
-    return;
-#else
     uint instID = InstanceID();
     uint primID = FlatPrimID(instID, GeometryIndex(), PrimitiveIndex());
 
@@ -40,5 +36,4 @@ void AlphaTestAnyHit(inout TracePayload payload,
 
     if (alpha < LoadAlphaThreshold(matID))
         IgnoreHit();
-#endif
 }

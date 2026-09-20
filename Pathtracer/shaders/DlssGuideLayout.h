@@ -1,5 +1,4 @@
-#ifndef DLSS_GUIDE_LAYOUT
-#define DLSS_GUIDE_LAYOUT
+#pragma once
 
 // Guide depth encoding is shared by producers and consumers.
 #define DLSS_GUIDE_DEPTH_NEAR 0.01f
@@ -33,4 +32,3 @@
 // Every merged guide follows the mirror's Fresnel share of the pixel's reflectance. For diffuse
 // motion, 0 hands over to the virtual surface once that share passes half, 1 blends in proportion.
 #define DLSS_PSR_MV_MIX 1.0f
-#endif

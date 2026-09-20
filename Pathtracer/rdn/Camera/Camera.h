@@ -62,9 +62,6 @@ class Camera {
     float jitterScale = 1.0f;
 
     SunSettings sunSettings;
-    CumulusSettings cumulusSettings;
-    bool cumulusDensityCache = true;
-    float cumulusPreviousUploadTime = 0.0f;
 
     glm::vec3 planetCenter = glm::vec3(0.0f);
     float planetRadius = 6371000.0f;
@@ -73,8 +70,6 @@ class Camera {
     float terrainHeightFrequency = 0.0f;
 
   private:
-    std::array<float, 9> m_cumulusDensityKey{};
-    uint32_t m_cumulusDensityEpoch = 0;
     ComPtr<ID3D12Resource> m_buffer;
     ComPtr<ID3D12DescriptorHeap> m_constHeap;
     UINT m_bufferSize = 0;

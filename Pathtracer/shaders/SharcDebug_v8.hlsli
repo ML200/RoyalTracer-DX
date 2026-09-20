@@ -1,5 +1,4 @@
-#ifndef SHARC_DEBUG_V8_HLSLI
-#define SHARC_DEBUG_V8_HLSLI
+#pragma once
 #include "Sharc_v8.hlsli"
 
 struct SharcDebugSample
@@ -93,4 +92,3 @@ float4 SharcDebugColor(SharcSurface s, uint level, uint mode)
     color *= lerp(0.15f, 1.0f, smoothstep(0.015f, 0.04f, distanceToEdge));
     return float4(color, 0.0f);
 }
-#endif

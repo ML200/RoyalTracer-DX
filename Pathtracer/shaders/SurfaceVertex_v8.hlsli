@@ -1,5 +1,4 @@
-#ifndef SURFACE_VERTEX_V8_HLSLI
-#define SURFACE_VERTEX_V8_HLSLI
+#pragma once
 
 struct SurfaceVertex {
     float3 x;
@@ -51,4 +50,3 @@ inline SurfaceVertex BuildVertex(RWByteAddressBuffer sampleBuf, uint pixelIdx,
                       load_backface(sampleBuf, pixelIdx));
 }
 
-#endif

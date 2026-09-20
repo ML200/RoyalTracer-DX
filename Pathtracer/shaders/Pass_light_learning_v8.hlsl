@@ -1,4 +1,3 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
 void LTC_ClearCluster(uint address) {
@@ -92,10 +91,10 @@ void LTC_PublishDistribution(uint cell) {
 }
 void LTC_InitializeRoot(uint cell,uint face) {
     uint4 key=uint4(0,0,0,((LT_MAX_LEVEL+2u)<<9u)|face);
-    g_sharc.Store(cell+16u,0u);
-    float3 x=LT_WORLD_ORIGIN,n=LTC_FaceNormal(face);
+    g_sharc.Store(cell+16u,LT_PRIOR_HISTORY);g_sharc.Store(cell+28u,0u);
+    float3 x=sceneOriginWorld,n=LTC_FaceNormal(face);
     g_sharc.Store3(cell+32u,asuint(x));g_sharc.Store3(cell+48u,asuint(n));
-    x-=LT_WORLD_ORIGIN;
+    x-=sceneOriginWorld;
     [loop] for(uint i=0;i<LT_CUT_MAX;++i) LTC_ClearCluster(LTC_Cluster(cell,i));
     LTC_StoreNode(LTC_Cluster(cell,0u),LTC_Root());
     uint count=1u;
@@ -121,8 +120,7 @@ void LTC_InitializeRoot(uint cell,uint face) {
     }
     [loop] for(uint j=0;j<count;++j) {
         uint a=LTC_Cluster(cell,j);LTC_Node c=LTC_LoadNode(a);
-        float q=LTC_NodePower(c);
-        g_sharc.Store(LTC_Stats(a)+LT_ST_Q,asuint(q));
+        g_sharc.Store(LTC_Stats(a)+LT_ST_Q,asuint(LTC_NodePower(c)));
     }
     g_sharc.Store4(cell,uint4(1u,count,0u,sharc_frame));
     g_sharc.Store(cell+44u,count);g_sharc.Store(cell+60u,0u);
@@ -142,23 +140,31 @@ void LTC_Initialize(uint cell) {
         uint a=LTC_Cluster(cell,j);LTC_ClearCluster(a);
         if(j<count) {
             uint p=LTC_Cluster(source,j);LTC_StoreNode(a,LTC_LoadNode(p));
-            float q=LTC_Weight(p);g_sharc.Store(LTC_Stats(a)+LT_ST_Q,asuint(q));
+            g_sharc.Store(LTC_Stats(a)+LT_ST_Q,asuint(LTC_Weight(p)));
         }
     }
 
-    uint4 key=g_sharc.Load4(cell+80u);g_sharc.Store(cell+16u,0u);
+    uint4 key=g_sharc.Load4(cell+80u);g_sharc.Store(cell+16u,LT_PRIOR_HISTORY);g_sharc.Store(cell+28u,0u);
     g_sharc.Store3(cell+32u,g_sharc.Load3(cell+96u));g_sharc.Store3(cell+48u,g_sharc.Load3(cell+112u));
     g_sharc.Store4(cell,uint4(1u,count,0u,sharc_frame));
     g_sharc.Store(cell+44u,count);g_sharc.Store(cell+60u,0u);g_sharc.Store(cell+68u,0u);g_sharc.Store(cell+72u,sharc_frame);
     g_sharc.Store(cell+20u,0u);g_sharc.Store(cell+24u,LTC_Now());
     LTC_PublishDistribution(cell);g_sharc.Store4(LTC_KeyAddress(LTC_Index(cell)),key);
 }
-// Consume accumulated moments and refine one adaptive cell.
+// Consume accumulated rewards and refine one adaptive cell.
+//
+// Each update blends the weights of the cut toward the estimate of every cluster's contribution
+// that the batch gives, an estimate that holds whichever distribution drew the samples; the
+// weights keep the units of the rewards, so batches without any reward lower them all and a
+// rare reward stands out against them. An inherited cut is put into those units once, when the
+// first rewards arrive. The cell forgets in samples, not in updates: a cell covering many pixels
+// adapts within a few frames, a cell touched by a few paths keeps a longer memory, and a
+// starting cut counts as LT_PRIOR_HISTORY samples.
 bool LTC_Update(uint cell,uint cellSlot) {
     uint count=g_sharc.Load(cell+4u),samples=0u;
     if(count==0u || count>LT_CUT_MAX) return false;
     float estimatedTotal=0.0f;
-    bool calibrating=g_sharc.Load(cell+16u)==0u;
+    bool calibrating=g_sharc.Load(cell+28u)==0u;
     [loop] for(uint j=0;j<count;++j) {
         uint a=LTC_Cluster(cell,j),selected=g_sharc.Load(LTC_Stats(a)+LT_ST_SELECTED);samples+=selected;
         if(calibrating && selected!=0u)
@@ -169,13 +175,13 @@ bool LTC_Update(uint cell,uint cellSlot) {
     uint budget=4u*max((count+initial-1u)/initial,2u);
     if(samples<budget) return false;
     uint iteration=g_sharc.Load(cell+8u)+1u;
-    float alpha=max(LT_LEARNING_ALPHA_MIN,0.25f*pow(float(iteration),-6.0f/7.0f));
+    uint history=g_sharc.Load(cell+16u);
+    float alpha=max(LT_LEARNING_ALPHA_MIN,float(samples)/float(min(history,LT_SAMPLE_HISTORY)+samples));
     float priorScale=1.0f;
     if(calibrating && estimatedTotal>0.0f) {
-
         float priorSum=LTC_Sum(cell,count);
         if(priorSum>0.0f) priorScale=(estimatedTotal/float(samples))/priorSum;
-        g_sharc.Store(cell+16u,1u);
+        g_sharc.Store(cell+28u,1u);
     }
     float totalVariance=0;
     [loop] for(uint j=0;j<count;++j) {
@@ -191,9 +197,9 @@ bool LTC_Update(uint cell,uint cellSlot) {
         float mean=asfloat(g_sharc.Load(stats+LT_ST_MEAN)),m2=asfloat(g_sharc.Load(stats+LT_ST_M2));
         uint visits=g_sharc.Load(stats+LT_ST_VISITS);
 
-        uint history=visits==0u?0u:max(1u,(uint)(float(min(visits,LT_MOMENT_HISTORY))*(1.0f-alpha)));
-        m2*=visits>1u?float(history>0u?history-1u:0u)/float(visits-1u):0.0f;
-        visits=history;
+        uint kept=visits==0u?0u:max(1u,(uint)(float(min(visits,LT_MOMENT_HISTORY))*(1.0f-alpha)));
+        m2*=visits>1u?float(kept>0u?kept-1u:0u)/float(visits-1u):0.0f;
+        visits=kept;
         if(selected>0u) {
             float batchMean=sum/float(selected);
             float batchM2=max(0.0f,sum2-sum*batchMean);
@@ -211,7 +217,8 @@ bool LTC_Update(uint cell,uint cellSlot) {
         if(selected!=0u) LTC_ClearBatch(a);
     }
     g_sharc.Store(cell+8u,iteration);
-    float3 x=asfloat(g_sharc.Load3(cell+32u))-LT_WORLD_ORIGIN;
+    g_sharc.Store(cell+16u,min(history+samples,LT_SAMPLE_HISTORY));
+    float3 x=asfloat(g_sharc.Load3(cell+32u))-sceneOriginWorld;
     float3 n=asfloat(g_sharc.Load3(cell+48u));
 
     [loop] for(uint j=0;j<count;++j) {

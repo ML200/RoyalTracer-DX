@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 #include "SharcLayout.h"
+#include "PathStateLayout.h"
 #ifndef SHARC_RESOLVE_GROUPS
 #define SHARC_RESOLVE_GROUPS (SHARC_CAPACITY / SHARC_GROUP_SIZE)
 #endif
@@ -28,7 +29,7 @@ struct Runner {
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12Resource> cache, output, readback;
+    ComPtr<ID3D12Resource> cache, output, readback, pathState;
     ComPtr<ID3D12Fence> fence;
     std::array<ComPtr<ID3D12PipelineState>, 13> psos;
     std::array<uint32_t, 20> constants = {1, 0, 32, 64, 120, 0};
@@ -57,17 +58,19 @@ struct Runner {
         Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&commands)));
         Check(commands->Close());
         Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
-        D3D12_ROOT_PARAMETER params[3]{};
+        D3D12_ROOT_PARAMETER params[4]{};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[0].Constants = {0, 0, 20};
         params[1].ParameterType = params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
         params[1].Descriptor.ShaderRegister = 27;
         params[2].Descriptor.ShaderRegister = 0;
-        D3D12_ROOT_SIGNATURE_DESC desc{}; desc.NumParameters = 3; desc.pParameters = params;
+        params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[3].Descriptor.ShaderRegister = 10;
+        D3D12_ROOT_SIGNATURE_DESC desc{}; desc.NumParameters = 4; desc.pParameters = params;
         ComPtr<ID3DBlob> blob, errors;
         Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors));
         Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
-        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery", "materialCheck", "materialBenchmark", "liteCheck", "legacyDupCheck", "materialSamplingCheck"};
+        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery", "materialCheck", "materialBenchmark", "liteCheck", "materialSamplingCheck", "liteAccumCheck"};
         for (int i = 0; i < 13; ++i) {
             std::ifstream file(std::string(directory) + "/" + names[i] + ".dxil", std::ios::binary);
             Require(bool(file), "Missing compiled test shader");
@@ -78,6 +81,8 @@ struct Runner {
         }
         cache = Buffer(uint64_t(SHARC_BUFFER_BYTES), D3D12_HEAP_TYPE_DEFAULT);
         output = Buffer(4u * 1024u * 1024u, D3D12_HEAP_TYPE_DEFAULT);
+        // Path-state planes of the 53x45 test image (2688 padded pixels) plus one training spill lane per thread.
+        pathState = Buffer(uint64_t(PS_PATH_STATE_BYTES) * 2688u + uint64_t(SHARC_CAPACITY) * 48u, D3D12_HEAP_TYPE_DEFAULT);
         readback = Buffer(2048, D3D12_HEAP_TYPE_READBACK);
         constants[6] = Bits(0.125f); constants[7] = Bits(0.01f); constants[8] = Bits(3.0f);
         constants[16] = GUIDE_PARAM_ENABLED | (255u << GUIDE_PARAM_QMAX_SHIFT) | (3u << GUIDE_PARAM_LEVEL_SHIFT) |
@@ -88,6 +93,7 @@ struct Runner {
         commands->SetComputeRootSignature(root.Get());
         commands->SetComputeRootUnorderedAccessView(1, cache->GetGPUVirtualAddress());
         commands->SetComputeRootUnorderedAccessView(2, output->GetGPUVirtualAddress());
+        commands->SetComputeRootUnorderedAccessView(3, pathState->GetGPUVirtualAddress());
     }
     void Dispatch(int pso, uint32_t groups) {
         commands->SetPipelineState(psos[pso].Get());
@@ -168,7 +174,7 @@ int main(int argc, char** argv) try {
     for (int i = 0; i < 64; ++i) maxMaterialError = std::max(maxMaterialError, materialErrors[i]);
     Require(maxMaterialError < 2e-5f, "Fused material/lobe evaluation changed the BSDF or PDF");
     std::cout << "PASS: 16,384 layered material cases, max relative error " << maxMaterialError << '\n';
-    auto materialSampling = r.Query(0, 12);
+    auto materialSampling = r.Query(0, 11);
     float accepted = 0.0f, furnace = 0.0f, coatError = 0.0f;
     for (int i = 0; i < 64; ++i) {
         accepted += materialSampling[i * 4] / 64.0f;
@@ -176,7 +182,7 @@ int main(int argc, char** argv) try {
     }
     const float expectedFurnace = (1.0f - std::log(2.0f)) / 0.725f;
     for (uint32_t mode : {1u, 2u}) {
-        const auto precision = r.Query(mode, 12);
+        const auto precision = r.Query(mode, 11);
         float error = 0.0f;
         for (int i = 0; i < 64; ++i) error = std::max(error, precision[i * 4 + 2]);
         std::cout << "Coat precision mode " << mode << ": max relative PDF error " << error << '\n';
@@ -186,7 +192,7 @@ int main(int argc, char** argv) try {
               << " vs " << expectedFurnace << '\n';
     float floorError = 0.0f;
     for (uint32_t mode : {3u, 4u, 5u}) {
-        const auto floor = r.Query(mode, 12);
+        const auto floor = r.Query(mode, 11);
         float mixture = 0.0f, lobe = 0.0f, reference = 0.0f;
         for (int i = 0; i < 64; ++i) {
             mixture += floor[i * 4] / 64.0f;
@@ -207,7 +213,7 @@ int main(int argc, char** argv) try {
         for (float nv : {0.15f, 0.8f, 1.0f}) for (float rough : {0.5f, 1.0f}) {
             r.constants[15] = Bits(nv);
             r.constants[12] = Bits(rough);
-            const auto moments = r.Query(100u, 12);
+            const auto moments = r.Query(100u, 11);
             for (int component = 0; component < 4; ++component) {
                 float mean = 0.0f;
                 for (int lane = 0; lane < 64; ++lane) mean += moments[lane * 4 + component] / 64.0f;
@@ -216,7 +222,7 @@ int main(int argc, char** argv) try {
             for (float dr : {0.0f, 0.5f, 1.0f}) {
                 r.constants[13] = Bits(dr);
                 for (uint32_t mode : {101u, 102u, 103u, 104u}) {
-                    const auto energy = r.Query(mode, 12);
+                    const auto energy = r.Query(mode, 11);
                     float mean = 0.0f;
                     for (int lane = 0; lane < 64; ++lane) mean += energy[lane * 4] / 64.0f;
                     Require(std::isfinite(mean), "Material furnace returned non-finite energy");
@@ -565,29 +571,13 @@ int main(int argc, char** argv) try {
         for (int i = 0; i < 64; ++i)
             Require(std::abs(scale[i] - 1.0f) < 1e-5f,
                 "Lite area-measure weight lost energy when the scene scale changed");
-        auto temporal = r.Query(4, 10);
-        Require(temporal[0] == 8.0f && temporal[1] == 1.0f && temporal[2] == 8.0f && temporal[3] == 1.0f &&
-            temporal[8] == 0.0f && temporal[9] == 0.0f,
-            "Legacy confidence reduction or permutation failed");
-        for (uint32_t mode = 0; mode < 6; ++mode) {
-            auto duplicates = r.Query(mode, 11);
-            const int gx = mode == 1 ? 0 : (mode == 2 ? 3 : 1);
-            const int gy = mode == 1 ? 0 : (mode == 2 ? 2 : 1);
-            for (int i = 0; i < 256; ++i) {
-                const int x = gx * 16 + i % 16, y = gy * 16 + i / 16;
-                int count = 0;
-                if (x < 53 && y < 45 && mode != 3) {
-                    for (int dy = -8; dy <= 8; ++dy) for (int dx = -8; dx <= 8; ++dx) {
-                        if ((dx == 0 && dy == 0) || x + dx < 0 || x + dx >= 53 || y + dy < 0 || y + dy >= 45) continue;
-                        if (mode != 4 || (dx % 2) == 0) ++count;
-                    }
-                }
-                Require(std::abs(duplicates[i] - float(count) / 288.0f) < 1e-6f,
-                    "Legacy duplicate map counted the wrong identity or border pixel");
-            }
-        }
         std::cout << "PASS: lite packing, spatial MIS and area-weight scale invariance\n";
-        std::cout << "PASS: legacy confidence, permutation and duplicate scan (interior, corner, partial tiles, identity, zero sentinel)\n";
+    {
+        const auto accum = r.Query(0, 12);
+        for (int i = 0; i < 64; ++i)
+            Require(accum[i] == 0.0f, "Reservoir-side candidate accumulation differs from the register generator");
+        std::cout << "PASS: reservoir-side reuse accumulation matches the register generator\n";
+    }
     }
     return 0;
 } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

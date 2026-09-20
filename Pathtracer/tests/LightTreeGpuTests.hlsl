@@ -1,11 +1,13 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
+cbuffer LightTreeTestConstants : register(b0, space1) {
+    uint workCount,testMode,triangleCount,testSeed;
+    float3 testCameraPosition;float testRewardScale;
+}
 RWStructuredBuffer<float4> results : register(u0, space1);
 StructuredBuffer<float4> testReceivers : register(t19);
 StructuredBuffer<LightBLASNodeGpu> unpackedLightNodes : register(t20);
 uint TestInstOf(uint tri) { return g_EmissiveTriangles[tri].meshID; }
 uint TestSlotOf(uint tri) { return LT_SlotOfInstance(TestInstOf(tri)); }
-#ifdef LT_FROZEN_BYTES
 #define LT_TEST_Q(a) (LTC_Stats(a)+LT_ST_Q)
 #define LT_TEST_MOMENTS(a) (LTC_Stats(a)+LT_ST_MEAN)
 #define LT_TEST_VISITS(a) (LTC_Stats(a)+LT_ST_VISITS)
@@ -16,15 +18,6 @@ void LT_TEST_ClearRecord(uint a) {
     for(uint b=0u;b<LT_FROZEN_BYTES;b+=16u) g_sharc.Store4(a+b,0u);
     for(uint c=0u;c<LT_STATS_BYTES;c+=16u) g_sharc.Store4(LTC_Stats(a)+c,0u);
 }
-#else
-#define LT_TEST_Q(a) ((a)+20u)
-#define LT_TEST_MOMENTS(a) ((a)+24u)
-#define LT_TEST_VISITS(a) ((a)+32u)
-#define LT_TEST_SELECTED(a) ((a)+56u)
-#define LT_TEST_POWER(a) ((a)+60u)
-#define LT_TEST_PROBABILITY(a) ((a)+40u)
-void LT_TEST_ClearRecord(uint a) { for(uint b=0u;b<LT_CLUSTER_BYTES;b+=16u) g_sharc.Store4(a+b,0u); }
-#endif
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
     if(tid.x>=workCount) return;
@@ -109,7 +102,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
                 uint a=LTC_Cluster(cell,j);
                 g_sharc.Store(LT_TEST_Q(a),asuint(LTC_Contains(LTC_LoadNode(a),0u,TestSlotOf(0u))?1e20f:1e18f));
             }
-            g_sharc.Store(cell+16u,1u);
+            g_sharc.Store(cell+28u,1u);
             float sum=LTC_Sum(cell,count),powerSum=0,cdf=0;
             for(uint j=0u;j<count;++j) powerSum+=asfloat(g_sharc.Load(LT_TEST_POWER(LTC_Cluster(cell,j))));
             for(uint j=0u;j<count;++j) {
@@ -119,7 +112,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
             }
         }
         results[tid.x]=float4(LTC_Sum(cell,count),LTC_Index(cell)>=LT_GRID_CAPACITY?25u:
-            LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell)))),g_sharc.Load(cell+8u),g_sharc.Load(cell+16u));return;
+            LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell)))),g_sharc.Load(cell+8u),g_sharc.Load(cell+28u));return;
     }
     if(testMode==38u) {
         float3 x=testReceivers[0].xyz,n=float3(0,0,1);
@@ -142,9 +135,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
             }
             matches+=LTC_Contains(LTC_LoadNode(a),tid.x,TestSlotOf(tid.x))?1u:0u;
             valid=valid && all(isfinite(asfloat(g_sharc.Load3(LT_TEST_Q(a)))));
-#ifdef LT_MOMENT_HISTORY
             if(testMode==36u) valid=valid && g_sharc.Load(LT_TEST_VISITS(a))<=LT_MOMENT_HISTORY;
-#endif
         }
         if(testMode==37u) {g_sharc.Store(cell+8u,1000000u);g_sharc.Store(cell+60u,0u);}
         results[tid.x]=float4(LT_PdfSelectTriangle(x,n,tid.x,TestInstOf(tid.x)),matches,count,valid?1:0);return;
@@ -159,7 +150,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
         if(testMode==34u) LT_TrainSample(light.learningToken,estimate);
         results[tid.x]=float4(light.pdf,LT_PdfSelectTriangle(x,n,light.id,light.inst),estimate,light.id);return;
     }
-#ifdef LT_ACCUMULATOR_WORDS
     if(testMode>=29u && testMode<=33u) {
         uint cluster=LTC_TokenAddress(1u),address=LTC_BatchAddress(cluster);
         if(testMode==29u || testMode==33u) {
@@ -181,8 +171,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
         }
         results[tid.x]=float4(LTC_BatchMoments(cluster),g_sharc.Load(LT_TEST_SELECTED(cluster)),0);return;
     }
-#endif
-#ifdef LT_MOVEMENT_STABLE
     if(testMode>=22u && testMode<=28u) {
         float3 x=testReceivers[0].xyz,n=float3(0,0,1);uint tri=tid.x%triangleCount;
         if(testMode==22u) {
@@ -204,13 +192,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
                 float sum=0;uint samples=0;
                 for(uint j=0;j<g_sharc.Load(cell+4u);++j) {
                     uint a=LTC_Cluster(cell,j);
-#ifdef LT_ACCUMULATOR_WORDS
                     sum+=LTC_BatchMoments(a).x/LTC_FrozenProbability(a);samples+=g_sharc.Load(LT_TEST_SELECTED(a));
                     if(testMode==28u) LTC_ClearBatch(a);
-#else
-                    uint3 batch=g_sharc.Load3(a+48u);sum+=asfloat(batch.x)/LTC_FrozenProbability(a);samples+=batch.z;
-                    if(testMode==28u) g_sharc.Store4(a+48u,0u);
-#endif
                 }
                 results[tid.x]=float4(sum,samples,LTC_Index(cell),0);return;
             }
@@ -229,54 +212,28 @@ void main(uint3 tid : SV_DispatchThreadID) {
         results[tid.x]=float4(s.pdf,LT_PdfSelectTriangle(x,n,s.id,s.inst),estimate,
             s.learningToken.y!=0u?float((s.learningToken.y-1u)/LT_CUT_MAX):-1.0f);return;
     }
-#endif
-#ifdef LT_ADAPTIVE_GRID
-    if(testMode==20u || testMode==21u) {
-        uint tri=17u+tid.x,inst=5000u+tid.x,rng=29u+tid.x;uint2 token=uint2(1000000u+tid.x,42u+tid.x),readToken;
-        store_pt_neePrefetch(g_sharc,tid.x,tri,inst,.125f,rng,token);
-        if(testMode==21u) g_sharc.Store(ps_addr_hot1(tid.x)+12u,pt_neePrefetchTag()^1u);
-        uint readTri,readInst,readRng=123u;float readPdf;
-        bool found=load_pt_neePrefetch(g_sharc,tid.x,readTri,readInst,readPdf,readRng,readToken);
-        bool valid=testMode==20u?(found && all(readToken==token) && readTri==tri && readInst==inst && readPdf==.125f && readRng==rng)
-            :(!found && all(readToken==0u) && readInst==0xFFFFFFFFu && readRng==123u);
-        results[tid.x]=float4(valid?1:0,0,0,0);return;
-    }
-#endif
     if(testMode>=11u && testMode<=19u) {
         uint receiver=testMode>=13u && testMode<=16u?
             ((testSeed&0x80000000u)!=0u?LTC_Hash(tid.x)%triangleCount:(tid.x/256u)%triangleCount):tid.x%triangleCount;
         float3 x=testReceivers[receiver].xyz,n=float3(0,0,1);
         if(testMode==19u) {
-#ifdef LT_ADAPTIVE_GRID
             uint cell;bool found=LTC_Find(x,n,cell);
             uint level=found?(LTC_Index(cell)>=LT_GRID_CAPACITY?LT_MAX_LEVEL+1u:LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell))))):99u;
             results[tid.x]=float4(LTC_Level(x),level,found?g_sharc.Load(cell+8u):0,found?float(LTC_Index(cell)):-1);return;
-#else
-            results[tid.x]=0;return;
-#endif
         }
         if(testMode==17u || testMode==18u) {
             if(testMode==17u) {LT_Train(x,n,0u,TestInstOf(0u),float(tid.x%7u));results[tid.x]=0;return;}
             uint cell;results[tid.x]=0;
             if(LTC_Find(x,n,cell)) for(uint i=0;i<g_sharc.Load(cell+4u);++i) {
                 uint a=LTC_Cluster(cell,i);if(!LTC_Contains(LTC_LoadNode(a),0u,TestSlotOf(0u))) continue;
-#ifdef LT_ACCUMULATOR_WORDS
                 results[tid.x]=float4(LTC_BatchMoments(a),g_sharc.Load(LT_TEST_SELECTED(a)),LTC_FrozenProbability(a));return;
-#else
-                uint3 batch=g_sharc.Load3(a+48u);
-                results[tid.x]=float4(asfloat(batch.xy),batch.z,asfloat(g_sharc.Load(a+40u)));return;
-#endif
             }
             return;
         }
         if(testMode>=14u) {
             uint rng=LTC_Hash(tid.x+testSeed)+1u;LT_Sample light=LT_SampleLight(x,n,rng);
             if(testMode==15u) {
-#ifdef LT_ADAPTIVE_GRID
                 LT_TrainSample(light.learningToken,testRewardScale*float(light.id%7u)/light.pdf);
-#else
-                LT_Train(x,n,light.id,light.inst,testRewardScale*float(light.id%7u)/light.pdf);
-#endif
             }
             results[tid.x]=float4(light.id,light.pdf,testMode==16u?LT_PdfSelectTriangle(x,n,light.id,light.inst):0,0);return;
         }
@@ -324,11 +281,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     }
     float estimate=sample.id==0u && sample.pdf>0u && testMode!=4u?testRewardScale/sample.pdf:0;
     if(testMode==1u || testMode==4u) {
-#ifdef LT_ADAPTIVE_GRID
         LT_TrainSample(sample.learningToken,estimate);
-#else
-        LT_Train(x,n,sample.id,sample.inst,estimate);
-#endif
     }
     results[tid.x]=float4(pdf,sample.pdf,evaluated,estimate);
 }

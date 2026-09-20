@@ -8,28 +8,19 @@ enum class Stage {
     RayGen,
     Compute,
     FixedCompute,
-    Wavefront,
     Barrier,
     LoopStart,
     LoopEnd,
-    PingSwap,
-    ClearSort,
-    Callable,
     DLSS
 };
 
 namespace pass_feature {
-constexpr uint32_t PathTracer = 1u << 0;
-constexpr uint32_t LegacyReSTIR = 1u << 1;
-constexpr uint32_t Sharc = 1u << 2;
-constexpr uint32_t DiffuseReuse = 1u << 3;
-constexpr uint32_t SpatialReuse = 1u << 4;
-constexpr uint32_t Clouds = 1u << 5;
-constexpr uint32_t CloudNoise = 1u << 6;
-constexpr uint32_t CloudDensity = 1u << 7;
-constexpr uint32_t CloudAmbient = 1u << 8;
-constexpr uint32_t MeshLights = 1u << 9;
-constexpr uint32_t LightLearning = 1u << 10;
+constexpr uint32_t Sharc = 1u << 0;         // radiance cache maintenance and training
+constexpr uint32_t SharcDebug = 1u << 1;    // cache inspection view
+constexpr uint32_t DiffuseReuse = 1u << 2;
+constexpr uint32_t SpatialReuse = 1u << 3;
+constexpr uint32_t MeshLights = 1u << 4;
+constexpr uint32_t LightLearning = 1u << 5;
 }
 
 struct PassDesc {
@@ -38,12 +29,10 @@ struct PassDesc {
     uint32_t groupX = 0;
     uint32_t groupY = 0;
     uint32_t psoIdx = UINT32_MAX;
-    bool isWorkGraph = false;
-    uint32_t wgIdx = UINT32_MAX;
     uint32_t loopCount = 0;
+    std::wstring loopTag; // runtime-resolved trip count (loop:pt_samples)
     int32_t targetIdx = -1;
 
-    std::wstring dispatchTag;
     uint32_t requiredFeatures = 0;
     bool executedLastFrame = false;
 

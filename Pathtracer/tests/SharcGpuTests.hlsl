@@ -14,25 +14,49 @@ float3 InitOrigin() { return testCamera; }
 float Luma(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
 #include "Compression_v8.hlsli"
 #include "Random_v8.hlsli"
-#define SHARC_TEST 1
-#define SHARC_UPDATE_PASS 1
-#include "SharcPath_v8.hlsli"
-#include "SharcGuide_v8.hlsli"
-#include "SharcDebug_v8.hlsli"
-#ifndef PI
+#define IMG_W 53u
+#define IMG_H 45u
 #define PI 3.1415926535
-#endif
 #define RAY_TMAX_PLANET 1e9f
-#define ucw_clampMax 10000.0f
-#include "RestirLite_v8.hlsli"
-#include "Temporal_ReuseMath_v8.hlsli"
-#define main prepare
-#include "Pass_sharc_prepare_v8.hlsl"
-#undef main
-#define main resolve
-#include "Pass_sharc_resolve_v8.hlsl"
-#undef main
+globallycoherent RWByteAddressBuffer g_sharc : register(u27);
+RWByteAddressBuffer g_pathStateBuffer : register(u10);
 RWByteAddressBuffer results : register(u0);
+#include "Path_State_v8.hlsli"
+#include "SharcTraining_v8.hlsli"
+#include "SharcDebug_v8.hlsli"
+#include "RestirLiteMath_v8.hlsli"
+
+[numthreads(SHARC_GROUP_SIZE, 1, 1)]
+void prepare(uint3 tid : SV_DispatchThreadID) { SharcPrepareIndex(tid.x); }
+
+groupshared uint sharcDirtyMask[SHARC_GROUP_SIZE / 32u];
+
+[numthreads(SHARC_GROUP_SIZE, 1, 1)]
+// Resolve dirty radiance and guide entries into reusable history.
+void resolve(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    uint baseSlot = group.x * SHARC_GROUP_SIZE;
+    if (baseSlot >= SHARC_CAPACITY) return;
+
+    if (baseSlot < GUIDE_CAPACITY)
+    {
+        const uint guideSlot = baseSlot + lane;
+        if ((g_sharc.Load(GuideDirtyAddress(guideSlot >> 5u)) & (1u << (guideSlot & 31u))) != 0u)
+            GuideResolveEntry(guideSlot);
+    }
+
+    if (lane < SHARC_GROUP_SIZE / 32u)
+    {
+        uint address = SharcDirtyAddress((baseSlot >> 5u) + lane);
+        uint dirty = g_sharc.Load(address);
+        sharcDirtyMask[lane] = dirty;
+
+        if (dirty != 0u) g_sharc.Store(address, 0u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if ((sharcDirtyMask[lane >> 5u] & (1u << (lane & 31u))) != 0u)
+        SharcResolveEntry(baseSlot + lane);
+}
 #include "MaterialGpuTests.hlsli"
 
 SharcSurface Surface(uint mode)
@@ -77,7 +101,7 @@ void fill(uint3 tid : SV_DispatchThreadID)
     if (testMode == 16u)
     {
         SharcTrainingState state;
-        SharcTrainingInit(state);
+        SharcTrainingInit(state, tid.x);
         SharcTrainingVertex(state, s, 1.0f, Hash32(seed));
         SharcTrainingScatter(state, float3(0.5f, 0.75f, 0.25f));
         SharcTrainingRadiance(state, float3(2, 3, 4));
@@ -121,7 +145,7 @@ void fill(uint3 tid : SV_DispatchThreadID)
     if (testMode == 5u)
     {
         SharcTrainingState state;
-        SharcTrainingInit(state);
+        SharcTrainingInit(state, tid.x);
         SharcTrainingVertex(state, s, 1.0f, Hash32(seed ^ 0x53504c54u));
         bool survives = true;
         [loop] for (uint b = 0u; b < 20u; ++b)
@@ -506,37 +530,6 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
         results.Store4(16u, asuint(float4(q.W, (float)q.M, (float)q.s.kind, length(q.tint - r.tint))));
         return;
     }
-    if (testMode == 4u)
-    {
-        if (tid.x != 0u) return;
-        results.Store4(0u, asuint(float4(
-            TemporalConfidenceCap(8u, 0.0f, 0.025f, false),
-            TemporalConfidenceCap(8u, 1.0f, 0.025f, false),
-            TemporalConfidenceCap(8u, 1.0f, 0.025f, true),
-            TemporalConfidenceCap(0u, 0.0f, 0.025f, false))));
-        float error = 0.0f;
-        uint lastCap = 8u;
-        for (uint i = 0u; i <= 288u; ++i)
-        {
-            const uint cap = TemporalConfidenceCap(8u, (float)i / 288.0f, 0.025f, false);
-            if (cap > lastCap || cap < 1u) error += 1.0f;
-            lastCap = cap;
-        }
-        results.Store(32u, asuint(error));
-        for (uint permutation = 0u; permutation < 16u; ++permutation)
-        {
-            for (int x = -4; x < 20; ++x)
-            {
-                const int2 original = int2(x, 17 - x);
-                int2 mapped = original;
-                ApplyPermutationSampling(mapped, permutation);
-                ApplyPermutationSampling(mapped, permutation);
-                if (any(mapped != original)) error += 1.0f;
-            }
-        }
-        results.Store(36u, asuint(error));
-        return;
-    }
     if (testMode == 1u)
     {
         float worst = 0.0f;
@@ -615,30 +608,70 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
     if (tid.x == 0u) results.Store(64u * 4u, asuint(exact));
 }
 
-#define IMG_W 53u
-#define IMG_H 45u
-#define DUP_KEY uint
-#include "Duplication_Map_v8.hlsli"
-[numthreads(16, 16, 1)]
-void legacyDupCheck(uint3 local : SV_GroupThreadID)
+// The old register-side reuse generator against the reservoir-side accumulation on identical
+// synthetic candidates: reservoir bytes and the (phatSel, wsum) state must match exactly.
+uint LiteTestStateAddress(uint px) { return ps_numPx() * PS_LITE_STATE_PLANE + px * PS_LITE_STATE_BYTES; }
+
+LiteSample LiteTestCandidate(inout uint seed, uint instance)
 {
-    const uint2 group = testMode == 1u ? uint2(0u, 0u)
-        : (testMode == 2u ? uint2(3u, 2u) : uint2(1u, 1u));
-    const uint2 pixel = group * 16u + local.xy;
-    const uint tlin = local.y * TILE_W + local.x;
-    for (uint i = 0u; i < LOADS_PER_THREAD; ++i)
+    LiteSample s;
+    s.position = float3(RandomFloatPCG(seed), RandomFloatPCG(seed), RandomFloatPCG(seed)) * 10.0f - 5.0f;
+    s.instance = instance;
+    s.radiance = LiteQuantizeRadiance(float3(RandomFloatPCG(seed), RandomFloatPCG(seed), RandomFloatPCG(seed)) * 4.0f);
+    s.normal = normalize(float3(RandomFloatPCG(seed) - 0.5f, RandomFloatPCG(seed) - 0.5f, RandomFloatPCG(seed) - 0.5f));
+    s.kind = LITE_KIND_LIGHT;
+    return s;
+}
+
+[numthreads(64, 1, 1)]
+void liteAccumCheck(uint3 tid : SV_DispatchThreadID)
+{
+    const uint pxA = 4096u + tid.x * 2u, pxB = pxA + 1u;
+    uint gen = Hash32(tid.x * 7919u + 13u);
+    const uint count = 1u + (Hash32(gen) & 3u);
+    uint seedA = Hash32(gen ^ 0x51u), seedB = seedA;
+
+    LiteSample gs = LiteEmpty(0u).s; float3 gtint = 0.0f; float gphat = 0.0f, gwsum = 0.0f;
+    LiteStore(results, pxB, LiteEmpty(1u));
+    g_pathStateBuffer.Store2(LiteTestStateAddress(pxB), uint2(0u, 0u));
+
+    [loop] for (uint i = 0u; i < count; ++i)
     {
-        const uint index = tlin * LOADS_PER_THREAD + i;
-        const int2 p = int2(group * 16u) - int2(WIN_R, WIN_R) + int2(index % CACHE_W, index / CACHE_W);
-        uint key = 7u;
-        if (testMode == 3u) key = (uint)(p.y * (int)IMG_W + p.x);
-        if (testMode == 4u) key = (uint)p.x & 1u;
-        if (testMode == 5u) key = 0u;
-        if (any(p < 0) || any(p >= int2(IMG_W, IMG_H))) key = 0u;
-        s_V2[index / CACHE_W][index % CACHE_W] = key;
+        const LiteSample c = LiteTestCandidate(gen, tid.x * 8u + i);
+        const float3 tint = float3(RandomFloatPCG(gen), RandomFloatPCG(gen), RandomFloatPCG(gen));
+        const float phat = (Hash32(gen + i) & 7u) == 0u ? 0.0f : RandomFloatPCG(gen) * 2.0f;
+        const float w = (Hash32(gen + 3u * i) & 15u) == 0u ? 0.0f : RandomFloatPCG(gen) * 3.0f;
+
+        if (w > 0.0f && phat > 0.0f && !isinf(w))
+        {
+            gwsum += w;
+            if (RandomFloatPCG(seedA) * gwsum < w) { gs = c; gtint = tint; gphat = phat; }
+        }
+        if (w > 0.0f && phat > 0.0f && !isinf(w))
+        {
+            const uint2 state = g_pathStateBuffer.Load2(LiteTestStateAddress(pxB));
+            float phatSel = asfloat(state.x);
+            const float wsum = asfloat(state.y) + w;
+            if (RandomFloatPCG(seedB) * wsum < w)
+            {
+                phatSel = phat;
+                LiteReservoir r; r.s = c; r.W = 0.0f; r.M = 1u; r.tint = tint;
+                LiteStore(results, pxB, r);
+            }
+            results.Store(LiteAddress(pxB) + 24u, asuint(wsum / phatSel));
+            g_pathStateBuffer.Store2(LiteTestStateAddress(pxB), uint2(asuint(phatSel), asuint(wsum)));
+        }
     }
-    GroupMemoryBarrierWithGroupSync();
-    const float D = any(pixel >= uint2(IMG_W, IMG_H)) ? 0.0f
-        : DuplicationFraction(uint3(pixel, 0u), uint3(group, 0u), local);
-    results.Store(tlin * 4u, asuint(D));
+    LiteReservoir ra; ra.s = gs; ra.W = (gwsum > 0.0f && gphat > 0.0f) ? gwsum / gphat : 0.0f; ra.M = 1u; ra.tint = gtint;
+    LiteStore(results, pxA, ra);
+    g_pathStateBuffer.Store2(LiteTestStateAddress(pxA), uint2(asuint(gphat), asuint(gwsum)));
+
+    uint mismatch = 0u;
+    const uint4 a0 = results.Load4(LiteAddress(pxA)), b0 = results.Load4(LiteAddress(pxB));
+    const uint4 a1 = results.Load4(LiteAddress(pxA) + 16u), b1 = results.Load4(LiteAddress(pxB) + 16u);
+    const uint2 sa = g_pathStateBuffer.Load2(LiteTestStateAddress(pxA)), sb = g_pathStateBuffer.Load2(LiteTestStateAddress(pxB));
+    if (any(a0 != b0)) mismatch |= 1u;
+    if (any(a1 != b1)) mismatch |= 2u;
+    if (any(sa != sb)) mismatch |= 4u;
+    results.Store(tid.x * 4u, asuint((float)mismatch));
 }

@@ -1,9 +1,30 @@
 struct [raypayload] TracePayload
 {
-    uint dummy : read(caller) : write(caller);
+    uint   flags  : read(caller, closesthit, miss) : write(caller, closesthit, miss);
+    float  pdf    : read(caller, closesthit, miss) : write(caller, closesthit, miss);
+    float  spread : read(caller, closesthit)       : write(caller, closesthit);
+    uint   dirPk  : read(caller)                   : write(caller, closesthit);
+    uint   nPk    : read(caller)                   : write(caller, closesthit);
+    float3 color  : read(caller)                   : write(caller, closesthit, miss);
+    uint   auxPk  : read(caller)                   : write(caller, closesthit, miss);
 };
 
 static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
+
+// Material context of a path vertex, shared by the passes that shade one.
+struct HitContext {
+    float3 hitPos;
+    float3 hitNormal;
+    uint   matID;
+    uint   instID;
+    bool   backface;
+    half3  hitLocalKd;
+    half   hitLocalPr;
+    half   hitLocalPm;
+    half2  iors;
+    uint   mediumMatID;
+    half3  absorptionTint;
+};
 
 struct HitInfo {
     float3 hitPos;
@@ -16,7 +37,6 @@ struct HitInfo {
     float2 uv;
 };
 
-#ifdef ENABLE_RAY_QUERY_INLINE
 
 static const float RTG_ORIGIN      = 1.0f / 32.0f;
 static const float RTG_FLOAT_SCALE = 1.0f / 65536.0f;
@@ -48,10 +68,6 @@ inline bool IsRayValid(float3 origin, float3 direction, float tMax)
 
 inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
 {
-#if DISABLE_ALPHA_TEST
-
-    return true;
-#else
     const uint matID = materialIDs[instanceProps[instID].materialBase + primID];
     const int  texID = LoadAlbedoTexID(matID);
 
@@ -75,7 +91,6 @@ inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
     if (LoadInvertAlpha(matID)) alpha = 1.0f - alpha;
 
     return alpha >= LoadAlphaThreshold(matID);
-#endif
 }
 
 inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
@@ -197,15 +212,6 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
     return (q.CommittedStatus() == COMMITTED_NOTHING) ? tr : 0.0.xxx;
 }
 
-inline float3 ReconnectVis(float3 x1, float3 n1_s, uint matID, float3 x2, float3 n2_s)
-{
-    if (matID == MATID_ENV_MISS)
-    {
-        const float3 md = normalize(x2);
-        return VisibilityTransmittance(x1, n1_s, x1 + md * RAY_TMAX_PLANET, -md);
-    }
-    return VisibilityTransmittance(x1, n1_s, x2, n2_s);
-}
 
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
 {
@@ -561,4 +567,3 @@ inline uint GetMatIDFast(in uint instID, in uint primID){
 
 #include "SurfaceVertex_v8.hlsli"
 
-#endif

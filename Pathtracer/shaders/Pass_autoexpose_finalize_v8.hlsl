@@ -1,4 +1,3 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
 static const float AE_KEY_VALUE   =  0.18f;

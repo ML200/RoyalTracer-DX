@@ -1,24 +1,22 @@
-#ifndef LIGHT_TREE_LEARNING_HLSLI
-#define LIGHT_TREE_LEARNING_HLSLI
-#include "PersistentSamplingBuffer_v8.hlsli"
-#ifdef LT_TEST_NO_CAMERA
-cbuffer LightTreeTestConstants : register(b0, space1) {
-    uint workCount,testMode,triangleCount,testSeed;
-    float3 testCameraPosition;float testRewardScale;
-}
-#define LT_WORLD_ORIGIN float3(0,0,0)
-#else
-#define LT_WORLD_ORIGIN sceneOriginWorld
-#endif
+#pragma once
+
+// Cell header (LT_CELL_HEADER bytes): 0 alive, 4 cut size, 8 updates, 12 last trained frame,
+// 16 sample history, 20 retention score, 24 last touched (ms), 28 calibrated, 32 position,
+// 44 initial cut size, 48 normal, 60 last split, 64 request lock, 68 last fed frame,
+// 72 created frame, 76 request source, 80 requested key, 96 requested position,
+// 112 requested normal.
+// Cluster statistics (LT_STATS_BYTES): the learned weight, the mean and second moment of the
+// rewards of its picks with their (forgetting) count, the picks of the open batch, and the
+// power prior.
 
 // Hash cell keys before bucket probing.
 uint LTC_Hash(uint v) { v^=v>>16;v*=0x7feb352du;v^=v>>15;v*=0x846ca68bu;return v^(v>>16); }
 
-uint LTC_KeyAddress(uint slot) { return LT_BUFFER_OFFSET+slot*LT_KEY_BYTES; }
-uint LTC_Cell(uint slot) { return LT_BUFFER_OFFSET+LT_CELL_CAPACITY*LT_KEY_BYTES+slot*LT_CELL_HEADER; }
+uint LTC_KeyAddress(uint slot) { return lt_bufferBase+slot*LT_KEY_BYTES; }
+uint LTC_Cell(uint slot) { return lt_bufferBase+LT_CELL_CAPACITY*LT_KEY_BYTES+slot*LT_CELL_HEADER; }
 uint LTC_Index(uint cell) { return (cell-LTC_Cell(0u))/LT_CELL_HEADER; }
 
-uint LTC_FrozenBase() { return LT_BUFFER_OFFSET+LT_CELL_CAPACITY*(LT_KEY_BYTES+LT_CELL_HEADER); }
+uint LTC_FrozenBase() { return lt_bufferBase+LT_CELL_CAPACITY*(LT_KEY_BYTES+LT_CELL_HEADER); }
 uint LTC_StatsBase() { return LTC_FrozenBase()+LT_CELL_CAPACITY*LT_CUT_MAX*LT_FROZEN_BYTES; }
 uint LTC_Cluster(uint cell,uint slot) { return LTC_FrozenBase()+(LTC_Index(cell)*LT_CUT_MAX+slot)*LT_FROZEN_BYTES; }
 uint LTC_ClusterIndex(uint cluster) { return (cluster-LTC_FrozenBase())/LT_FROZEN_BYTES; }
@@ -31,23 +29,19 @@ uint LTC_NormalFace(float3 n) {
 }
 float3 LTC_FaceNormal(uint face) { float3 n=0;n[face/2u]=(face&1u)!=0u?-1.0f:1.0f;return n; }
 float3 LTC_CameraPosition() {
-#ifdef LT_TEST_NO_CAMERA
-    return testCameraPosition;
-#else
     return mul(viewI,float4(0,0,0,1)).xyz;
-#endif
 }
 // Map camera distance to a clamped adaptive grid level.
 float LTC_ContinuousLevel(float3 x) {
-    float width=max(spmis_normalFuzz,1e-4f);
-    float growth=max(asfloat(spmis_normalBits),0.001f);
+    float width=max(lt_cellSize,1e-4f);
+    float growth=max(lt_lodScale,0.001f);
     return clamp(log2(max(1.0f,length(x-LTC_CameraPosition())*growth/width)),0.0f,float(LT_MAX_LEVEL));
 }
 uint LTC_Level(float3 x) { return (uint)LTC_ContinuousLevel(x); }
-uint LTC_Now() { return asuint(spmis_searchR0); }
+uint LTC_Now() { return lt_now; }
 uint4 LTC_KeyAtLevel(float3 x,float3 n,uint level) {
-    float width=max(spmis_normalFuzz,1e-4f)*exp2(float(level));
-    int3 grid=(int3)floor((x+LT_WORLD_ORIGIN)/width);
+    float width=max(lt_cellSize,1e-4f)*exp2(float(level));
+    int3 grid=(int3)floor((x+sceneOriginWorld)/width);
     uint3 normal=(uint3)clamp(floor(n*3.0f+3.5f),0.0f,6.0f);
     return uint4(asuint(grid),normal.x+7u*normal.y+49u*normal.z+((level+1u)<<9u));
 }
@@ -63,7 +57,7 @@ bool LTC_Enabled() { return (rs_flags & (LT_FLAG_LEARNING|RS_FLAG_NO_MESH_LIGHTS
 bool LTC_UseSurfaceLearning() { return LTC_Enabled(); }
 
 float3 LTC_TrainShare(float roughness,uint matID,float3 full,float3 broad) {
-    const float lo=spmis_searchGrow;
+    const float lo=lt_learnRoughness;
     const bool smoothCoat=LoadPc(matID)>0.01f && LoadPcr(matID)<lo;
     return (roughness>=lo && !smoothCoat)?full:broad;
 }
@@ -79,7 +73,7 @@ void LTC_UpdateRetention(uint cell) {
     uint score=0u;
     if(LTC_Index(cell)<LT_GRID_CAPACITY) {
         uint level=LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell))));
-        float3 x=asfloat(g_sharc.Load3(cell+32u))-LT_WORLD_ORIGIN;
+        float3 x=asfloat(g_sharc.Load3(cell+32u))-sceneOriginWorld;
         uint desired=LTC_Level(x),age=LTC_Now()-g_sharc.Load(cell+24u);
         bool distant=level+1u<desired;
 
@@ -168,8 +162,24 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
     }
     uint old;g_sharc.InterlockedCompareExchange(candidate+64u,0u,1u,old);
     if(old!=0u) return;
+    // Without a close ancestor the new cell starts from a learned neighbour at its own level
+    // rather than from the shared root: the surrounding cells usually see the same lights.
+    {
+        uint level=LTC_KeyLevel(key);
+        if(index>=LT_GRID_CAPACITY || LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)))>level+1u) {
+            float width=max(lt_cellSize,1e-4f)*exp2(float(level));
+            uint best=0u;
+            [loop] for(uint side=0u;side<6u;++side) {
+                float3 offset=0.0f;offset[side/2u]=(side&1u)!=0u?-width:width;
+                uint neighbour;
+                if(!LTC_FindExact(LTC_KeyAtLevel(x+offset,n,level),neighbour)) continue;
+                uint history=g_sharc.Load(neighbour+16u);
+                if(history>best) {best=history;index=LTC_Index(neighbour);}
+            }
+        }
+    }
     g_sharc.Store4(candidate+80u,key);
-    g_sharc.Store3(candidate+96u,asuint(x+LT_WORLD_ORIGIN));
+    g_sharc.Store3(candidate+96u,asuint(x+sceneOriginWorld));
     g_sharc.Store3(candidate+112u,asuint(n));
     g_sharc.Store(candidate+76u,index);
 
@@ -364,7 +374,9 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
     LT_Sample sample=LT_SampleSubtree(x,n,rng,node,start,sampleSlot);
     if(cell!=LT_SENTINEL) {
         sample.pdf*=probability;
-        sample.learningToken=uint2(sample.id==LT_SENTINEL?0u:LTC_Token(cell,chosen),0u);
+        // A pick that finds no light (the cluster lies behind the receiver) still trains its
+        // cluster, with the zero reward that such a pick is worth.
+        sample.learningToken=uint2(LTC_Token(cell,chosen),0u);
     }
     if(!learned || sample.id==LT_SENTINEL) return sample;
 
@@ -404,7 +416,7 @@ float LT_PdfSelectTriangle(float3 x,float3 n,uint tri,uint inst,bool useLearning
 }
 uint LTC_BatchAddress(uint cluster) {
     uint index=LTC_ClusterIndex(cluster);
-    return LT_BUFFER_OFFSET+LT_CELL_CAPACITY*LT_CELL_BYTES+index*LT_BATCH_BYTES;
+    return lt_bufferBase+LT_CELL_CAPACITY*LT_CELL_BYTES+index*LT_BATCH_BYTES;
 }
 void LTC_ClearBatch(uint cluster) {
     g_sharc.Store(LTC_Stats(cluster)+LT_ST_SELECTED,0u);
@@ -481,4 +493,3 @@ void LT_Train(float3 x,float3 n,uint tri,uint inst,float contributionOverPdf) {
     uint token=LTC_ClusterIndex(a)+1u;
     LT_TrainToken(token,contributionOverPdf);
 }
-#endif

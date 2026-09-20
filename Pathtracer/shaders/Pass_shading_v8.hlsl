@@ -1,11 +1,5 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
-inline float3 DlssReinhard(float3 c) {
-    c = max(c, 0.0f);
-    const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
-    return c / (1.0f + lum);
-}
 
 #define DLSS_PT_INPUT_LUMA_CAP 64.0f
 
@@ -20,17 +14,24 @@ inline float3 ScrubNonFiniteIn(float3 c) {
 }
 
 inline float3 DlssEncode(float3 c) {
-    c = ScrubNonFiniteIn(c);
-    if (PT_ONLY_MODE) {
-
-        return max(c, 0.0f) * ReadExposureForCap();
-    }
-    return DlssReinhard(c);
+    return max(ScrubNonFiniteIn(c), 0.0f) * ReadExposureForCap();
 }
 
 #define DLSS_EMITTER_CAP 16.0f
 
 #define DLSS_SPEC_ROUGHNESS_THRESHOLD 0.25f
+
+// The guides of one pixel: produced in registers by the writers below, written once by main.
+struct DlssGuides {
+    float  depth;
+    float2 mv;
+    float3 n;
+    float  roughness;
+    float4 diffuseAlbedo;
+    float3 specularAlbedo;
+    float2 specMv;
+    float  specHitDist;
+};
 inline float3 ClampEmitterLum(float3 c) {
     const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
     return (lum > DLSS_EMITTER_CAP) ? c * (DLSS_EMITTER_CAP / lum) : c;
@@ -111,7 +112,7 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
 
 // Guides before primary surface replacement: everything describes the reflector, except that
 // thin glass takes depth, motion and albedo from the surface behind it.
-void WriteLegacyGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
+void WriteLegacyGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out DlssGuides g)
 {
     const uint   sInstID = load_instID(g_sample_current, pixelIdx);
     const float3 sPos    = load_x1(g_sample_current, pixelIdx);
@@ -119,25 +120,25 @@ void WriteLegacyGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
 
     const RRGuide rg = ResolveRRGuideThroughGlass(sv, sInstID, camPos);
 
-    g_dlssDepth[px] = DLSS_GuideDepthFromWorldPos(rg.x);
+    g.depth = DLSS_GuideDepthFromWorldPos(rg.x);
 
     const float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
     const float  reflW          = saturate(Luma(specularAlbedo));
 
-    g_dlssNormals[px] = float4(sv.n_s, sv.Pr);
-    g_dlssDiffuseAlbedo[px] = float4(rg.Kd, 1.0f);
-    g_dlssRoughness[px] = sv.Pr;
-#if SHADING_DEBUG_SLICES
+    g.n = sv.n_s;
+    g.roughness = sv.Pr;
+    g.diffuseAlbedo = float4(rg.Kd, 1.0f);
+    if (SHADING_DEBUG_SLICES) {
     gOutput[uint3(px, 5)] = float4(rg.Kd, 1.0f);
-#endif
+    }
 
     const float2 mvPixels = SurfaceMotionVector(px, dims, rg.x, rg.instID);
-    g_dlssMVec[px] = mvPixels;
-    g_dlssSpecularAlbedo[px] = float4(specularAlbedo, 0.0f);
+    g.mv = mvPixels;
+    g.specularAlbedo = specularAlbedo;
 
     const float4 reflData   = gScratchPing[uint3(px, 4)];
     const uint   reflInstID = asuint(reflData.w);
-    g_dlssSpecHitDist[px] = (reflInstID != 0xFFFFFFFFu)
+    g.specHitDist = (reflInstID != 0xFFFFFFFFu)
         ? min(length(reflData.xyz - sv.x), DLSS_SPEC_HIT_MAX)
         : DLSS_SPEC_HIT_MAX;
 
@@ -149,14 +150,14 @@ void WriteLegacyGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
         if (prevRefl.x > -1e8f && curRefl.x > -1e8f)
             specMV = prevRefl - curRefl;
     }
-    g_dlssSpecMVec[px] = specMV;
+    g.specMv = specMV;
 }
 
 // Primary surface replacement. The pixel's energy is split into the mirror image of the near-delta
 // lobes and the part transmitted or scattered by the base surface. Both ends come from delta-chain
 // walks that stop at the first diffuse or rough surface, and every guide blends between the two by
 // their reflectance shares. Returns the bias hint.
-float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
+float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out DlssGuides g)
 {
     const uint   sInstID = load_instID(g_sample_current, pixelIdx);
     const float3 sPos    = load_x1(g_sample_current, pixelIdx);
@@ -242,9 +243,13 @@ float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
     const float3 diffV = KdV * (1.0f - PmV);
 
     // Every merged guide follows the mirror's Fresnel share of the pixel's reflectance: the delta part
-    // of the lobe, attenuated by the chain, against the base surface and the rough residual.
-    const float mirrorShare = Luma(mirror);
-    const float w = mirrorShare / max(mirrorShare + Luma(baseDiffuse + residual), 1e-4f);
+    // of the lobe, attenuated by the chain, against the base surface and the rough residual. That
+    // share is then scaled down by the roughness of the surface itself: only a mirror-like surface
+    // hands its normal, depth, albedo and motion to the virtual image; a rough base under a clear
+    // coat keeps its own and leaves the coat reflection to the specular channel.
+    const float mirrorShare  = Luma(mirror);
+    const float fresnelShare = mirrorShare / max(mirrorShare + Luma(baseDiffuse + residual), 1e-4f);
+    const float w            = fresnelShare * (1.0f - saturate(sv.Pr));
 
     // Diffuse albedo takes the mirror image in proportion to its ownership of the pixel.
     const float3 diffuseAlbedo  = baseDiffuse + mirror * diffV * w;
@@ -260,14 +265,14 @@ float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
     // Depth blends in the encoded reciprocal domain, so a distant mirror image only nudges a near surface.
     const float depth = lerp(DLSS_GuideDepthFromWorldPos(base.xVirtual), DLSS_GuideDepthFromWorldPos(xV), w);
 
-    g_dlssDepth[px]          = depth;
-    g_dlssNormals[px]        = float4(n, roughness);
-    g_dlssRoughness[px]      = roughness;
-    g_dlssDiffuseAlbedo[px]  = float4(diffuseAlbedo, 1.0f);
-    g_dlssSpecularAlbedo[px] = float4(specularAlbedo, 0.0f);
-#if SHADING_DEBUG_SLICES
+    g.depth          = depth;
+    g.n              = n;
+    g.roughness      = roughness;
+    g.diffuseAlbedo  = float4(diffuseAlbedo, 1.0f);
+    g.specularAlbedo = specularAlbedo;
+    if (SHADING_DEBUG_SLICES) {
     gOutput[uint3(px, 5)] = float4(diffuseAlbedo, 1.0f);
-#endif
+    }
 
     // Base motion follows the chain end through the chain; a single primary reflection is re-mirrored
     // exactly, longer reflection chains move the virtual point with the end surface's instance.
@@ -281,35 +286,37 @@ float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos)
     if ((probe.flags & DLSS_PSR_FLAG_GLASS) != 0u)
         virtualMV = lerp(virtualMV, SkyMotionVector(px, dims), probe.paneF);
 
-    // Diffuse motion on opaque surfaces follows the same share; DLSS_PSR_MV_MIX moves it from a hard
-    // hand-over at half toward a proportional blend. Glass keeps the transmission target's motion
-    // unblended. The specular channel always follows the mirror image while the lobe is sharp.
+    // Diffuse motion on opaque surfaces follows the same share. DLSS_PSR_MV_MIX moves the blend from
+    // a hard hand-over at half toward a proportional one. Glass keeps the motion of the transmission
+    // target unblended. The specular channel always follows the mirror image while the lobe is sharp.
     const float mvWeight = lerp(w > 0.5f ? 1.0f : 0.0f, w, DLSS_PSR_MV_MIX);
     const bool  mvBlend  = !seeThrough && (dbg_dlssLayer & DLSS_GUIDE_OPT_NO_MV_BLEND) == 0u;
-    g_dlssMVec[px] = mvBlend ? lerp(baseMV, virtualMV, mvWeight) : baseMV;
+    g.mv = mvBlend ? lerp(baseMV, virtualMV, mvWeight) : baseMV;
 
     const bool   mirrorLayer = mirrorRoughness < DLSS_SPEC_ROUGHNESS_THRESHOLD && Luma(mirror + residual) > 0.02f;
     const float2 surfaceMV   = seeThrough ? SurfaceMotionVector(px, dims, sv.x, sInstID) : baseMV;
-    g_dlssSpecMVec[px]    = mirrorLayer ? virtualMV : surfaceMV;
-    g_dlssSpecHitDist[px] = (asuint(reflFirst.w) != 0xFFFFFFFFu)
+    g.specMv      = mirrorLayer ? virtualMV : surfaceMV;
+    g.specHitDist = (asuint(reflFirst.w) != 0xFFFFFFFFu)
         ? min(length(reflFirst.xyz - sv.x), DLSS_SPEC_HIT_MAX) : DLSS_SPEC_HIT_MAX;
 
-    // Emitters reached through delta chains are as deterministic as emitters seen directly.
+    // Emitters reached through delta chains are as deterministic as emitters seen directly. Their
+    // share of the pixel is the Fresnel share, whatever the roughness of the base.
     float bias = 0.0f;
     if (virtualEmitter && mirrorRoughness < SMOOTH_SPECULAR_THRESHOLD && (probe.flags & DLSS_PSR_FLAG_DELTA) != 0u)
-        bias += w;
+        bias += fresnelShare;
     if (seeThrough && baseEmitter && sv.Pr < SMOOTH_SPECULAR_THRESHOLD && (base.flags & DLSS_PSR_FLAG_DELTA) != 0u)
-        bias += 1.0f - w;
+        bias += 1.0f - fresnelShare;
     return saturate(bias);
 }
 
-#include "CumulusGuides_v8.hlsli"
 
 [numthreads(16, 16, 1)]
-// Resolve hit state, visibility, and primary shading outputs.
+// Resolve hit state, visibility, and primary shading outputs. Every guide is produced in
+// registers and written once at the end, so the sentinel checks the values directly instead of
+// reading the textures back.
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-    if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
+    if (DTid.x >= IMG_W || DTid.y >= IMG_H) return;
 
     const float3 camPosWorld = mul(viewI, float4(0, 0, 0, 1)).xyz;
 
@@ -324,20 +331,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float3 accumulation = (output_primary + output_indirect) * atmosphereTr + atmosphereL;
 
-#if SHADING_DEBUG_SLICES
+    if (SHADING_DEBUG_SLICES) {
     gScratchPing[uint3(DTid.xy, 1)] = float4(accumulation, 0);
-#endif
+    }
 
-    #if ATM_DEBUG_RING == 2
+    if (ATM_DEBUG_RING == 2u) {
     {
         float dr = 1.0f - exp(-max(Luma(dbgRawIndirect), 0.0f) * 3.0f);
         float dg = 0.0f;
         float db = 1.0f - exp(-max(Luma(dbgRawPrimary), 0.0f) * 3.0f);
         accumulation = float3(dr, dg, db);
     }
-    #endif
+    }
 
-#if SHADING_DEBUG_SLICES
+    if (SHADING_DEBUG_SLICES) {
     bool cameraChanged = false;
     [unroll]
     for (uint i = 0; i < 4; ++i) {
@@ -365,13 +372,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
-#endif
+    }
 
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
 
     bool  isEmitterSurface = false;
     float psrBias = 0.0f;
+    DlssGuides g;
+    float3 input;
 
     bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
@@ -384,104 +393,103 @@ void main(uint3 DTid : SV_DispatchThreadID)
         {
 
             float3 emPos  = load_x1(g_sample_current, pixelIdx);
-            g_dlssDepth[DTid.xy] = DLSS_GuideDepthFromWorldPos(emPos);
-            g_dlssMVec[DTid.xy] = SurfaceMotionVector(DTid.xy, dims, emPos, emInstID);
+            g.depth = DLSS_GuideDepthFromWorldPos(emPos);
+            g.mv = SurfaceMotionVector(DTid.xy, dims, emPos, emInstID);
             isEmitterSurface = true;
 
-            const float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
-
-            g_dlssNormals[DTid.xy] = float4(emNormal, 1.0f);
+            g.n = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
         }
         else
         {
-            g_dlssDepth[DTid.xy] = 0.0f;
-            g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
-            g_dlssMVec[DTid.xy] = SkyMotionVector(DTid.xy, dims);
+            g.depth = 0.0f;
+            g.n = float3(0.0f, 0.0f, 0.0f);
+            g.mv = SkyMotionVector(DTid.xy, dims);
         }
+        g.roughness = 1.0f;
 
-        g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        g.specularAlbedo = float3(0.0f, 0.0f, 0.0f);
 
         const float3 emitterAlbedo = saturate(ScrubNonFiniteIn(dbgRawPrimary));
-        g_dlssDiffuseAlbedo[DTid.xy] = float4(hasPosition ? emitterAlbedo : float3(0.5f, 0.5f, 0.5f), 0.0f);
-        g_dlssRoughness[DTid.xy] = 1.0f;
+        g.diffuseAlbedo = float4(hasPosition ? emitterAlbedo : float3(0.5f, 0.5f, 0.5f), 0.0f);
 
-        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : DLSS_SPEC_HIT_MAX;
-        g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
+        g.specHitDist = hasPosition ? 0.0f : DLSS_SPEC_HIT_MAX;
+        g.specMv = float2(0.0f, 0.0f);
 
         float3 emitterRadiance = (CLAMP_EMITTERS_MODE && hasPosition)
                                     ? ClampEmitterLum(accumulation)
                                     : accumulation;
-        float3 emitterInput = DlssEncode(emitterRadiance);
-        if (PT_ONLY_MODE && hasPosition) {
-            const float lum = dot(emitterInput, float3(0.2126f, 0.7152f, 0.0722f));
+        input = DlssEncode(emitterRadiance);
+        if (hasPosition) {
+            const float lum = dot(input, float3(0.2126f, 0.7152f, 0.0722f));
             if (lum > DLSS_PT_INPUT_LUMA_CAP)
-                emitterInput *= DLSS_PT_INPUT_LUMA_CAP / lum;
+                input *= DLSS_PT_INPUT_LUMA_CAP / lum;
         }
-        g_dlssInput[DTid.xy] = float4(emitterInput, 1.0f);
-#if SHADING_DEBUG_SLICES
+    if (SHADING_DEBUG_SLICES) {
         gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
-#endif
+    }
     }
     else{
         if ((dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) != 0u)
-            WriteLegacyGuides(DTid.xy, pixelIdx, dims, camPosWorld);
+            WriteLegacyGuides(DTid.xy, pixelIdx, dims, camPosWorld, g);
         else
-            psrBias = WritePsrGuides(DTid.xy, pixelIdx, dims, camPosWorld);
+            psrBias = WritePsrGuides(DTid.xy, pixelIdx, dims, camPosWorld, g);
 
-#if ATM_DEBUG_RING == 4
+    if (ATM_DEBUG_RING == 4u) {
 
-        g_dlssInput[DTid.xy] = float4(g_dlssNormals[DTid.xy].xyz * 0.5f + 0.5f, 1.0f);
-#else
-        g_dlssInput[DTid.xy] = float4(DlssEncode(accumulation), 1.0f);
-#endif
+        input = g.n * 0.5f + 0.5f;
+    } else {
+        input = DlssEncode(accumulation);
+    }
 
     }
 
-    ApplyCumulusGuides(DTid.xy,pixelIdx,camPosWorld);
-    float cloudOpacity=gScratchPing[uint3(DTid.xy,CUMULUS_NORMAL_SLOT)].w;
-    g_dlssBiasHint[DTid.xy] = (isEmitterSurface ? 1.0f : psrBias) * (1.0f-cloudOpacity);
-
-    g_dlssTransparency[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-
+    float normalW = g.roughness;
     if ((rs_flags & RS_FLAG_GUIDE_OFF_ANY) != 0u)
     {
-        if ((rs_flags & RS_FLAG_GUIDE_OFF_DEPTH)   != 0u) g_dlssDepth[DTid.xy] = 0.0f;
-        if ((rs_flags & RS_FLAG_GUIDE_OFF_MV)      != 0u) g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
-        if ((rs_flags & (RS_FLAG_GUIDE_OFF_NORMALS | RS_FLAG_GUIDE_OFF_ROUGH)) != 0u)
-        {
-            float4 nr = g_dlssNormals[DTid.xy];
-            if ((rs_flags & RS_FLAG_GUIDE_OFF_NORMALS) != 0u) nr.xyz = float3(0.0f, 0.0f, 0.0f);
-            if ((rs_flags & RS_FLAG_GUIDE_OFF_ROUGH)   != 0u) nr.w   = 1.0f;
-            g_dlssNormals[DTid.xy] = nr;
-        }
-        if ((rs_flags & RS_FLAG_GUIDE_OFF_ALBEDO)  != 0u) g_dlssDiffuseAlbedo[DTid.xy]  = float4(1.0f, 1.0f, 1.0f, 1.0f);
-        if ((rs_flags & RS_FLAG_GUIDE_OFF_SPECALB) != 0u) g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-        if ((rs_flags & RS_FLAG_GUIDE_OFF_SPECMV)  != 0u) g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_DEPTH)   != 0u) g.depth = 0.0f;
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_MV)      != 0u) g.mv = float2(0.0f, 0.0f);
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_NORMALS) != 0u) g.n = float3(0.0f, 0.0f, 0.0f);
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_ROUGH)   != 0u) normalW = 1.0f;
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_ALBEDO)  != 0u) g.diffuseAlbedo  = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_SPECALB) != 0u) g.specularAlbedo = float3(0.0f, 0.0f, 0.0f);
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_SPECMV)  != 0u) g.specMv = float2(0.0f, 0.0f);
     }
 
+    g_dlssInput[DTid.xy]          = float4(input, 1.0f);
+    g_dlssDepth[DTid.xy]          = g.depth;
+    g_dlssMVec[DTid.xy]           = g.mv;
+    g_dlssNormals[DTid.xy]        = float4(g.n, normalW);
+    g_dlssRoughness[DTid.xy]      = g.roughness;
+    g_dlssDiffuseAlbedo[DTid.xy]  = g.diffuseAlbedo;
+    g_dlssSpecularAlbedo[DTid.xy] = float4(g.specularAlbedo, 0.0f);
+    g_dlssSpecMVec[DTid.xy]       = g.specMv;
+    g_dlssSpecHitDist[DTid.xy]    = g.specHitDist;
+    g_dlssBiasHint[DTid.xy]       = isEmitterSurface ? 1.0f : psrBias;
+    g_dlssTransparency[DTid.xy]   = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
     {
-        const float4 sCol  = g_dlssInput[DTid.xy];
-        const float  sDep  = g_dlssDepth[DTid.xy];
-        const float2 sMV   = g_dlssMVec[DTid.xy];
-        const float4 sNR   = g_dlssNormals[DTid.xy];
-        const float2 sSMV  = g_dlssSpecMVec[DTid.xy];
-        const float4 sAlb  = g_dlssDiffuseAlbedo[DTid.xy];
-        const float4 sSAlb = g_dlssSpecularAlbedo[DTid.xy];
+        const float3 sCol  = input;
+        const float  sDep  = g.depth;
+        const float2 sMV   = g.mv;
+        const float4 sNR   = float4(g.n, normalW);
+        const float2 sSMV  = g.specMv;
+        const float3 sAlb  = g.diffuseAlbedo.rgb;
+        const float3 sSAlb = g.specularAlbedo;
 
         const float sLum   = 0.2126f * sCol.x + 0.7152f * sCol.y + 0.0722f * sCol.z;
         const float sMvMag = max(abs(sMV.x),  abs(sMV.y));
         const float sSmMag = max(abs(sSMV.x), abs(sSMV.y));
 
         uint bad = 0u;
-        if (any(isnan(sCol.rgb))  || any(isinf(sCol.rgb)))    bad |= 0x001u;
+        if (any(isnan(sCol))      || any(isinf(sCol)))        bad |= 0x001u;
         if (isnan(sDep) || isinf(sDep) || sDep < 0.0f || sDep > 1.0f)
                                                               bad |= 0x002u;
         if (any(isnan(sMV))       || any(isinf(sMV)))         bad |= 0x004u;
         if (any(isnan(sNR))       || any(isinf(sNR)))         bad |= 0x008u;
         if (sNR.w < 0.0f || sNR.w > 1.0f)                     bad |= 0x010u;
         if (any(isnan(sSMV))      || any(isinf(sSMV)))        bad |= 0x020u;
-        if (any(isnan(sAlb.rgb))  || any(isinf(sAlb.rgb)))    bad |= 0x040u;
-        if (any(isnan(sSAlb.rgb)) || any(isinf(sSAlb.rgb)))   bad |= 0x080u;
+        if (any(isnan(sAlb))      || any(isinf(sAlb)))        bad |= 0x040u;
+        if (any(isnan(sSAlb))     || any(isinf(sSAlb)))       bad |= 0x080u;
         if (sMvMag > 256.0f)                                  bad |= 0x100u;
         if (sSmMag > 256.0f)                                  bad |= 0x200u;
 
@@ -489,7 +497,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             gAutoExpose.InterlockedCompareStore(SENT_OFFS_FIRSTBAD, 0u,
                                                 ((DTid.y + 1u) << 16) | (DTid.x + 1u));
 
-        const bool  nearCap = PT_ONLY_MODE && isEmitterSurface &&
+        const bool  nearCap = isEmitterSurface &&
                               (sLum >= DLSS_PT_INPUT_LUMA_CAP * 0.999f);
         const uint  wMask   = WaveActiveBitOr(bad);
         const float wLum    = WaveActiveMax(max(sLum, 0.0f));

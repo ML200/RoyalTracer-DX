@@ -1,5 +1,4 @@
-#ifndef LIGHT_TREE_PACKED_H
-#define LIGHT_TREE_PACKED_H
+#pragma once
 
 #ifdef __cplusplus
 #include <DirectXMath.h>
@@ -39,4 +38,3 @@ constexpr uint32_t LightTLASNodeStride(bool compact) { return compact ? 48u : 64
 #endif
 #undef LT_PACKED_FLOAT3
 #undef LT_PACKED_UINT
-#endif

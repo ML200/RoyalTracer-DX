@@ -1,19 +1,17 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
+// Bake the sun state and the sky (in-scattering, transmittance, planet hit) for the frame into
+// the sky-bake buffer; every other pass reads the baked values through ComputeSunState and
+// SkyAtmosphere.
 [numthreads(SKYBAKE_THREADS, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
-    gDispatchIdx = tid;
     const uint i = tid.x;
     if (i >= SKYBAKE_LUT_W * SKYBAKE_LUT_H) return;
-    if (cloudEnabled>.5f && i>0u) return;
 
     SetSkyObserver(InitOrigin() + sceneOriginWorld);
     const SunState S = ComputeSunStateInline();
     if (i == 0u) SkyBakeStoreSunState(S);
-
-    if (cloudEnabled>.5f) return;
 
     const uint2  texel = uint2(i % SKYBAKE_LUT_W, i / SKYBAKE_LUT_W);
     const float3 v = SkyBakeDirFromUv((float2(texel) + 0.5f) / float2(SKYBAKE_LUT_W, SKYBAKE_LUT_H));

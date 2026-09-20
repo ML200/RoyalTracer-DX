@@ -164,3 +164,15 @@ inline uint FlatPrimID(uint instID, uint geomIdx, uint primIdx)
 {
     return (geomIdx == 0) ? primIdx : (instanceProps[instID].opaqueTriCount + primIdx);
 }
+
+// Beer-Lambert absorption over a distance inside a medium with the given transmittance color.
+inline float3 CalculateAbsorptionThroughput(
+    float3 tintColor,
+    float distanceTraveled)
+{
+    return float3(
+        exp(-tintColor.x * distanceTraveled),
+        exp(-tintColor.y * distanceTraveled),
+        exp(-tintColor.z * distanceTraveled)
+    );
+}

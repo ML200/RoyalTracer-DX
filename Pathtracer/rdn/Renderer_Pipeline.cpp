@@ -1,6 +1,5 @@
 #include "stdafx.h"
 #include "Renderer.h"
-#include "../shaders/CumulusLayout.h"
 #include "Scene/OmmBuilder.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
@@ -273,7 +272,7 @@ void Renderer::CreateAccelerationStructures() {
 
 // Shared descriptor layout for ray generation and compute passes.
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
-    CD3DX12_ROOT_PARAMETER1 rootParameters[5];
+    CD3DX12_ROOT_PARAMETER1 rootParameters[4];
     std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
     ranges.reserve(40);
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
@@ -312,15 +311,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                                    D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 10, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 34, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 35, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 36, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 13, 11, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 19, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
@@ -338,22 +329,6 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 51, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 52, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 28, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 55, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 31, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 56, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 33, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 57, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 45, 0, VOLATILE,
-                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 59, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
@@ -363,8 +338,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
 
     rootParameters[2].InitAsUnorderedAccessView(25, 0);
 
-    rootParameters[3].InitAsUnorderedAccessView(26, 0);
-    rootParameters[4].InitAsUnorderedAccessView(27, 0);
+    rootParameters[3].InitAsUnorderedAccessView(27, 0);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[3];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
@@ -411,7 +385,6 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
 }
 
 void Renderer::CreateRaytracingPipeline() {
-    m_cumulusNoiseReady = m_cumulusAmbientReady = false;
     m_skyLutsReady = false;
     m_lightLearningResetPending = true;
     m_sharcResetPending = true;
@@ -424,70 +397,16 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.SetGlobalRootSignature(m_rayGenSignature.Get());
 
     m_csPSOs.clear();
-    m_callableShaderNames.clear();
     uint32_t nextCs = 0, rgSlot = 0;
 
     std::vector<std::wstring> rayGenNames;
 
     for (auto& p : m_passes.Passes()) {
         if (p.stage == Stage::Barrier || p.stage == Stage::LoopStart || p.stage == Stage::LoopEnd ||
-            p.stage == Stage::PingSwap || p.stage == Stage::ClearSort || p.stage == Stage::DLSS)
+            p.stage == Stage::DLSS)
             continue;
 
-        if (p.isWorkGraph) {
-            ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileWG(p.file.c_str());
-            D3D12_DXIL_LIBRARY_DESC dxilDesc{};
-            dxilDesc.DXILLibrary = {lib->GetBufferPointer(), lib->GetBufferSize()};
-
-            D3D12_STATE_SUBOBJECT subobjects[3]{};
-            subobjects[0].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
-            subobjects[0].pDesc = &dxilDesc;
-            subobjects[1].Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
-            subobjects[1].pDesc = m_computeSignature.GetAddressOf();
-
-            static const LPCWSTR kWGName = L"main";
-            D3D12_WORK_GRAPH_DESC wgDesc = {};
-            wgDesc.ProgramName = kWGName;
-            wgDesc.Flags = D3D12_WORK_GRAPH_FLAG_INCLUDE_ALL_AVAILABLE_NODES;
-            subobjects[2].Type = D3D12_STATE_SUBOBJECT_TYPE_WORK_GRAPH;
-            subobjects[2].pDesc = &wgDesc;
-
-            D3D12_STATE_OBJECT_DESC soDesc{};
-            soDesc.Type = D3D12_STATE_OBJECT_TYPE_EXECUTABLE;
-            soDesc.NumSubobjects = 3;
-            soDesc.pSubobjects = subobjects;
-
-            ComPtr<ID3D12StateObject> so;
-            ThrowIfFailed(m_ctx.Device()->CreateStateObject(&soDesc, IID_PPV_ARGS(&so)));
-            ComPtr<ID3D12StateObjectProperties1> soProps1;
-            ThrowIfFailed(so->QueryInterface(IID_PPV_ARGS(&soProps1)));
-            ComPtr<ID3D12WorkGraphProperties> wgProps;
-            ThrowIfFailed(so->QueryInterface(IID_PPV_ARGS(&wgProps)));
-
-            WgRuntimeData rt{};
-            rt.id = soProps1->GetProgramIdentifier(L"main");
-            D3D12_WORK_GRAPH_MEMORY_REQUIREMENTS mem{};
-            wgProps->GetWorkGraphMemoryRequirements(0, &mem);
-            if (mem.MaxSizeInBytes) {
-                auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-                auto buf =
-                    CD3DX12_RESOURCE_DESC::Buffer(mem.MaxSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &buf,
-                                                                      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                                                                      IID_PPV_ARGS(&rt.backingRes)));
-                rt.backing.StartAddress = rt.backingRes->GetGPUVirtualAddress();
-                rt.backing.SizeInBytes = mem.MaxSizeInBytes;
-            }
-
-            p.wgIdx = (uint32_t)m_wgStateObjects.size();
-            m_wgStateObjects.push_back(so);
-            m_wgProps.push_back(wgProps);
-            m_wgRuntime.push_back(std::move(rt));
-            continue;
-        }
-
-        if ((p.stage == Stage::Compute || p.stage == Stage::Wavefront || p.stage == Stage::FixedCompute) &&
-            !p.isWorkGraph) {
+        if (p.stage == Stage::Compute || p.stage == Stage::FixedCompute) {
             ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
             D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
             desc.pRootSignature = m_computeSignature.Get();
@@ -496,15 +415,6 @@ void Renderer::CreateRaytracingPipeline() {
             ThrowIfFailed(m_ctx.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
             m_csPSOs.push_back(pso);
             p.psoIdx = nextCs++;
-            continue;
-        }
-
-        if (p.stage == Stage::Callable) {
-            std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
-            base = base.substr(0, base.rfind(L'.'));
-            ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str());
-            pipeline.AddLibrary(lib.Get(), {base.c_str()});
-            m_callableShaderNames.push_back(base);
             continue;
         }
 
@@ -519,15 +429,6 @@ void Renderer::CreateRaytracingPipeline() {
         m_passes.RegisterPassIndex(p.file, rgSlot);
         rgSlot++;
 
-        if (base == L"Pass_pt_v8" || base == L"Pass_sharc_update_v8") {
-            const bool training = base == L"Pass_sharc_update_v8";
-            const std::wstring fastName = base + L"_fast";
-            ComPtr<IDxcBlob> fast = nv_helpers_dx12::CompileShaderLibrary(
-                L"Pass_pt_v8.hlsl", {L"PT_ENTRY_NAME=" + fastName, L"PT_NO_DEBUG=1", L"SHARC_COMPACT_QUERY=1",
-                                     training ? L"SHARC_UPDATE_PASS=1" : L"SHARC_UPDATE_PASS=0"});
-            pipeline.AddLibrary(fast.Get(), {fastName.c_str()});
-            rayGenNames.push_back(fastName);
-        }
     }
 
     ComPtr<IDxcBlob> missLib = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
@@ -546,7 +447,7 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),
                                          {L"OpaqueHitGroup", L"AlphaHitGroup", L"TerrainHitGroup"});
 
-    pipeline.SetMaxPayloadSize(4);
+    pipeline.SetMaxPayloadSize(36); // TracePayload in Inline_RT_v8.hlsli
 
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
     pipeline.SetMaxRecursionDepth(1);
@@ -561,14 +462,8 @@ void Renderer::CreateRaytracingPipeline() {
         if (sz > rgStack)
             rgStack = sz;
     }
-    UINT64 maxCallable = 0;
-    for (const auto& name : m_callableShaderNames) {
-        UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(name.c_str());
-        if (sz > maxCallable)
-            maxCallable = sz;
-    }
     UINT64 missStack = m_rtStateObjectProps->GetShaderStackSize(L"Miss");
-    UINT64 total = (rgStack + std::max(maxCallable, missStack) + 255) & ~255;
+    UINT64 total = (rgStack + missStack + 255) & ~255;
     m_rtStateObjectProps->SetPipelineStackSize(total);
 }
 
@@ -592,7 +487,6 @@ void Renderer::CreateRaytracingOutputBuffer() {
                                                IID_PPV_ARGS(&m_outputResource)));
 
     ResourceFactory rf(dev);
-    m_cumulusQueries = rf.CreateUAVBuffer(UINT64(w) * h * CUMULUS_QUERY_BYTES, L"Cumulus deferred miss reservoir");
     m_permanentDataTexture = rf.CreateTexture2D(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,
                                                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"PermanentData");
 
@@ -612,8 +506,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
     auto MakeRaw = [&](ComPtr<ID3D12Resource>& res, UINT bytes, const std::wstring& name) {
         res = rf.CreateUAVBuffer(bytes, name);
     };
-    MakeRaw(m_reservoirBuffer_3, px * sizeof(Reservoir_GI), L"Reservoir_GI_1");
-    MakeRaw(m_reservoirBuffer_4, px * sizeof(Reservoir_GI), L"Reservoir_GI_2");
+    MakeRaw(m_liteReservoirs, px * LITE_RESERVOIR_BYTES, L"LiteReservoirs");
     MakeRaw(m_sampleBuffer_current, px * sizeof(SampleData), L"Sample_Current");
     MakeRaw(m_sampleBuffer_last, px * sizeof(SampleData), L"Sample_Last");
 
@@ -632,74 +525,10 @@ void Renderer::CreatePathStateBuffer() {
     m_pathStateBuffer =
         rf.CreateUAVBuffer(TileAlignedPx(GetWidth(), GetHeight()) * kPathStateBytesPerPx, L"PathStateBuffer");
 
-    m_spmisBuffer = rf.CreateUAVBuffer(
-        std::max<UINT>((18u * TileAlignedPx(GetWidth(), GetHeight()) + 8u) * 4u, SKYBAKE_BYTES), L"SPMISBuffer");
-
-    m_raygenQueueBuffer = rf.CreateUAVBuffer(16u + TileAlignedPx(GetWidth(), GetHeight()) * 4u, L"RaygenQueue");
-
-    if (!m_raysIndirectArgs) {
-        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_RAYS_DESC));
-        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(
-            &hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_raysIndirectArgs)));
-        m_raysIndirectArgs->SetName(L"RaysIndirectArgs");
-    }
-
-    if (!m_raysArgsTemplate) {
-        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_RAYS_DESC));
-        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
-                                                              D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                                              IID_PPV_ARGS(&m_raysArgsTemplate)));
-        m_raysArgsTemplate->SetName(L"RaysArgsTemplate");
-    }
+    m_skyBakeBuffer = rf.CreateUAVBuffer(SKYBAKE_BYTES, L"SkyBake");
 
     if (!m_autoExposeBuffer)
         m_autoExposeBuffer = rf.CreateUAVBuffer(128, L"AutoExposeState");
-}
-
-void Renderer::InitCumulusResources() {
-    auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    auto create = [&](ComPtr<ID3D12Resource>& dst, D3D12_RESOURCE_DESC desc, const wchar_t* name) {
-        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
-                                                              IID_PPV_ARGS(&dst)));
-        dst->SetName(name);
-    };
-    create(m_cumulusNoise,
-           CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R8G8_UNORM, CUMULUS_NOISE_SIZE, CUMULUS_NOISE_SIZE,
-                                        CUMULUS_NOISE_SIZE, 1, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-           L"Cumulus procedural detail");
-    create(m_cumulusNoiseBA,
-           CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R8G8_UNORM, CUMULUS_NOISE_SIZE, CUMULUS_NOISE_SIZE,
-                                        CUMULUS_NOISE_SIZE, 1, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-           L"Cumulus value and seam noise");
-    create(m_cumulusLight,
-           CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R16G16_FLOAT, CUMULUS_LIGHT_XZ, CUMULUS_LIGHT_Y,
-                                        CUMULUS_LIGHT_XZ * CUMULUS_LIGHT_CASCADES, 1,
-                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-           L"Cumulus near and distant lighting");
-    create(m_cumulusEnvironment,
-           CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, CUMULUS_ENV_W, CUMULUS_ENV_H,
-                                        CUMULUS_ENV_LAYERS, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-           L"Cumulus broad environment radiance");
-    create(m_cumulusAmbient,
-           CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, CUMULUS_AMBIENT_W, CUMULUS_AMBIENT_H, 1, 1, 1,
-                                        0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-           L"Cumulus atmospheric ambient");
-    create(m_cumulusDensity,
-           CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R16_FLOAT,
-                                        CUMULUS_DENSITY_BRICKS_XZ * CUMULUS_DENSITY_BRICK_VERTICES,
-                                        CUMULUS_DENSITY_BRICKS_Y * CUMULUS_DENSITY_BRICK_VERTICES,
-                                        CUMULUS_DENSITY_BRICKS_XZ * CUMULUS_DENSITY_BRICK_VERTICES, 1,
-                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-           L"Cumulus density bricks");
-    create(m_cumulusDensityTags,
-           CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R32G32B32A32_SINT, CUMULUS_DENSITY_BRICKS_XZ,
-                                        CUMULUS_DENSITY_BRICKS_Y, CUMULUS_DENSITY_BRICKS_XZ, 1,
-                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-           L"Cumulus density brick identities");
-    m_cumulusNoiseReady = m_cumulusAmbientReady = false;
 }
 
 // Fixed renderer slots precede the dynamically populated material texture range.
@@ -880,8 +709,16 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, handle);
         next();
     }
-    rawUAV(m_reservoirBuffer_3, px * sizeof(Reservoir_GI));
-    rawUAV(m_reservoirBuffer_4, px * sizeof(Reservoir_GI));
+    rawUAV(m_liteReservoirs, px * LITE_RESERVOIR_BYTES);
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = 1;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, handle);
+        next();
+    }
     rawUAV(m_sampleBuffer_current, px * sizeof(SampleData));
     rawUAV(m_sampleBuffer_last, px * sizeof(SampleData));
 
@@ -955,36 +792,6 @@ void Renderer::CreateShaderResourceHeap() {
 
     rawUAV(m_pathStateBuffer, px * kPathStateBytesPerPx);
 
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        ud.Format = DXGI_FORMAT_R32_TYPELESS;
-        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        ud.Buffer.NumElements = MAX_STACKS;
-        dev->CreateUnorderedAccessView(m_globalCounterBuffer.Get(), nullptr, &ud, handle);
-        next();
-    }
-
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        ud.Format = DXGI_FORMAT_UNKNOWN;
-        ud.Buffer.NumElements = MAX_INDIRECT_COMMANDS;
-        ud.Buffer.StructureByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
-        dev->CreateUnorderedAccessView(m_indirectArgsBuffer.Get(), nullptr, &ud, handle);
-        next();
-    }
-
-    for (int s = 0; s < 4; ++s) {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        ud.Format = DXGI_FORMAT_UNKNOWN;
-        ud.Buffer.NumElements = GetWidth() * GetHeight();
-        ud.Buffer.StructureByteStride = 8;
-        dev->CreateUnorderedAccessView(m_stackBuffers[s].Get(), nullptr, &ud, handle);
-        next();
-    }
-
     auto dlssUAV = [&](ID3D12Resource* res, DXGI_FORMAT fmt) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
         ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -1005,36 +812,6 @@ void Renderer::CreateShaderResourceHeap() {
     dlssUAV(m_dlss.ColorBeforeTrans(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.Input(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.BiasHint(), DXGI_FORMAT_R8_UNORM);
-
-    auto sortUAV = [&](ComPtr<ID3D12Resource>& buf, UINT numElements) {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        ud.Format = DXGI_FORMAT_R32_TYPELESS;
-        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        ud.Buffer.NumElements = numElements;
-        dev->CreateUnorderedAccessView(buf.Get(), nullptr, &ud, stagingHandle);
-        dev->CopyDescriptorsSimple(1, handle, stagingHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        auto cpuH = stagingHandle;
-        auto gpuH = gpuHandle;
-        next();
-        nextStg();
-        return std::make_pair(cpuH, gpuH);
-    };
-    {
-        auto [c, g] = sortUAV(m_sortCountBuffer, SORT_BUCKETS);
-        m_sortCountCpuHandle = c;
-        m_sortCountGpuHandle = g;
-    }
-    {
-        auto [c, g] = sortUAV(m_sortOffsetBuffer, SORT_BUCKETS);
-        m_sortOffsetCpuHandle = c;
-        m_sortOffsetGpuHandle = g;
-    }
-    {
-        auto [c, g] = sortUAV(m_sortBoundsBuffer, 8);
-        m_sortBoundsCpuHandle = c;
-        m_sortBoundsGpuHandle = g;
-    }
 
     nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
     nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
@@ -1137,100 +914,6 @@ void Renderer::CreateShaderResourceHeap() {
         next();
     }
 
-    // Cumulus uses independent resources in both integrators, before the bindless range.
-    for (int i = 0; i < 3; ++i) {
-        ID3D12Resource* res = i == 0   ? m_cumulusNoise.Get()
-                              : i == 1 ? m_cumulusLight.Get()
-                                       : m_cumulusEnvironment.Get();
-        D3D12_SHADER_RESOURCE_VIEW_DESC d{};
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Format = res->GetDesc().Format;
-        if (i < 2) {
-            d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-            d.Texture3D.MipLevels = 1;
-        } else {
-            d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-            d.Texture2DArray.MipLevels = 1;
-            d.Texture2DArray.ArraySize = CUMULUS_ENV_LAYERS;
-        }
-        dev->CreateShaderResourceView(res, &d, handle);
-        next();
-    }
-    for (int i = 0; i < 3; ++i) {
-        ID3D12Resource* res = i == 0   ? m_cumulusNoise.Get()
-                              : i == 1 ? m_cumulusLight.Get()
-                                       : m_cumulusEnvironment.Get();
-        D3D12_UNORDERED_ACCESS_VIEW_DESC d{};
-        d.Format = res->GetDesc().Format;
-        if (i < 2) {
-            d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-            d.Texture3D.WSize = res->GetDesc().DepthOrArraySize;
-        } else {
-            d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-            d.Texture2DArray.ArraySize = CUMULUS_ENV_LAYERS;
-        }
-        dev->CreateUnorderedAccessView(res, nullptr, &d, handle);
-        next();
-    }
-
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d{};
-        d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        d.Texture2D.MipLevels = 1;
-        dev->CreateShaderResourceView(m_cumulusAmbient.Get(), &d, handle);
-        next();
-        D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
-        u.Format = d.Format;
-        u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        dev->CreateUnorderedAccessView(m_cumulusAmbient.Get(), nullptr, &u, handle);
-        next();
-        u = {};
-        u.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        u.Format = DXGI_FORMAT_R32_TYPELESS;
-        u.Buffer.NumElements = UINT(m_cumulusQueries->GetDesc().Width / 4);
-        u.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        dev->CreateUnorderedAccessView(m_cumulusQueries.Get(), nullptr, &u, handle);
-        next();
-    }
-
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d{};
-        d.Format = DXGI_FORMAT_R8G8_UNORM;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-        d.Texture3D.MipLevels = 1;
-        dev->CreateShaderResourceView(m_cumulusNoiseBA.Get(), &d, handle);
-        next();
-    }
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC d{};
-        d.Format = DXGI_FORMAT_R8G8_UNORM;
-        d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-        d.Texture3D.WSize = CUMULUS_NOISE_SIZE;
-        dev->CreateUnorderedAccessView(m_cumulusNoiseBA.Get(), nullptr, &d, handle);
-        next();
-    }
-
-    for (auto* resource : {m_cumulusDensity.Get(), m_cumulusDensityTags.Get()}) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d{};
-        d.Format = resource->GetDesc().Format;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-        d.Texture3D.MipLevels = 1;
-        dev->CreateShaderResourceView(resource, &d, handle);
-        next();
-    }
-    for (auto* resource : {m_cumulusDensity.Get(), m_cumulusDensityTags.Get()}) {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC d{};
-        d.Format = resource->GetDesc().Format;
-        d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-        d.Texture3D.WSize = resource->GetDesc().DepthOrArraySize;
-        dev->CreateUnorderedAccessView(resource, nullptr, &d, handle);
-        next();
-    }
-
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC d{};
         d.Format = DXGI_FORMAT_R32_FLOAT;
@@ -1274,12 +957,9 @@ void Renderer::CreateShaderBindingTable() {
     std::unordered_set<std::wstring> seenRayGenFiles;
 
     for (const auto& entry : m_passes.Tokens()) {
-        if (entry == L"barrier" || entry.rfind(L"loop:", 0) == 0 || entry == L"endloop" || entry == L"pingswap" ||
-            entry == L"clearsort" || entry == L"dlss")
+        if (entry == L"barrier" || entry.rfind(L"loop:", 0) == 0 || entry == L"endloop" || entry == L"dlss")
             continue;
-        if (entry.find(L"|cs:") != std::wstring::npos || entry.find(L"|wf:") != std::wstring::npos ||
-            entry.find(L"|wg:") != std::wstring::npos || entry.find(L"|fx:") != std::wstring::npos ||
-            entry.find(L"|call") != std::wstring::npos)
+        if (entry.find(L"|cs:") != std::wstring::npos || entry.find(L"|fx:") != std::wstring::npos)
             continue;
 
         if (!seenRayGenFiles.insert(entry.substr(0, entry.find(L'|'))).second)
@@ -1289,16 +969,6 @@ void Renderer::CreateShaderBindingTable() {
         base = base.substr(0, base.rfind(L'.'));
         m_sbtHelper.AddRayGenerationProgram(base.c_str(), {heapPointer});
         rgEntryCount++;
-    }
-
-    for (const auto* file : {L"Pass_pt_v8.hlsl", L"Pass_sharc_update_v8.hlsl"}) {
-        if (m_passes.PassIndexByFile(file) == UINT32_MAX)
-            continue;
-        std::wstring base(file);
-        base.resize(base.size() - 5u);
-        const std::wstring fastName = base + L"_fast";
-        m_passes.RegisterPassIndex(fastName, rgEntryCount++);
-        m_sbtHelper.AddRayGenerationProgram(fastName.c_str(), {heapPointer});
     }
 
     m_sbtHelper.AddMissProgram(L"Miss", {});
@@ -1322,170 +992,10 @@ void Renderer::CreateShaderBindingTable() {
     m_sbtHelper.AddHitGroup(L"OpaqueHitGroup", {});
     m_sbtHelper.AddHitGroup(L"AlphaHitGroup", {});
 
-    for (const auto& name : m_callableShaderNames)
-        m_sbtHelper.AddCallableProgram(name, {heapPointer});
-
     uint32_t sbtSize = m_sbtHelper.ComputeSBTSize();
     m_sbtStorage = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), sbtSize, D3D12_RESOURCE_FLAG_NONE,
                                                  D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
     m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
-
-    WriteRaysIndirectTemplate();
-}
-
-void Renderer::CreateStreamingCompactionBuffers() {
-    auto* dev = m_ctx.Device();
-    ResourceFactory rf(dev);
-    UINT totalPx = GetWidth() * GetHeight();
-
-    for (int i = 0; i < MAX_STACKS; ++i)
-        m_stackBuffers[i] = rf.CreateUAVBuffer(totalPx * 8, L"PixelStack_" + std::to_wstring(i));
-
-    if (!m_globalCounterBuffer)
-        m_globalCounterBuffer = rf.CreateUAVBuffer(MAX_STACKS * sizeof(uint32_t), L"GlobalCounters");
-
-    if (!m_indirectArgsBuffer)
-        m_indirectArgsBuffer =
-            rf.CreateUAVBuffer(MAX_INDIRECT_COMMANDS * sizeof(D3D12_DISPATCH_ARGUMENTS), L"IndirectArgs");
-
-    if (!m_zeroBuffer) {
-        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(MAX_STACKS * sizeof(uint32_t));
-        ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                   nullptr, IID_PPV_ARGS(&m_zeroBuffer)));
-        void* p;
-        m_zeroBuffer->Map(0, nullptr, &p);
-        memset(p, 0, MAX_STACKS * sizeof(uint32_t));
-        m_zeroBuffer->Unmap(0, nullptr);
-    }
-
-    if (!m_sortCountBuffer)
-        m_sortCountBuffer = rf.CreateUAVBuffer(SORT_BUCKETS * sizeof(uint32_t), L"SortCount");
-    if (!m_sortOffsetBuffer)
-        m_sortOffsetBuffer = rf.CreateUAVBuffer(SORT_BUCKETS * sizeof(uint32_t), L"SortOffset");
-    if (!m_sortBoundsBuffer)
-        m_sortBoundsBuffer = rf.CreateUAVBuffer(8 * sizeof(uint32_t), L"SortBounds");
-
-    if (!m_sortBoundsResetBuffer) {
-        const UINT MAX_U = 0xFFFFFFFF, MIN_U = 0;
-        const UINT initData[8] = {MAX_U, MAX_U, MAX_U, MIN_U, MIN_U, MIN_U, MAX_U, MIN_U};
-        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(initData));
-        ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                   nullptr, IID_PPV_ARGS(&m_sortBoundsResetBuffer)));
-        void* p;
-        CD3DX12_RANGE rr(0, 0);
-        ThrowIfFailed(m_sortBoundsResetBuffer->Map(0, &rr, &p));
-        memcpy(p, initData, sizeof(initData));
-        m_sortBoundsResetBuffer->Unmap(0, nullptr);
-    }
-}
-
-void Renderer::CreateIndirectCommandSignature() {
-    D3D12_INDIRECT_ARGUMENT_DESC ad = {};
-    ad.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-    D3D12_COMMAND_SIGNATURE_DESC cd = {};
-    cd.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
-    cd.NumArgumentDescs = 1;
-    cd.pArgumentDescs = &ad;
-    ThrowIfFailed(m_ctx.Device()->CreateCommandSignature(&cd, nullptr, IID_PPV_ARGS(&m_commandSignature)));
-
-    D3D12_INDIRECT_ARGUMENT_DESC rad = {};
-    rad.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
-    D3D12_COMMAND_SIGNATURE_DESC rcd = {};
-    rcd.ByteStride = sizeof(D3D12_DISPATCH_RAYS_DESC);
-    rcd.NumArgumentDescs = 1;
-    rcd.pArgumentDescs = &rad;
-    ThrowIfFailed(m_ctx.Device()->CreateCommandSignature(&rcd, nullptr, IID_PPV_ARGS(&m_raysCommandSignature)));
-}
-
-// Store fixed shader addresses; queue setup fills the active ray count.
-void Renderer::WriteRaysIndirectTemplate() {
-    if (!m_raysArgsTemplate || !m_sbtStorage)
-        return;
-    const uint32_t rgSlot = m_passes.PassIndexByFile(L"Pass_raygen_v8.hlsl");
-    if (rgSlot == UINT32_MAX)
-        return;
-
-    D3D12_DISPATCH_RAYS_DESC d{};
-    const uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
-    d.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * m_sbtHelper.GetRayGenEntrySize();
-    d.RayGenerationShaderRecord.SizeInBytes = m_sbtHelper.GetRayGenEntrySize();
-    d.MissShaderTable.StartAddress = sbtStart + m_sbtHelper.GetRayGenSectionSize();
-    d.MissShaderTable.SizeInBytes = m_sbtHelper.GetMissSectionSize();
-    d.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
-    d.HitGroupTable.StartAddress = d.MissShaderTable.StartAddress + d.MissShaderTable.SizeInBytes;
-    d.HitGroupTable.SizeInBytes = m_sbtHelper.GetHitGroupSectionSize();
-    d.HitGroupTable.StrideInBytes = m_sbtHelper.GetHitGroupEntrySize();
-    if (m_sbtHelper.GetCallableSectionSize() > 0) {
-        d.CallableShaderTable.StartAddress = d.HitGroupTable.StartAddress + d.HitGroupTable.SizeInBytes;
-        d.CallableShaderTable.SizeInBytes = m_sbtHelper.GetCallableSectionSize();
-        d.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
-    }
-    d.Width = 0;
-    d.Height = 1;
-    d.Depth = 1;
-
-    void* p = nullptr;
-    CD3DX12_RANGE noRead(0, 0);
-    ThrowIfFailed(m_raysArgsTemplate->Map(0, &noRead, &p));
-    memcpy(p, &d, sizeof(d));
-    m_raysArgsTemplate->Unmap(0, nullptr);
-}
-
-void Renderer::CompileSetupIndirectShader() {
-    const char* shaderCode = R"(
-        RWByteAddressBuffer Counters : register(u0);
-        RWStructuredBuffer<uint3> IndirectArgs : register(u1);
-        cbuffer Params : register(b0) { uint counterReadIdx; uint argWriteIdx; uint counterClearIdx; uint groupSize; };
-        [numthreads(1,1,1)] void main() {
-            uint ac = Counters.Load(counterReadIdx*4);
-            IndirectArgs[argWriteIdx] = uint3((ac+groupSize-1)/groupSize, 1, 1);
-        #if CLEAR_COUNTER
-            Counters.Store(counterClearIdx*4, 0);
-        #endif
-        })";
-
-    {
-        CD3DX12_ROOT_PARAMETER1 rp[2];
-        CD3DX12_DESCRIPTOR_RANGE1 range[1];
-        range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
-        rp[0].InitAsDescriptorTable(1, range);
-        rp[1].InitAsConstants(4, 0);
-        CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rd;
-        rd.Init_1_1(2, rp, 0, nullptr);
-        ComPtr<ID3DBlob> sb, eb;
-        D3D12SerializeVersionedRootSignature(&rd, &sb, &eb);
-        ThrowIfFailed(m_ctx.Device()->CreateRootSignature(0, sb->GetBufferPointer(), sb->GetBufferSize(),
-                                                          IID_PPV_ARGS(&m_rsSetupIndirect)));
-    }
-
-    auto Compile = [&](const char* name, bool doClear, ComPtr<ID3D12PipelineState>& pso) {
-        D3D_SHADER_MACRO macros[] = {{"CLEAR_COUNTER", doClear ? "1" : "0"}, {NULL, NULL}};
-        ComPtr<ID3DBlob> sb, eb;
-        ThrowIfFailed(
-            D3DCompile(shaderCode, strlen(shaderCode), name, macros, nullptr, "main", "cs_5_0", 0, 0, &sb, &eb));
-        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
-        pd.pRootSignature = m_rsSetupIndirect.Get();
-        pd.CS = {sb->GetBufferPointer(), sb->GetBufferSize()};
-        ThrowIfFailed(m_ctx.Device()->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso)));
-    };
-    Compile("SetupIndirect_Clear", true, m_psoSetupIndirect);
-    Compile("SetupIndirect_NoClear", false, m_psoSetupIndirectNoClear);
-}
-
-void Renderer::ClearSortBuffers(ID3D12GraphicsCommandList* cmdList) {
-    UINT cv[4] = {0, 0, 0, 0};
-    cmdList->ClearUnorderedAccessViewUint(m_sortCountGpuHandle, m_sortCountCpuHandle, m_sortCountBuffer.Get(), cv, 0,
-                                          nullptr);
-
-    auto b1 = CD3DX12_RESOURCE_BARRIER::Transition(m_sortBoundsBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                   D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->ResourceBarrier(1, &b1);
-    cmdList->CopyResource(m_sortBoundsBuffer.Get(), m_sortBoundsResetBuffer.Get());
-    auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_sortBoundsBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    cmdList->ResourceBarrier(1, &b2);
 }
 
 void Renderer::GenerateLutTextures() {

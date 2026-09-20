@@ -1,5 +1,4 @@
-#ifndef PSR_GUIDE_V8_HLSLI
-#define PSR_GUIDE_V8_HLSLI
+#pragma once
 
 // Primary surface replacement for the DLSS-RR guides. Delta chains (smooth metal, thin glass,
 // clear glass) are followed along their dominant lobe to the first surface with a diffuse or rough
@@ -338,4 +337,3 @@ inline float2 PsrVirtualMotionVector(float3 xVirtual, uint instHit, float3 xMirr
     return (prevPix.x > -1e8f && curPix.x > -1e8f) ? (prevPix - curPix) : float2(0.0f, 0.0f);
 }
 
-#endif

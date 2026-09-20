@@ -1,7 +1,4 @@
-#ifndef LIGHT_TREE_LEARNING_LAYOUT_H
-#define LIGHT_TREE_LEARNING_LAYOUT_H
-#define LT_ADAPTIVE_GRID 1
-#define LT_MOVEMENT_STABLE 1
+#pragma once
 #define LT_FLAG_LEARNING 0x80000u
 #define LT_RESET_BIT 2u
 #define LT_INITIALIZE_BIT 4u
@@ -22,6 +19,8 @@
 #define LT_CELL_PRESSURE_MS 250u
 #define LT_LEARNING_ALPHA_MIN (1.0f / 32.0f)
 #define LT_MOMENT_HISTORY 4096u
+#define LT_SAMPLE_HISTORY 8192u
+#define LT_PRIOR_HISTORY 64u
 #define LT_PARENT_FEEDBACK_RATE 32u
 #define LT_LOD_WARMUP_START 0.5f
 #define LT_LOD_BLEND_START 0.75f
@@ -57,5 +56,4 @@
 #define LT_LEARNING_GROUPS ((LT_CELL_CAPACITY + 63u) / 64u)
 #ifdef __cplusplus
 static_assert((LT_GRID_CAPACITY & (LT_GRID_CAPACITY-1u))==0u);
-#endif
 #endif

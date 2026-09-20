@@ -21,21 +21,8 @@
 Renderer::Renderer(UINT width, UINT height)
     : m_width(width), m_height(height), m_aspectRatio(static_cast<float>(width) / static_cast<float>(height)) {
     m_passes.Build({
-        L"Pass_spmis_reset_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_cumulus_noise_v8.hlsl|fx:32768",
-        L"barrier",
-        L"Pass_cumulus_density_v8.hlsl|fx:2048",
-        L"barrier",
-        L"Pass_cumulus_ambient_v8.hlsl|fx:32",
-        L"barrier",
-        L"Pass_cumulus_light_v8.hlsl|fx:9216",
-        L"barrier",
-        L"Pass_cumulus_environment_v8.hlsl|fx:2048",
-        L"barrier",
         L"Pass_camera_v8.hlsl|rg",
         L"barrier",
-
         L"Pass_pt_skybake_v8.hlsl|fx:512",
         L"barrier",
         L"Pass_light_learning_v8.hlsl|fx:256",
@@ -46,47 +33,24 @@ Renderer::Renderer(UINT width, UINT height)
         L"barrier",
         L"Pass_sharc_resolve_v8.hlsl|fx:4096",
         L"barrier",
-        L"Pass_raygen_v8.hlsl|rg",
+        L"Pass_sharc_debug_v8.hlsl|cs:16x16",
         L"barrier",
 
-        L"Pass_pt_nee_v8.hlsl|cs:16x16",
+        // Cache-driven path tracing: trace to the first wide vertex, pick a light there, shade it.
+        L"loop:pt_samples",
+        L"Pass_pt_trace_v8.hlsl|rg",
         L"barrier",
-        L"Pass_pt_v8.hlsl|rg",
+        L"Pass_pt_light_v8.hlsl|cs:16x16",
         L"barrier",
+        L"Pass_pt_shade_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"endloop",
 
         L"Pass_lite_shift_v8.hlsl|cs:16x16",
         L"barrier",
         L"Pass_lite_merge_v8.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_cumulus_secondary_v8.hlsl|cs:8x8",
-        L"barrier",
         L"Pass_atmosphere_primary_v8.hlsl|cs:8x8",
-        L"barrier",
-        L"Pass_cumulus_guides_v8.hlsl|cs:8x8",
-        L"barrier",
-
-        L"Pass_temp_gi_v8.hlsl|rg",
-        L"barrier",
-        L"Pass_shift_v8.hlsl|rg:temporal_shift",
-        L"barrier",
-        L"Pass_temp_merge_v8.hlsl|cs:16x16",
-        L"barrier",
-
-        L"Pass_spmis_count_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_spmis_offsets_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_spmis_sort_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_spmis_select_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_spmis_passthrough_v8.hlsl|rg",
-        L"barrier",
-        L"Pass_shift_v8.hlsl|rg:spatial_shift",
-        L"barrier",
-        L"Pass_spmis_merge_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_dup_gi_v8.hlsl|cs:16x16",
         L"barrier",
 
         L"Pass_shading_v8.hlsl|cs:16x16",
@@ -134,7 +98,6 @@ void Renderer::InitDevice() {
         InitBlueNoiseTexture();
         // Create atmospheric LUTs before their scene SRVs.
         InitSkyLUTBake();
-        InitCumulusResources();
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)));
         if (opts5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
@@ -269,9 +232,6 @@ void Renderer::InitSceneGPU() {
         m_skyStarsUploadHeap.Reset();
 
         CreateRaytracingPipeline();
-        CreateStreamingCompactionBuffers();
-        CreateIndirectCommandSignature();
-        CompileSetupIndirectShader();
         CreateRaytracingOutputBuffer();
         CreateReadbackBuffer();
         m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
@@ -935,17 +895,13 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     m_outputResource.Reset();
     m_permanentDataTexture.Reset();
     m_scratchPing.Reset();
-    m_reservoirBuffer_3.Reset();
-    m_reservoirBuffer_4.Reset();
+    m_liteReservoirs.Reset();
     m_sampleBuffer_current.Reset();
     m_sampleBuffer_last.Reset();
     m_pathStateBuffer.Reset();
-    m_spmisBuffer.Reset();
-    for (int i = 0; i < MAX_STACKS; ++i)
-        m_stackBuffers[i].Reset();
+    m_skyBakeBuffer.Reset();
 
     CreateRaytracingOutputBuffer();
-    CreateStreamingCompactionBuffers();
 
     m_dlss.CreateResources(m_ctx.Device(), newWidth, newHeight);
 
@@ -1020,8 +976,7 @@ void Renderer::RebuildResolutionDependentDescriptors() {
             dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
         }
     }
-    rawUAVAt(12, m_reservoirBuffer_3, px * sizeof(Reservoir_GI));
-    rawUAVAt(13, m_reservoirBuffer_4, px * sizeof(Reservoir_GI));
+    rawUAVAt(12, m_liteReservoirs, px * LITE_RESERVOIR_BYTES);
     rawUAVAt(14, m_sampleBuffer_current, px * sizeof(SampleData));
     rawUAVAt(15, m_sampleBuffer_last, px * sizeof(SampleData));
 
@@ -1044,17 +999,7 @@ void Renderer::RebuildResolutionDependentDescriptors() {
     }
 
     rawUAVAt(32, m_pathStateBuffer, px * kPathStateBytesPerPx);
-    rawUAVAt(CUMULUS_QUERY_HEAP_SLOT, m_cumulusQueries, UINT(m_cumulusQueries->GetDesc().Width));
 
-    for (int s = 0; s < 4; ++s) {
-        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 35 + s, inc);
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        ud.Format = DXGI_FORMAT_UNKNOWN;
-        ud.Buffer.NumElements = GetWidth() * GetHeight();
-        ud.Buffer.StructureByteStride = 8;
-        dev->CreateUnorderedAccessView(m_stackBuffers[s].Get(), nullptr, &ud, h);
-    }
 }
 
 // Swap reservoir history and repoint its fixed descriptor slots.
@@ -1463,12 +1408,6 @@ void Renderer::PopulateCommandList() {
     raysDesc.HitGroupTable.SizeInBytes = m_sbtHelper.GetHitGroupSectionSize();
     raysDesc.HitGroupTable.StrideInBytes = m_sbtHelper.GetHitGroupEntrySize();
 
-    if (m_sbtHelper.GetCallableSectionSize() > 0) {
-        raysDesc.CallableShaderTable.StartAddress =
-            raysDesc.HitGroupTable.StartAddress + raysDesc.HitGroupTable.SizeInBytes;
-        raysDesc.CallableShaderTable.SizeInBytes = m_sbtHelper.GetCallableSectionSize();
-        raysDesc.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
-    }
 
     if (m_emissiveGpuDirty) {
         const UINT timer = m_gpuProfiler.BeginPass(cmdList, "Emissive buffers");
@@ -1487,26 +1426,6 @@ void Renderer::PopulateCommandList() {
         cmdList->ResourceBarrier(1, &b);
     }
 
-    {
-        auto b = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_globalCounterBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->ResourceBarrier(1, &b);
-        cmdList->CopyBufferRegion(m_globalCounterBuffer.Get(), 0, m_zeroBuffer.Get(), 0, MAX_STACKS * sizeof(uint32_t));
-        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_globalCounterBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        cmdList->ResourceBarrier(1, &b2);
-    }
-
-    if (m_integratorSettings.integratorMode != 0) {
-        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                      D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->ResourceBarrier(1, &b);
-        cmdList->CopyBufferRegion(m_raygenQueueBuffer.Get(), 0, m_zeroBuffer.Get(), 0, 4 * sizeof(uint32_t));
-        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        cmdList->ResourceBarrier(1, &b2);
-    }
-
     if (m_integratorSettings.liteReuseSigma != m_liteReuseSigma) {
         m_liteReuseSigma = m_integratorSettings.liteReuseSigma;
         BuildLiteReuseTables(m_liteReuseSigma);
@@ -1523,48 +1442,35 @@ void Renderer::PopulateCommandList() {
         m_liteReusePending = false;
     }
 
-    uint32_t currentStack = 0, nextStack = 1;
 
-    std::vector<std::pair<int, uint32_t>> loopStack;
+    struct LoopFrame {
+        uint32_t remaining;
+        const std::wstring* tag;
+    };
+    std::vector<LoopFrame> loopStack;
+    uint32_t ptSampleIndex = 0; // packed into pt_initialSamples for the sample loop
 
     UINT dispW = renderW, dispH = renderH;
 
     auto& rs = m_integratorSettings;
-    rs.tempMcapGI = std::max(rs.tempMcapGI, 1);
-    rs.spatCountMaxGI = std::clamp(rs.spatCountMaxGI, 1, 2);
-    rs.spatCountMinGI = rs.spatCountMaxGI;
-    rs.spatRadMaxGI = std::max(rs.spatRadMaxGI, 4);
-    rs.spatRadMinGI = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
-    rs.spatTriesGI = std::clamp(rs.spatTriesGI, 2, 16);
 
-    rs.rejNormalDot = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
-    rs.rejDistance = std::max(rs.rejDistance, 0.001f);
-
-    // Slots and bit fields must match the shared shader root constants.
+    // Slots and bit fields must match the shared shader root constants (Globals_v8.hlsli).
     UINT rsConsts[SHARC_ROOT_CONSTANTS] = {};
-    rsConsts[4] = (UINT)rs.tempMcapGI;
-    rsConsts[5] = (UINT)rs.spatCountMaxGI;
-    rsConsts[6] = (UINT)rs.spatCountMinGI;
-    rsConsts[7] = (UINT)rs.spatRadMaxGI;
-    rsConsts[8] = (UINT)rs.spatRadMinGI;
+    auto setFloat = [&](UINT slot, float value) { memcpy(&rsConsts[slot], &value, 4); };
 
-    constexpr uint32_t RS_FLAG_CLAMP_EMITTERS = 0x100u;
-
-    const bool integratorChanged = rs.integratorMode != m_previousIntegratorMode;
-    m_previousIntegratorMode = rs.integratorMode;
-    uint32_t baseFlags = (dlssResChanged || integratorChanged) ? (rs.Flags() & ~3u) : rs.Flags();
+    uint32_t baseFlags = 0;
     if (m_lightTreeCompact)
         baseFlags |= RS_FLAG_COMPACT_LIGHT_TREE;
     if (!MeshLightsActive())
         baseFlags |= RS_FLAG_NO_MESH_LIGHTS;
     if (m_dlss.clampEmitterSpikes)
         baseFlags |= RS_FLAG_CLAMP_EMITTERS;
-
+    if (rs.forceDiffuseMats)
+        baseFlags |= RS_FLAG_FORCE_DIFFUSE;
     baseFlags |= m_dlss.GuideOffFlags();
 
-    const bool usePtKernel = (rs.integratorMode == 0);
-    const bool useSharc = usePtKernel && rs.sharcEnabled;
-    const bool useLightLearning = usePtKernel && rs.lightTreeLearning && MeshLightsActive();
+    const bool useSharc = rs.sharcEnabled;
+    const bool useLightLearning = rs.lightTreeLearning && MeshLightsActive();
     rs.lightTreeCellExponent = std::clamp(rs.lightTreeCellExponent, -4, 8);
     rs.lightTreeLodScale = std::clamp(rs.lightTreeLodScale, 0.001f, 0.25f);
     if (rs.lightTreeReset || (useLightLearning && !m_lightLearningWasEnabled) ||
@@ -1580,19 +1486,6 @@ void Renderer::PopulateCommandList() {
         baseFlags |= LT_FLAG_LEARNING;
     if (useLightLearning && rs.lightTreeDebug)
         baseFlags |= LT_FLAG_DEBUG;
-    if (!m_cumulusSettingsValid ||
-        std::memcmp(&m_previousCumulusSettings, &m_camera.cumulusSettings, sizeof(CumulusSettings)) != 0 ||
-        m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
-        if (!m_cumulusSettingsValid ||
-            m_previousCumulusSettings.LightingKey() != m_camera.cumulusSettings.LightingKey() ||
-            m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
-            m_sharcResetPending = true;
-        }
-        m_previousDensityCacheEnabled = m_camera.cumulusDensityCache;
-        m_previousCumulusSettings = m_camera.cumulusSettings;
-        m_cumulusSettingsValid = true;
-        m_dlss.ForceReset();
-    }
     const UINT sharcDebugMode = useSharc ? (UINT)std::clamp(rs.sharcDebugMode, 0, 3) : 0u;
     if (!m_sharcLightingValid || std::memcmp(&m_sharcSunSettings, &m_camera.sunSettings, sizeof(SunSettings)) != 0) {
         m_sharcResetPending = true;
@@ -1612,182 +1505,104 @@ void Renderer::PopulateCommandList() {
     m_sharcTextureFilter = rs.texturePointFilter;
     m_sharcWasEnabled = useSharc;
     rs.sharcReset = false;
-    rsConsts[44] = useSharc ? 1u : 0u;
-    rsConsts[44] |= sharcDebugMode << SHARC_DEBUG_MODE_SHIFT;
-    if (sharcDebugMode != 0u && rs.sharcDebugCoarse)
-        rsConsts[44] |= SHARC_DEBUG_OTHER_LEVEL_BIT;
-    rsConsts[45] = (m_sharcResetPending ? 1u : 0u) | (m_lightLearningResetPending ? LT_RESET_BIT : 0u) |
-                   (m_lightLearningRevalidatePending ? LT_REVALIDATE_BIT : 0u);
-    if (useLightLearning) {
-        m_lightLearningResetPending = false;
-        m_lightLearningRevalidatePending = false;
-    }
-    rsConsts[46] = ++m_sharcFrame; // monotonic; unsigned age works across wrap
-    rsConsts[47] = (UINT)std::clamp(rs.sharcUpdateStride, 2, 8);
-    const float sharcCellSize = std::exp2((float)rs.sharcCellSizeExponent);
-    const float sharcLodScale = std::clamp(rs.sharcLodScale, 0.001f, 0.1f);
-    const float sharcFootprint = std::clamp(rs.sharcQueryFootprint, 0.5f, 8.0f);
-    memcpy(&rsConsts[48], &sharcCellSize, 4);
-    memcpy(&rsConsts[49], &sharcLodScale, 4);
-    rsConsts[50] = (UINT)std::clamp(rs.sharcMinSamples, 8, 256);
-    rsConsts[51] = (UINT)std::clamp(rs.sharcHistoryFrames, 8, 256);
-    rsConsts[52] = (UINT)std::clamp(rs.sharcMaxAge, 32, 4096);
-    memcpy(&rsConsts[53], &sharcFootprint, 4);
-    rsConsts[54] = (UINT)rs.sharcTrainBounces;
-    rsConsts[55] = (UINT)std::clamp(rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
 
-    const UINT guideQ = (UINT)std::lround(std::clamp(rs.sharcGuideMax, 0.0f, 0.9f) * 255.0f);
-    const UINT guideFreshness = (UINT)std::clamp(rs.sharcGuideFreshness / 8 - 1, 0, 255);
-    rs.sharcGuideDepth = std::clamp(rs.sharcGuideDepth, 1, 7);
-    rsConsts[56] =
-        (useSharc && rs.sharcGuideEnabled ? GUIDE_PARAM_ENABLED : 0u) | (guideQ << GUIDE_PARAM_QMAX_SHIFT) |
-        ((UINT)rs.sharcGuideLevelOffset << GUIDE_PARAM_LEVEL_SHIFT) | (guideFreshness << GUIDE_PARAM_FRESHNESS_SHIFT) |
-        (rs.sharcGuideTrain ? GUIDE_PARAM_TRAIN : 0u) |
-        ((UINT)std::lround(std::clamp(rs.regularizeRoughness, 0.0f, 0.63f) * 100.0f) << GUIDE_PARAM_REGULARIZE_SHIFT) |
-        ((UINT)rs.sharcGuideDepth << GUIDE_PARAM_DEPTH_SHIFT);
-    if (useSharc)
-        m_sharcResetPending = false;
-    if (usePtKernel)
-        baseFlags = (baseFlags & ~(0x2u | 0x8u | 0x10u | 0x2000u)) | 0x1000000u;
-
-    const bool liteActive = usePtKernel && rs.liteEnabled;
+    const bool liteActive = rs.liteEnabled;
     if (liteActive) {
         baseFlags |= LITE_FLAG_ENABLED | (rs.liteSpatial ? LITE_FLAG_SPATIAL : 0u) |
                      (rs.liteUnshadowedTargets ? LITE_FLAG_UNSHADOWED : 0u) | (rs.liteDebugView ? LITE_FLAG_DEBUG : 0u);
     }
-    rsConsts[9] = baseFlags;
-    memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
-    memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
-    rsConsts[12] = (UINT)rs.spatTriesGI;
 
+    rsConsts[2] = baseFlags;
+    rsConsts[3] = (UINT)std::clamp(rs.maxBounces, 2, 32);
+    rsConsts[4] = (UINT)std::clamp(rs.rrStartDepth, 1, 32);
+    rsConsts[5] = (UINT)std::clamp(rs.maxDiffuseBounces, 1, std::clamp(rs.maxBounces, 2, 32));
+    rsConsts[7] = rs.texturePointFilter ? 1u : 0u;
     if (liteActive) {
-        rsConsts[5] = (UINT)std::clamp(rs.liteSpatMcap, 1, 255);
-        rsConsts[6] = (UINT)std::clamp(rs.liteSpatSlots, 0, (int)LITE_SLOTS_MAX);
+        rsConsts[8] = (UINT)std::clamp(rs.liteSpatMcap, 1, 255);
+        rsConsts[9] = (UINT)std::clamp(rs.liteSpatSlots, 0, (int)LITE_SLOTS_MAX);
         const UINT sizes[3] = {LITE_REUSE_SIZE0, LITE_REUSE_SIZE1, LITE_REUSE_SIZE2};
-        const UINT slots[3] = {7u, 8u, 12u};
         for (int t = 0; t < 3; ++t) {
             const UINT ox = m_liteRng() % sizes[t];
             const UINT oy = m_liteRng() % sizes[t];
             const UINT flags = m_liteRng() & 7u;
-            rsConsts[slots[t]] = ox | (oy << 8) | (flags << LITE_REUSE_FLAGS_SHIFT);
+            rsConsts[10 + t] = ox | (oy << 8) | (flags << LITE_REUSE_FLAGS_SHIFT);
         }
     }
-
-    {
-        const float rrm = std::clamp(rs.reconnectRoughnessMin, 0.0f, 1.0f);
-        memcpy(&rsConsts[17], &rrm, 4);
-    }
-
-    {
-        const float rdm = std::clamp(rs.reconnectDistMin, 0.0f, 1.0f);
-        memcpy(&rsConsts[18], &rdm, 4);
-        rsConsts[19] = (UINT)std::clamp(rs.rcMaxK, 2, (rs.hybridShift && rs.lobeIndexedPss) ? 8 : 10);
-        const float fpk = std::clamp(rs.rcFpKappa, 0.0001f, 100.0f);
-        memcpy(&rsConsts[20], &fpk, 4);
-    }
-
-    {
-        const float tnc = std::clamp(rs.tempNormalSimCos, -1.0f, 1.0f);
-        const float tpd = std::max(rs.tempPlaneDist, 0.0f);
-        const float tjc = std::max(rs.tempJacClamp, 1.0f);
-        const float ucw = std::max(rs.ucwClampMax, 0.0f);
-        memcpy(&rsConsts[13], &tnc, 4);
-        memcpy(&rsConsts[14], &tpd, 4);
-        memcpy(&rsConsts[15], &tjc, 4);
-        memcpy(&rsConsts[16], &ucw, 4);
-    }
-
-    {
-        const float crp = std::clamp(rs.corrReductionPow, 0.005f, 1.0f);
-        memcpy(&rsConsts[21], &crp, 4);
-    }
-
-    memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
-    memcpy(&rsConsts[23], &rs.rejDistance, 4);
-
-    {
-        const float nf = std::clamp(rs.spmisNormalFuzz, 0.0f, 1.0f);
-        const float sr0 = std::clamp(rs.spmisSearchR0, 1.0f, 512.0f);
-        const float sg = std::clamp(rs.spmisSearchGrow, 1.0f, 2.0f);
-        const float lightCellSize = std::exp2(float(rs.lightTreeCellExponent));
-        memcpy(&rsConsts[24], usePtKernel ? &lightCellSize : &nf, 4);
-        rsConsts[25] = (UINT)std::clamp(rs.spmisNormalBits, 1, 4);
-        if (usePtKernel)
-            memcpy(&rsConsts[25], &rs.lightTreeLodScale, 4);
-        memcpy(&rsConsts[26], &sr0, 4);
-        if (usePtKernel)
-            rsConsts[26] = static_cast<UINT>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                 std::chrono::steady_clock::now().time_since_epoch())
-                                                 .count());
-        memcpy(&rsConsts[27], &sg, 4);
-
-        if (usePtKernel) {
-            const float lr = std::clamp(rs.lightTreeLearnRoughness, 0.0f, 0.8f);
-            memcpy(&rsConsts[27], &lr, 4);
-        }
-        rsConsts[28] = (UINT)std::clamp(rs.spmisSearchIters, 4, 32);
-    }
-
-    rsConsts[29] = (UINT)std::clamp(rs.maxDiffuseBounces, 1, std::clamp(rs.maxBounces, 2, 32));
-
-    rsConsts[30] = (UINT)std::clamp(rs.dlssDebugLayer, 0, 13) | (m_dlss.guideOffPsr ? DLSS_GUIDE_OPT_NO_PSR : 0u) |
+    setFloat(13, std::clamp(rs.liteNormalSimCos, -1.0f, 1.0f));
+    setFloat(14, std::max(rs.litePlaneDist, 0.0f));
+    setFloat(15, std::exp2(float(rs.lightTreeCellExponent)));
+    setFloat(16, rs.lightTreeLodScale);
+    rsConsts[17] = static_cast<UINT>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    setFloat(18, std::clamp(rs.lightTreeLearnRoughness, 0.0f, 0.8f));
+    rsConsts[19] = (UINT)std::clamp(rs.dlssDebugLayer, 0, 13) | (m_dlss.guideOffPsr ? DLSS_GUIDE_OPT_NO_PSR : 0u) |
                    (m_dlss.guideOffMvBlend ? DLSS_GUIDE_OPT_NO_MV_BLEND : 0u);
     {
         using DirectX::PackedVector::XMConvertFloatToHalf;
         const float dn = std::clamp(rs.dlssDebugDepthNear, 0.0f, 60000.0f);
         const float df = std::clamp(rs.dlssDebugDepthFar, dn + 0.01f, 65000.0f);
-        rsConsts[31] = (UINT)XMConvertFloatToHalf(dn) | ((UINT)XMConvertFloatToHalf(df) << 16);
+        rsConsts[20] = (UINT)XMConvertFloatToHalf(dn) | ((UINT)XMConvertFloatToHalf(df) << 16);
     }
+    setFloat(21, std::clamp(m_dlss.sharpness, 0.0f, 1.0f));
 
-    rsConsts[32] = (UINT)std::clamp(rs.spmisReuseN, 1, 32);
-    rsConsts[33] = (UINT)std::clamp(rs.spmisRisN, 1, 32);
-    rsConsts[34] = (UINT)std::clamp(rs.spmisMcap, 0, 100000);
-    rsConsts[35] = (UINT)std::clamp(rs.spmisTileSize, 1, 256);
-    {
-        const float jac = std::clamp(rs.spmisJacThreshold, 1.0f, 1000.0f);
-        const float ns = std::clamp(rs.spmisNormalSimCos, -1.0f, 1.0f);
-        memcpy(&rsConsts[36], &jac, 4);
-        memcpy(&rsConsts[37], &ns, 4);
+    rsConsts[22] = useSharc ? 1u : 0u;
+    rsConsts[22] |= sharcDebugMode << SHARC_DEBUG_MODE_SHIFT;
+    if (sharcDebugMode != 0u && rs.sharcDebugCoarse)
+        rsConsts[22] |= SHARC_DEBUG_OTHER_LEVEL_BIT;
+    rsConsts[23] = (m_sharcResetPending ? 1u : 0u) | (m_lightLearningResetPending ? LT_RESET_BIT : 0u) |
+                   (m_lightLearningRevalidatePending ? LT_REVALIDATE_BIT : 0u);
+    if (useLightLearning) {
+        m_lightLearningResetPending = false;
+        m_lightLearningRevalidatePending = false;
     }
+    rsConsts[24] = ++m_sharcFrame; // monotonic; unsigned age works across wrap
+    setFloat(25, std::exp2((float)rs.sharcCellSizeExponent));
+    setFloat(26, std::clamp(rs.sharcLodScale, 0.001f, 0.1f));
+    rsConsts[27] = (UINT)std::clamp(rs.sharcMinSamples, 8, 256);
+    rsConsts[28] = (UINT)std::clamp(rs.sharcHistoryFrames, 8, 256);
+    rsConsts[29] = (UINT)std::clamp(rs.sharcMaxAge, 32, 4096);
+    setFloat(30, std::clamp(rs.sharcQueryFootprint, 0.5f, 8.0f));
+    rsConsts[31] = (UINT)rs.sharcTrainBounces;
+    rsConsts[32] = (UINT)std::clamp(rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
 
-    rsConsts[38] = (UINT)std::clamp(rs.maxBounces, 2, 32);
-    rsConsts[39] = (UINT)std::clamp(rs.rrStartDepth, 1, 32);
-    rsConsts[40] = (UINT)std::clamp(rs.initialSamples, 1, 8);
+    const UINT guideQ = (UINT)std::lround(std::clamp(rs.sharcGuideMax, 0.0f, 0.9f) * 255.0f);
+    const UINT guideFreshness = (UINT)std::clamp(rs.sharcGuideFreshness / 8 - 1, 0, 255);
+    rs.sharcGuideDepth = std::clamp(rs.sharcGuideDepth, 1, 7);
+    rsConsts[33] =
+        (useSharc && rs.sharcGuideEnabled ? GUIDE_PARAM_ENABLED : 0u) | (guideQ << GUIDE_PARAM_QMAX_SHIFT) |
+        ((UINT)rs.sharcGuideLevelOffset << GUIDE_PARAM_LEVEL_SHIFT) | (guideFreshness << GUIDE_PARAM_FRESHNESS_SHIFT) |
+        (rs.sharcGuideTrain ? GUIDE_PARAM_TRAIN : 0u) |
+        ((UINT)std::lround(std::clamp(rs.regularizeRoughness, 0.0f, 0.63f) * 100.0f) << GUIDE_PARAM_REGULARIZE_SHIFT) |
+        ((UINT)rs.sharcGuideDepth << GUIDE_PARAM_DEPTH_SHIFT);
+    rsConsts[34] = LT_BUFFER_OFFSET;
+    rsConsts[35] = (UINT)std::clamp(rs.sharcUpdateStride, 2, 8);
+    if (useSharc)
+        m_sharcResetPending = false;
 
-    {
-        const float pd = std::max(rs.spmisPlaneDist, 0.0f);
-        memcpy(&rsConsts[41], &pd, 4);
-    }
-
-    rsConsts[42] = rs.texturePointFilter ? 1u : 0u;
-
-    {
-        const float sharp = std::clamp(m_dlss.sharpness, 0.0f, 1.0f);
-        memcpy(&rsConsts[43], &sharp, 4);
-    }
-
-    auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
-        rsConsts[0] = w;
-        rsConsts[1] = h;
-        rsConsts[2] = stackIn;
-        rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, SHARC_ROOT_CONSTANTS, rsConsts, 0);
-
-        cmdList->SetComputeRootUnorderedAccessView(2, m_spmisBuffer->GetGPUVirtualAddress());
-
-        cmdList->SetComputeRootUnorderedAccessView(3, m_raygenQueueBuffer->GetGPUVirtualAddress());
-        cmdList->SetComputeRootUnorderedAccessView(4, m_sharcBuffer->GetGPUVirtualAddress());
+    // Tagged loops take their trip count from the integrator settings.
+    auto resolveLoopCount = [&](const PassDesc& pass) -> uint32_t {
+        if (pass.loopTag.empty())
+            return std::max(pass.loopCount, 1u);
+        if (pass.loopTag == L"pt_samples")
+            return (uint32_t)std::clamp(rs.initialSamples, 1, 8);
+        return 1u;
     };
 
-    const auto& cloudSun = m_camera.sunSettings;
-    const auto& cloudSettings = m_camera.cumulusSettings;
-    const std::array<float, 5> ambientKey{cloudSun.turbidity, cloudSun.sunIntensity, cloudSun.skyIntensity,
-                                          cloudSettings.baseKm, cloudSettings.thicknessKm};
-    if (ambientKey != m_cumulusAmbientKey)
-        m_cumulusAmbientReady = false;
-    uint32_t activeFeatures = usePtKernel ? pass_feature::PathTracer : pass_feature::LegacyReSTIR;
+    auto setConsts = [&](UINT w, UINT h) {
+        rsConsts[0] = w;
+        rsConsts[1] = h;
+        rsConsts[6] = (UINT)std::clamp(rs.initialSamples, 1, 8) | (ptSampleIndex << 16);
+        cmdList->SetComputeRoot32BitConstants(1, SHARC_ROOT_CONSTANTS, rsConsts, 0);
+        cmdList->SetComputeRootUnorderedAccessView(2, m_skyBakeBuffer->GetGPUVirtualAddress());
+        cmdList->SetComputeRootUnorderedAccessView(3, m_sharcBuffer->GetGPUVirtualAddress());
+    };
+
+    uint32_t activeFeatures = 0;
     if (useSharc)
         activeFeatures |= pass_feature::Sharc;
+    if (sharcDebugMode != 0u)
+        activeFeatures |= pass_feature::SharcDebug;
     if (useLightLearning)
         activeFeatures |= pass_feature::LightLearning;
     if (liteActive)
@@ -1796,15 +1611,6 @@ void Renderer::PopulateCommandList() {
         activeFeatures |= pass_feature::SpatialReuse;
     if (MeshLightsActive())
         activeFeatures |= pass_feature::MeshLights;
-    if (cloudSettings.enabled >= 0.5f)
-        activeFeatures |= pass_feature::Clouds;
-    if (!m_cumulusNoiseReady)
-        activeFeatures |= pass_feature::CloudNoise;
-    if (!m_cumulusAmbientReady)
-        activeFeatures |= pass_feature::CloudAmbient;
-    if (m_camera.cumulusDensityCache && cloudSettings.windX == 0 && cloudSettings.windZ == 0 &&
-        cloudSettings.coverage > 0)
-        activeFeatures |= pass_feature::CloudDensity;
     for (auto& pass : m_passes.Passes())
         pass.executedLastFrame = false;
     bool dlssEvaluatedThisFrame = false;
@@ -1824,37 +1630,25 @@ void Renderer::PopulateCommandList() {
             cacheGroup = 1;
         else if (p.file == L"Pass_sharc_resolve_v8.hlsl")
             cacheGroup = 2;
-        else if (p.file == L"Pass_light_learning_v8.hlsl")
-            cacheGroup = 9;
-        else if (p.file == L"Pass_pt_nee_v8.hlsl" || p.file == L"Pass_pt_v8.hlsl")
+        else if (p.file.rfind(L"Pass_pt_", 0) == 0 && p.file != L"Pass_pt_skybake_v8.hlsl")
             cacheGroup = 3;
         else if (p.file == L"Pass_lite_shift_v8.hlsl")
             cacheGroup = 4;
         else if (p.file == L"Pass_lite_merge_v8.hlsl")
             cacheGroup = 5;
-        else if (p.file == L"Pass_cumulus_noise_v8.hlsl" || p.file == L"Pass_cumulus_density_v8.hlsl" ||
-                 p.file == L"Pass_cumulus_ambient_v8.hlsl" || p.file == L"Pass_cumulus_light_v8.hlsl" ||
-                 p.file == L"Pass_cumulus_environment_v8.hlsl")
+        else if (p.file == L"Pass_atmosphere_primary_v8.hlsl")
             cacheGroup = 6;
-        else if (p.file == L"Pass_cumulus_secondary_v8.hlsl")
-            cacheGroup = 8;
-        else if (p.file == L"Pass_atmosphere_primary_v8.hlsl" || p.file == L"Pass_cumulus_guides_v8.hlsl")
+        else if (p.file == L"Pass_light_learning_v8.hlsl")
             cacheGroup = 7;
 
         UINT passTimer = GpuProfiler::InvalidPass;
-        if (p.stage != Stage::LoopStart && p.stage != Stage::LoopEnd && p.stage != Stage::PingSwap &&
-            p.stage != Stage::Callable) {
-            std::wstring label = p.file;
-            if (!p.dispatchTag.empty())
-                label += L" (" + p.dispatchTag + L")";
-            const int length = static_cast<int>(label.size());
-            const int bytes = WideCharToMultiByte(CP_UTF8, 0, label.data(), length, nullptr, 0, nullptr, nullptr);
+        if (p.stage != Stage::LoopStart && p.stage != Stage::LoopEnd) {
+            const int length = static_cast<int>(p.file.size());
+            const int bytes = WideCharToMultiByte(CP_UTF8, 0, p.file.data(), length, nullptr, 0, nullptr, nullptr);
             std::string name(bytes, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, label.data(), length, name.data(), bytes, nullptr, nullptr);
+            WideCharToMultiByte(CP_UTF8, 0, p.file.data(), length, name.data(), bytes, nullptr, nullptr);
             if (p.stage == Stage::Barrier)
                 name = "UAV barriers";
-            else if (p.stage == Stage::ClearSort)
-                name = "Clear sort buffers";
             else if (p.stage == Stage::DLSS)
                 name = "DLSS Ray Reconstruction";
             passTimer = m_gpuProfiler.BeginPass(cmdList, std::move(name), cacheGroup);
@@ -1862,21 +1656,24 @@ void Renderer::PopulateCommandList() {
 
         switch (p.stage) {
         case Stage::LoopStart:
-
-            loopStack.push_back({(int)p.loopCount, p.loopCount});
-            break;
-
-        case Stage::PingSwap:
-            std::swap(currentStack, nextStack);
+            loopStack.push_back({resolveLoopCount(p), &p.loopTag});
+            if (p.loopTag == L"pt_samples")
+                ptSampleIndex = 0;
             break;
 
         case Stage::LoopEnd:
             if (!loopStack.empty()) {
-                loopStack.back().second--;
-                if (loopStack.back().second > 0)
+                LoopFrame& frame = loopStack.back();
+                frame.remaining--;
+                if (frame.remaining > 0) {
+                    if (*frame.tag == L"pt_samples")
+                        ++ptSampleIndex;
                     i = p.targetIdx;
-                else
+                } else {
+                    if (*frame.tag == L"pt_samples")
+                        ptSampleIndex = 0;
                     loopStack.pop_back();
+                }
             }
             break;
 
@@ -1885,64 +1682,21 @@ void Renderer::PopulateCommandList() {
             cmdList->ResourceBarrier(1, &u);
         } break;
 
-        case Stage::ClearSort:
-            ClearSortBuffers(cmdList);
-            break;
-
         case Stage::RayGen: {
             cmdList->SetPipelineState1(m_rtStateObject.Get());
             cmdList->SetComputeRootSignature(m_rayGenSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            setConsts(dispW, dispH, 0, 0);
+            setConsts(dispW, dispH);
 
-            if (p.file == L"Pass_raygen_v8.hlsl") {
-                {
-                    auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
-                                                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    cmdList->ResourceBarrier(1, &b);
-                }
-                cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(), 0, m_raysArgsTemplate.Get(), 0,
-                                          sizeof(D3D12_DISPATCH_RAYS_DESC));
-                cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(), offsetof(D3D12_DISPATCH_RAYS_DESC, Width),
-                                          m_raygenQueueBuffer.Get(), 0, sizeof(uint32_t));
-                {
-                    CD3DX12_RESOURCE_BARRIER post[] = {
-                        CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
-                                                             D3D12_RESOURCE_STATE_COPY_SOURCE,
-                                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-                        CD3DX12_RESOURCE_BARRIER::Transition(m_raysIndirectArgs.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)};
-                    cmdList->ResourceBarrier(2, post);
-                }
-                cmdList->ExecuteIndirect(m_raysCommandSignature.Get(), 1, m_raysIndirectArgs.Get(), 0, nullptr, 0);
-                break;
-            }
-
-            uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
-
-            if (sharcDebugMode == 0u) {
-                const wchar_t* fastName = p.file == L"Pass_pt_v8.hlsl"             ? L"Pass_pt_v8_fast"
-                                          : p.file == L"Pass_sharc_update_v8.hlsl" ? L"Pass_sharc_update_v8_fast"
-                                                                                   : nullptr;
-                if (fastName) {
-                    const uint32_t fastSlot = m_passes.PassIndexByFile(fastName);
-                    if (fastSlot != UINT32_MAX)
-                        rgSlot = fastSlot;
-                }
-            }
+            const uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
             raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
             raysDesc.RayGenerationShaderRecord.SizeInBytes = rgSize;
-
-            UINT shiftDepth = 1;
-            if (p.dispatchTag == L"temporal_shift")
-                shiftDepth = 2;
-            else if (p.dispatchTag == L"spatial_shift")
-                shiftDepth = std::clamp((UINT)rs.spmisReuseN, 1u, kSpmisSplitMaxDraws) + 1;
-            raysDesc.Depth = shiftDepth;
+            raysDesc.Depth = 1;
             if (p.file == L"Pass_sharc_update_v8.hlsl") {
-                raysDesc.Width = (dispW + rsConsts[47] - 1u) / rsConsts[47];
-                raysDesc.Height = (dispH + rsConsts[47] - 1u) / rsConsts[47];
+                // One training lane per tile of the strided schedule.
+                const UINT stride = rsConsts[35];
+                raysDesc.Width = (dispW + stride - 1u) / stride;
+                raysDesc.Height = (dispH + stride - 1u) / stride;
             } else {
                 raysDesc.Width = dispW;
                 raysDesc.Height = dispH;
@@ -1952,131 +1706,31 @@ void Renderer::PopulateCommandList() {
         }
 
         case Stage::Compute: {
-            if (p.isWorkGraph) {
-                const auto& rt = m_wgRuntime[p.wgIdx];
-                cmdList->SetComputeRootSignature(m_computeSignature.Get());
-                cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                setConsts(dispW, dispH, currentStack, nextStack);
-                D3D12_SET_PROGRAM_DESC sp{};
-                sp.Type = D3D12_PROGRAM_TYPE_WORK_GRAPH;
-                sp.WorkGraph.ProgramIdentifier = rt.id;
-                sp.WorkGraph.BackingMemory = rt.backing;
-                static std::vector<bool> s_inited;
-                if (s_inited.size() <= p.wgIdx)
-                    s_inited.resize(p.wgIdx + 1, false);
-                sp.WorkGraph.Flags =
-                    s_inited[p.wgIdx] ? D3D12_SET_WORK_GRAPH_FLAG_NONE : D3D12_SET_WORK_GRAPH_FLAG_INITIALIZE;
-                cmdList->SetProgram(&sp);
-                s_inited[p.wgIdx] = true;
-                D3D12_DISPATCH_GRAPH_DESC dg{};
-                dg.Mode = D3D12_DISPATCH_MODE_NODE_CPU_INPUT;
-                dg.NodeCPUInput.EntrypointIndex = 0;
-                dg.NodeCPUInput.NumRecords = 1;
-                cmdList->DispatchGraph(&dg);
-            } else {
-                cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
-                cmdList->SetComputeRootSignature(m_computeSignature.Get());
-                cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                setConsts(dispW, dispH, currentStack, nextStack);
-                cmdList->Dispatch((dispW + p.groupX - 1) / p.groupX, (dispH + p.groupY - 1) / p.groupY, 1);
-            }
+            cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
+            cmdList->SetComputeRootSignature(m_computeSignature.Get());
+            cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+            setConsts(dispW, dispH);
+            cmdList->Dispatch((dispW + p.groupX - 1) / p.groupX, (dispH + p.groupY - 1) / p.groupY, 1);
             break;
         }
 
         case Stage::FixedCompute: {
-            ID3D12Resource* cloudTarget = nullptr;
-            if (p.file == L"Pass_cumulus_noise_v8.hlsl")
-                cloudTarget = m_cumulusNoise.Get();
-            if (p.file == L"Pass_cumulus_density_v8.hlsl")
-                cloudTarget = m_cumulusDensity.Get();
-            auto transitionNoiseChannels = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
-                if (p.file == L"Pass_cumulus_noise_v8.hlsl") {
-                    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_cumulusNoiseBA.Get(), before, after);
-                    cmdList->ResourceBarrier(1, &barrier);
-                }
-                if (p.file == L"Pass_cumulus_noise_v8.hlsl" || p.file == L"Pass_cumulus_density_v8.hlsl") {
-                    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_cumulusDensityTags.Get(), before, after);
-                    cmdList->ResourceBarrier(1, &barrier);
-                }
-            };
-            transitionNoiseChannels(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            if (p.file == L"Pass_cumulus_light_v8.hlsl")
-                cloudTarget = m_cumulusLight.Get();
-            if (p.file == L"Pass_cumulus_ambient_v8.hlsl")
-                cloudTarget = m_cumulusAmbient.Get();
-            if (p.file == L"Pass_cumulus_environment_v8.hlsl")
-                cloudTarget = m_cumulusEnvironment.Get();
-            if (cloudTarget) {
-                auto b = CD3DX12_RESOURCE_BARRIER::Transition(
-                    cloudTarget, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                cmdList->ResourceBarrier(1, &b);
-            }
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            setConsts(dispW, dispH, currentStack, nextStack);
+            setConsts(dispW, dispH);
             const UINT groups = p.file == L"Pass_sharc_resolve_v8.hlsl"    ? SHARC_RESOLVE_GROUPS
                                 : p.file == L"Pass_light_learning_v8.hlsl" ? LT_LEARNING_GROUPS
                                 : p.file == L"Pass_sharc_prepare_v8.hlsl"  ? SHARC_CAPACITY / SHARC_GROUP_SIZE
-                                : p.file == L"Pass_pt_skybake_v8.hlsl" && m_camera.cumulusSettings.enabled > .5f
-                                    ? 1u
-                                    : p.groupX;
+                                                                           : p.groupX;
             cmdList->Dispatch(groups, p.groupY, 1);
-            if (p.file == L"Pass_light_learning_v8.hlsl" && (rsConsts[45] & LT_RESET_BIT) == 0u) {
+            if (p.file == L"Pass_light_learning_v8.hlsl" && (rsConsts[23] & LT_RESET_BIT) == 0u) {
                 auto learningBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_sharcBuffer.Get());
                 cmdList->ResourceBarrier(1, &learningBarrier);
-                cmdList->SetComputeRoot32BitConstant(1, rsConsts[45] | LT_INITIALIZE_BIT, 45);
+                cmdList->SetComputeRoot32BitConstant(1, rsConsts[23] | LT_INITIALIZE_BIT, 23);
                 cmdList->Dispatch(groups, p.groupY, 1);
-                cmdList->SetComputeRoot32BitConstant(1, rsConsts[45], 45);
+                cmdList->SetComputeRoot32BitConstant(1, rsConsts[23], 23);
             }
-            transitionNoiseChannels(D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            if (cloudTarget) {
-                auto b = CD3DX12_RESOURCE_BARRIER::Transition(cloudTarget, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                cmdList->ResourceBarrier(1, &b);
-                if (cloudTarget == m_cumulusNoise.Get())
-                    m_cumulusNoiseReady = true;
-                if (cloudTarget == m_cumulusAmbient.Get()) {
-                    m_cumulusAmbientReady = true;
-                    m_cumulusAmbientKey = ambientKey;
-                }
-            }
-            break;
-        }
-
-        case Stage::Wavefront: {
-            // Derive dispatch size from GPU queue counts without CPU readback.
-            bool inPlace = (currentStack == nextStack);
-            cmdList->SetPipelineState(inPlace ? m_psoSetupIndirectNoClear.Get() : m_psoSetupIndirect.Get());
-            cmdList->SetComputeRootSignature(m_rsSetupIndirect.Get());
-            UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            auto gpuH = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
-            gpuH.ptr += 33 * inc;
-            cmdList->SetComputeRootDescriptorTable(0, gpuH);
-            UINT setupC[4] = {currentStack, 0, nextStack, p.groupX};
-            cmdList->SetComputeRoot32BitConstants(1, 4, setupC, 0);
-            cmdList->Dispatch(1, 1, 1);
-
-            CD3DX12_RESOURCE_BARRIER pre[] = {
-                CD3DX12_RESOURCE_BARRIER::UAV(m_indirectArgsBuffer.Get()),
-                CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                     D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)};
-            cmdList->ResourceBarrier(2, pre);
-
-            cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
-            cmdList->SetComputeRootSignature(m_computeSignature.Get());
-            cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            setConsts(dispW, dispH, currentStack, nextStack);
-            cmdList->ExecuteIndirect(m_commandSignature.Get(), 1, m_indirectArgsBuffer.Get(), 0, nullptr, 0);
-
-            CD3DX12_RESOURCE_BARRIER post[] = {
-                CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
-                                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-                CD3DX12_RESOURCE_BARRIER::UAV(m_stackBuffers[nextStack].Get()),
-                CD3DX12_RESOURCE_BARRIER::UAV(m_globalCounterBuffer.Get())};
-            cmdList->ResourceBarrier(3, post);
             break;
         }
 

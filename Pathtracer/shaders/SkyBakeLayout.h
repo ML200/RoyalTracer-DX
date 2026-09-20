@@ -1,5 +1,4 @@
-#ifndef SKYBAKE_LAYOUT_H
-#define SKYBAKE_LAYOUT_H
+#pragma once
 
 // Sky-bake offsets are shared by the host and shader passes.
 #define SKYBAKE_SUN_OFFSET 0u
@@ -16,5 +15,4 @@
 #ifdef __cplusplus
 static_assert(SKYBAKE_GROUPS == 512u, "keep the Pass_pt_skybake_v8 fx: token in Renderer.cpp in sync");
 static_assert(SKYBAKE_SUN_OFFSET + SKYBAKE_SUN_BYTES <= SKYBAKE_LUT_OFFSET);
-#endif
 #endif

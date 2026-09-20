@@ -1,5 +1,4 @@
-#ifndef MATERIAL_SSS_V8_HLSLI
-#define MATERIAL_SSS_V8_HLSLI
+#pragma once
 
 static const uint  SSS_MAX_STEPS  = 64u;
 static const float SSS_MIN_RADIUS = 1e-3f;
@@ -172,4 +171,3 @@ inline SSSWalkResult SubsurfaceWalk(
     return r;
 }
 
-#endif
