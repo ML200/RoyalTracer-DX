@@ -1145,8 +1145,17 @@ void Renderer::RenderFrame() {
 
         slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
         m_editor.RenderPlatformWindows();
+    } catch (const std::exception& e) {
+        // Streamline hands out a proxy device; the removal state and the DRED data live on the
+        // native one, which is polled first. The proxy is tried afterwards in case only it reports.
+        dxdiag::CrashLogF(L"\n*** frame failed: %hs\n", e.what());
+        dxdiag::CheckDeviceRemoved(m_ctx.NativeDevice(), 2000);
+        dxdiag::CheckDeviceRemoved(m_ctx.Device(), 500);
+        throw;
     } catch (...) {
-        dxdiag::CheckDeviceRemoved(m_ctx.Device(), 1000);
+        dxdiag::CrashLog(L"\n*** frame failed: non-standard exception\n");
+        dxdiag::CheckDeviceRemoved(m_ctx.NativeDevice(), 2000);
+        dxdiag::CheckDeviceRemoved(m_ctx.Device(), 500);
         throw;
     }
 

@@ -431,6 +431,12 @@ void Renderer::CreateRaytracingPipeline() {
 
     }
 
+    // The raygens shade their hits themselves from the hit object and never invoke it, so the
+    // closest-hit and miss shaders are empty. They still exist: the driver fails
+    // CreateStateObject (DXGI_ERROR_DRIVER_INTERNAL_ERROR) for a raytracing pipeline in which no
+    // hit group has a closest-hit shader, whether the groups are empty or any-hit only, and the
+    // SDK layers crash while reporting that failure. The alpha-test any-hit is the only shader a
+    // traversal ever runs.
     ComPtr<IDxcBlob> missLib = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
     ComPtr<IDxcBlob> hitLib = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.hlsl");
     ComPtr<IDxcBlob> anyHitLib = nv_helpers_dx12::CompileShaderLibrary(L"AnyHit.hlsl");
@@ -456,27 +462,19 @@ void Renderer::CreateRaytracingPipeline() {
     m_rtStateObject = pipeline.Generate();
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 
-    UINT64 rgStack = 0;
-    for (const auto& name : rayGenNames) {
-        UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(name.c_str());
-        if (sz > rgStack)
-            rgStack = sz;
-    }
-    // The stack must hold the raygen plus the deepest shader it invokes: any-hit during the
-    // traversal, then closest-hit or miss. Undersizing it corrupts memory before the device fails.
+    // With a trace recursion depth of one the driver's default pipeline stack is exactly the
+    // raygen plus the deepest shader a traversal invokes, so it is left in place: an explicit
+    // size that comes out too small corrupts memory long before the device fails. The queried
+    // sizes are logged for reference only.
     auto stackOf = [&](const wchar_t* exportName) -> UINT64 {
         const UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(exportName);
         return sz >= 0xFFFFFFFFull ? 0ull : sz;
     };
-    const UINT64 missStack = stackOf(L"Miss");
-    UINT64 hitStack = 0, anyHitStack = stackOf(L"AlphaHitGroup::anyhit");
-    for (const wchar_t* group : {L"OpaqueHitGroup", L"AlphaHitGroup", L"TerrainHitGroup"})
-        hitStack = std::max(hitStack, stackOf((std::wstring(group) + L"::closesthit").c_str()));
-    const UINT64 deepest = std::max(missStack, std::max(hitStack, anyHitStack));
-    UINT64 total = (rgStack + deepest + 255) & ~255;
-    m_rtStateObjectProps->SetPipelineStackSize(total);
-    LOG(L"[RT] pipeline stack " << total << L" bytes: raygen " << rgStack << L", closest-hit " << hitStack
-                                << L", any-hit " << anyHitStack << L", miss " << missStack);
+    UINT64 rgStack = 0;
+    for (const auto& name : rayGenNames)
+        rgStack = std::max(rgStack, stackOf(name.c_str()));
+    LOG(L"[RT] shader stack sizes: raygen " << rgStack << L", any-hit " << stackOf(L"AlphaHitGroup::anyhit")
+                                            << L", miss " << stackOf(L"Miss") << L" (driver default pipeline stack)");
 }
 
 void Renderer::CreateRaytracingOutputBuffer() {

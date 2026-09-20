@@ -9,6 +9,13 @@
 #include <ctime>
 #include <Windows.h>
 
+// The functions below are inline: every translation unit that includes this header must see the
+// same definitions, or the linker picks one of the stub bodies for the whole program and the
+// device-removal dump silently never runs. The switch therefore defaults to on here.
+#ifndef ENABLE_D3D12_DIAGNOSTICS
+#define ENABLE_D3D12_DIAGNOSTICS 1
+#endif
+
 #if ENABLE_D3D12_DIAGNOSTICS
 #pragma comment(lib, "dxguid.lib")
 #endif
@@ -78,10 +85,17 @@ inline void EnableDebugLayerAndDred() {
     CrashLog(L"[dxdiag] EnableDebugLayerAndDred reached, diagnostic plumbing live\n");
 
 #if DXDIAG_ENABLE_DEBUG_LAYER
-    ComPtr<ID3D12Debug> dbg;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) {
-        dbg->EnableDebugLayer();
-        CrashLog(L"[DX]  Debug-layer enabled (heavy validation, slow)\n");
+    // RT_NO_DEBUG_LAYER=1 in the environment skips the validation layer for one run: it is slow,
+    // and the preview SDK layers crash inside CreateStateObject on some valid pipelines.
+    char noDebugLayer[8] = {};
+    if (GetEnvironmentVariableA("RT_NO_DEBUG_LAYER", noDebugLayer, sizeof(noDebugLayer)) > 0 && noDebugLayer[0] != '0') {
+        CrashLog(L"[DX]  Debug-layer SKIPPED (RT_NO_DEBUG_LAYER set)\n");
+    } else {
+        ComPtr<ID3D12Debug> dbg;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) {
+            dbg->EnableDebugLayer();
+            CrashLog(L"[DX]  Debug-layer enabled (heavy validation, slow)\n");
+        }
     }
 #else
     CrashLog(L"[DX]  Debug-layer SKIPPED (DXDIAG_ENABLE_DEBUG_LAYER=0)\n");
@@ -91,6 +105,11 @@ inline void EnableDebugLayerAndDred() {
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSet)))) {
         dredSet->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dredSet->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        // Breadcrumb contexts record the marker the profiler sets per render pass, so the dump
+        // names the pass the GPU was in.
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dredSet1;
+        if (SUCCEEDED(dredSet.As(&dredSet1)))
+            dredSet1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         CrashLog(L"[DX]  DRED enabled (cheap, used for TDR breadcrumbs)\n");
     }
 }
@@ -262,34 +281,66 @@ inline void CheckDeviceRemoved(ID3D12Device* device, int pollMs = 0) {
     if (!g_dred) {
         CrashLog(L"    (DRED interface not available, no breadcrumbs)\n");
     } else {
+        // DRED 1.2 adds the marker strings of each list (breadcrumb contexts); the profiler sets
+        // one per render pass, so the last context before the failing op names the pass.
+        ComPtr<ID3D12DeviceRemovedExtendedData1> dred1;
+        g_dred.As(&dred1);
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 bc1 = {};
         D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT bc = {};
+        HRESULT hrBC = dred1 ? dred1->GetAutoBreadcrumbsOutput1(&bc1) : E_NOINTERFACE;
+        const bool withContext = SUCCEEDED(hrBC);
+        if (!withContext)
+            hrBC = g_dred->GetAutoBreadcrumbsOutput(&bc);
         D3D12_DRED_PAGE_FAULT_OUTPUT pf = {};
-        HRESULT hrBC = g_dred->GetAutoBreadcrumbsOutput(&bc);
         HRESULT hrPF = g_dred->GetPageFaultAllocationOutput(&pf);
-        CrashLogF(L"    DRED breadcrumbs hr=0x%08X, page fault hr=0x%08X\n", (unsigned)hrBC, (unsigned)hrPF);
+        CrashLogF(L"    DRED breadcrumbs hr=0x%08X (contexts %ls), page fault hr=0x%08X\n", (unsigned)hrBC,
+                  withContext ? L"yes" : L"no", (unsigned)hrPF);
 
-        int nodeIdx = 0;
-        for (auto node = bc.pHeadAutoBreadcrumbNode; node; node = node->pNext, ++nodeIdx) {
-            const UINT32 lastVal = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0u;
-
+        auto dumpNode = [&](int nodeIdx, const char* listName, UINT32 lastVal, UINT32 count,
+                            const D3D12_AUTO_BREADCRUMB_OP* history, const D3D12_DRED_BREADCRUMB_CONTEXT* contexts,
+                            UINT contextCount) {
             char nameBuf[256] = "<unnamed>";
-            if (node->pCommandListDebugNameA)
-                strncpy_s(nameBuf, node->pCommandListDebugNameA, _TRUNCATE);
+            if (listName)
+                strncpy_s(nameBuf, listName, _TRUNCATE);
             wchar_t wname[256];
             size_t conv = 0;
             mbstowcs_s(&conv, wname, nameBuf, _TRUNCATE);
-            CrashLogF(L"  Node %d: list='%ls' completed %u/%u ops\n", nodeIdx, wname, lastVal, node->BreadcrumbCount);
+            CrashLogF(L"  Node %d: list='%ls' completed %u/%u ops\n", nodeIdx, wname, lastVal, count);
 
-            const UINT32 first = (lastVal > 8u) ? (lastVal - 8u) : 0u;
-            const UINT32 last = std::min<UINT32>(lastVal + 1u, node->BreadcrumbCount);
+            const wchar_t* pass = L"<no marker>";
+            for (UINT c = 0; c < contextCount; ++c)
+                if (contexts[c].BreadcrumbIndex <= lastVal && contexts[c].pContextString)
+                    pass = contexts[c].pContextString;
+            if (contextCount)
+                CrashLogF(L"    last pass marker at or before the failing op: '%ls'\n", pass);
+
+            const UINT32 first = (lastVal > 12u) ? (lastVal - 12u) : 0u;
+            const UINT32 last = std::min<UINT32>(lastVal + 1u, count);
             for (UINT32 i = first; i < last; ++i) {
                 const wchar_t* tag = (i == lastVal) ? L"  >>>" : L"     ";
                 char opNameA[64] = {0};
-                strncpy_s(opNameA, BreadcrumbOpName(node->pCommandHistory[i]), _TRUNCATE);
+                strncpy_s(opNameA, BreadcrumbOpName(history[i]), _TRUNCATE);
                 wchar_t opNameW[64];
                 mbstowcs_s(&conv, opNameW, opNameA, _TRUNCATE);
-                CrashLogF(L"%ls op %u: %ls\n", tag, i, opNameW);
+                const wchar_t* ctxStr = L"";
+                for (UINT c = 0; c < contextCount; ++c)
+                    if (contexts[c].BreadcrumbIndex == i && contexts[c].pContextString)
+                        ctxStr = contexts[c].pContextString;
+                CrashLogF(L"%ls op %u: %ls %ls\n", tag, i, opNameW, ctxStr);
             }
+        };
+
+        int nodeIdx = 0;
+        if (withContext) {
+            for (auto node = bc1.pHeadAutoBreadcrumbNode; node; node = node->pNext, ++nodeIdx)
+                dumpNode(nodeIdx, node->pCommandListDebugNameA,
+                         node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0u, node->BreadcrumbCount,
+                         node->pCommandHistory, node->pBreadcrumbContexts, node->BreadcrumbContextsCount);
+        } else {
+            for (auto node = bc.pHeadAutoBreadcrumbNode; node; node = node->pNext, ++nodeIdx)
+                dumpNode(nodeIdx, node->pCommandListDebugNameA,
+                         node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0u, node->BreadcrumbCount,
+                         node->pCommandHistory, nullptr, 0u);
         }
         if (nodeIdx == 0) {
             CrashLog(L"    (no breadcrumb nodes; the hang may have been outside the tracked queue)\n");
@@ -316,6 +367,8 @@ inline void CheckDeviceRemoved(ID3D12Device* device, int pollMs = 0) {
     std::terminate();
 }
 #else
+inline void CrashLog(const std::wstring&) {}
+template <typename... Args> inline void CrashLogF(const wchar_t*, Args...) {}
 inline void EnableDebugLayerAndDred() {}
 inline void HookDevice(ID3D12Device*) {}
 inline void DumpNewMessages() {}

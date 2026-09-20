@@ -36,6 +36,13 @@ class GpuProfiler {
             return InvalidPass;
         }
         const UINT id = static_cast<UINT>(m_spans.size());
+        // A PIX-format marker per pass: DRED records it as the breadcrumb context of the
+        // following commands, so a device removal dump names the pass the GPU was in.
+        {
+            const std::wstring wide(name.begin(), name.end());
+            cmd->SetMarker(0u /* PIX_EVENT_UNICODE_VERSION */, wide.c_str(),
+                           static_cast<UINT>((wide.size() + 1u) * sizeof(wchar_t)));
+        }
         m_spans.push_back({std::move(name), cacheGroup});
         cmd->EndQuery(m_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2 + id * 2);
         return id;

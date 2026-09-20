@@ -46,8 +46,9 @@ void Pass_pt_trace_v8()
     uint   info      = 0u;
     DvMiss missEnd = (DvMiss)0;
 
-    // The camera pass resolved the primary vertex; a short ray through it hands it to the
-    // closest-hit shader, so every vertex is shaded there and reordered alike.
+    // The camera pass resolved the primary vertex; a short ray through it gives the reorder a hit
+    // object, so the primary vertices are sorted like every other hit. The primary shading takes
+    // the camera record whether or not this ray hits.
     float3 pos    = load_x1(g_sample_current, pixelIdx);
     const float3 toPrimary = pos - InitOrigin();
     float  pathDist = length(toPrimary);   // path length: with the pixel cone it sizes the texture footprint
@@ -58,26 +59,32 @@ void Pass_pt_trace_v8()
     ray.Direction = rayDir;
     ray.TMin      = 0.0f;
     ray.TMax      = 2.0f * retrace;
+    // A degenerate camera record (a non-finite or zero-length primary segment) gets a harmless
+    // short ray instead, so the trace below never sees an invalid direction; the primary shading
+    // rejects the record itself.
+    if (!IsRayValid(ray.Origin, rayDir, ray.TMax))
+    {
+        ray.Origin    = InitOrigin();
+        ray.Direction = float3(0.0f, 0.0f, 1.0f);
+        ray.TMax      = PT_RETRACE_MIN;
+    }
     uint inFlags = PvInputFlags(ps, false, false, false);
 
     [loop]
     for (;;)
     {
         // ---- trace, reorder, shade ----
+        const uint depth = PtPsDepth(ps);
         TracePayload payload = (TracePayload)0;
         dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE,
             0xFF, 0, 1, 0, ray, payload);
         dx::MaybeReorderThread(hitObj);
-        const uint depth = PtPsDepth(ps);
-        if (depth == 1u && !hitObj.IsHit())
-        {
-            if (LITE_ENABLED && s == 0u) LiteMarkEmpty(pixelIdx);
-            break;
-        }
         PtVertexIO io;
         io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist;
         io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u;
-        if (hitObj.IsHit())
+        if (depth == 1u)
+            PtShadePrimary(io, rayDir, pixel, pixelIdx);
+        else if (hitObj.IsHit())
         {
             BuiltInTriangleIntersectionAttributes attr;
             hitObj.GetAttributes(attr);

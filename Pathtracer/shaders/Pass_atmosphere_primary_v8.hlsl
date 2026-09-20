@@ -26,21 +26,22 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     const SunState sun = ComputeSunState();
-    float3 radiance, viewTr;
-    if (isMeshHit)
-    {
-        // Aerial perspective: integrate only up to the surface, with the cheaper step counts.
-        const float maxDistanceKm = length(load_x1(g_sample_current, pixelIdx) - rayOrigin) / WORLD_UNITS_PER_KM;
-        bool hitPlanet;
-        radiance = IntegrateScattering(rayDir, sun.dirWS, viewTr, hitPlanet, maxDistanceKm, ATMOS_AERIAL_VIEW_STEPS);
-    }
-    else
-    {
-        float3 scatter;
-        float  hitPlanet;
-        SkyAtmosphere(rayDir, sun.dirWS, scatter, viewTr, hitPlanet);
-        radiance = scatter + EvaluateSkyBackgroundBehind(rayDir, sun, hitPlanet > 0.5f, scatter) * viewTr;
-    }
+    // In-scattering up to the surface (or through the whole atmosphere behind an escaped pixel),
+    // integrated per pixel with a jittered step schedule and scaled by SKY_INTENSITY: the same
+    // estimate the clear-sky path of the previous integrator produced. The night background and
+    // the stars are added behind escaped pixels only.
+    const float maxDistanceKm = isMeshHit
+        ? length(load_x1(g_sample_current, pixelIdx) - rayOrigin) / WORLD_UNITS_PER_KM
+        : -1.0f;
+    const uint  spatialSeed = initRandomData(pixel, uint2(0, 0), 0u, 97u);
+    const float rayJitter   = frac(float(spatialSeed & 65535u) / 65536.0f + (uint(time) % 4096u) * .61803398875f);
+    bool   hitPlanet;
+    float3 viewTr;
+    const float3 scatter = IntegrateScattering(rayDir, sun.dirWS, viewTr, hitPlanet, maxDistanceKm,
+        (uint)ATMOS_VIEW_STEPS, rayJitter) * SKY_INTENSITY;
+    float3 radiance = scatter;
+    if (!isMeshHit)
+        radiance += EvaluateSkyBackgroundBehind(rayDir, sun, hitPlanet, scatter) * viewTr;
 
     if (ATM_DEBUG_RING == 1u)
     {

@@ -119,9 +119,15 @@ void DeviceContext::ExecuteAndPresent() {
         dxdiag::DumpNewMessages();
 
         dxdiag::CheckDeviceRemoved(NativeDevice(), 1000);
+        dxdiag::CheckDeviceRemoved(device.Get(), 500);
 #endif
 
-        if (FAILED(NativeDevice()->GetDeviceRemovedReason()))
+        // Streamline's present hooks can report the device loss here before either device object
+        // does; a loss code from Present is fatal either way, so it reaches the frame's dump path.
+        const bool lostByPresent = presentHr == DXGI_ERROR_DEVICE_REMOVED || presentHr == DXGI_ERROR_DEVICE_HUNG ||
+                                   presentHr == DXGI_ERROR_DEVICE_RESET;
+        if (lostByPresent || FAILED(NativeDevice()->GetDeviceRemovedReason()) ||
+            FAILED(device->GetDeviceRemovedReason()))
             ThrowIfFailed(presentHr);
     }
 
