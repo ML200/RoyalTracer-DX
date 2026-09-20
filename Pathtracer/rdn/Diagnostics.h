@@ -5,6 +5,13 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <mutex>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <memory>
 #include <sstream>
 #include <ctime>
 #include <Windows.h>
@@ -72,6 +79,24 @@ inline ComPtr<ID3D12InfoQueue> g_infoQ;
 inline ComPtr<ID3D12DeviceRemovedExtendedData> g_dred;
 
 LONG WINAPI CrashExceptionFilter(EXCEPTION_POINTERS* ep);
+// Symbolized call stack of the caller, written to the crash log (CrashHandler.cpp).
+void LogCallStack(const wchar_t* title);
+
+// The first occurrence of every debug-layer error gets the call stack of the API call that
+// raised it: the message queue says what went wrong, the stack says where. Runs inside the
+// D3D12 call on whichever thread made it.
+inline void CALLBACK InfoQueueCallback(D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id,
+                                       LPCSTR description, void*) {
+    if (severity > D3D12_MESSAGE_SEVERITY_ERROR)
+        return;
+    static std::mutex guard;
+    static std::unordered_set<int> traced;
+    std::lock_guard<std::mutex> lock(guard);
+    if (!traced.insert((int)id).second)
+        return;
+    CrashLogF(L"[DX] call stack of the first message %d (%.80hs...):\n", (int)id, description ? description : "");
+    LogCallStack(L"");
+}
 inline void InstallCrashHandler() {
     SetUnhandledExceptionFilter(&CrashExceptionFilter);
 }
@@ -125,15 +150,31 @@ inline void HookDevice(ID3D12Device* device) {
             g_infoQ->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
         }
         g_infoQ->SetMessageCountLimit(4096);
+        ComPtr<ID3D12InfoQueue1> infoQ1;
+        if (SUCCEEDED(g_infoQ.As(&infoQ1))) {
+            DWORD cookie = 0;
+            infoQ1->RegisterMessageCallback(&InfoQueueCallback, D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
+        }
     }
 #endif
 }
 
+// Drain the debug layer's message queue. Each distinct message is logged once with its count of
+// repeats reported later: a validation error that fires per frame would otherwise cost more in
+// console, file and debugger output than the frame itself. After a few repeats the message ID is
+// also denied at the source, so the runtime stops formatting it; validation itself stays on.
 inline void DumpNewMessages() {
     if (!g_infoQ)
         return;
 
+    static std::unordered_map<std::string, uint64_t> seen;
+    static std::vector<D3D12_MESSAGE_ID> denied;
+    static uint64_t suppressed = 0, drains = 0;
+    constexpr uint64_t kRepeatsBeforeDeny = 8;
+    constexpr uint64_t kSummaryEveryDrains = 600;
+
     const UINT64 nMsg = g_infoQ->GetNumStoredMessagesAllowedByRetrievalFilter();
+    bool denyListGrew = false;
     for (UINT64 i = 0; i < nMsg; ++i) {
         SIZE_T sz = 0;
         g_infoQ->GetMessage(i, nullptr, &sz);
@@ -142,13 +183,34 @@ inline void DumpNewMessages() {
         D3D12_MESSAGE* msg = reinterpret_cast<D3D12_MESSAGE*>(blob.get());
 
         g_infoQ->GetMessage(i, msg, &sz);
+        if (msg->Severity > D3D12_MESSAGE_SEVERITY_WARNING)
+            continue; // info and plain messages carry nothing worth the output cost
 
-        if (msg->Severity <= D3D12_MESSAGE_SEVERITY_WARNING)
+        const std::string key = std::to_string((int)msg->ID) + ":" + (msg->pDescription ? msg->pDescription : "");
+        const uint64_t count = ++seen[key];
+        if (count == 1) {
             CrashLogF(L"[DX] %hs\n", msg->pDescription ? msg->pDescription : "<no description>");
-        else
-            std::wcout << L"[DX] " << msg->pDescription << std::endl;
+        } else {
+            ++suppressed;
+            if (count == kRepeatsBeforeDeny && std::find(denied.begin(), denied.end(), msg->ID) == denied.end()) {
+                denied.push_back(msg->ID);
+                denyListGrew = true;
+                CrashLogF(L"[DX] message %d repeated %llu times; further copies are not stored\n", (int)msg->ID,
+                          (unsigned long long)kRepeatsBeforeDeny);
+            }
+        }
     }
     g_infoQ->ClearStoredMessages();
+
+    if (denyListGrew) {
+        D3D12_INFO_QUEUE_FILTER filter = {};
+        filter.DenyList.NumIDs = (UINT)denied.size();
+        filter.DenyList.pIDList = denied.data();
+        g_infoQ->ClearStorageFilter();
+        g_infoQ->AddStorageFilterEntries(&filter);
+    }
+    if (++drains % kSummaryEveryDrains == 0 && suppressed)
+        CrashLogF(L"[DX] %llu repeated debug-layer messages suppressed so far\n", (unsigned long long)suppressed);
 }
 
 inline const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {

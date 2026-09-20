@@ -107,33 +107,36 @@ struct LightInstanceRef {
 namespace lt {
 #pragma pack(push, 1)
 
-// Full-precision CPU/decoded records; GPU resources use Light*NodePacked.
+// Full-precision records of the SG light clusters (the GPU layout with compaction off; compact
+// GPU resources use Light*NodePacked). rbar is the mean resultant vector of the emission
+// directions, cosTheta_o the cosine of the cone around it that bounds every emitter normal,
+// radius the sphere around the mean that holds every light.
 struct LightTLASNodeGpu {
-    XMFLOAT3 bmin;
+    XMFLOAT3 mean;
+    float variance;
+    XMFLOAT3 rbar;
     float power;
-    XMFLOAT3 bmax;
+    float radius;
     float cosTheta_o;
-    XMFLOAT3 axis;
-    float sinTheta_o; // conservative orientation cone
-
     uint32_t firstChild;
     uint32_t childCount;
     uint32_t slot;
     uint32_t _pad; // keeps struct stride 16B aligned
+    uint32_t _reserved[2];
 };
 
 struct LightBLASNodeGpu {
-    XMFLOAT3 bmin;
+    XMFLOAT3 mean;
+    float variance;
+    XMFLOAT3 rbar;
     float power;
-    XMFLOAT3 bmax;
+    float radius;
     float cosTheta_o;
-    XMFLOAT3 axis;
-    float sinTheta_o; // conservative orientation cone
-
     uint32_t firstChild;
     uint32_t childCount;
     uint32_t triFirst;
     uint32_t triCount;
+    uint32_t _reserved[2];
 };
 
 struct BlasRangeGpu {
@@ -291,6 +294,122 @@ static float orientationMeasure(const Cone& c) {
     return static_cast<float>(term0 + extra);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Spherical Gaussian light clusters (Tokuyoshi, Ikeda, Kulkarni, Harada 2024): the flux-weighted
+// mean and total variance of the light positions, the mean resultant vector of the emission
+// directions (a vMF lobe; a triangle contributes half its normal), the flux, the radius of the
+// sphere around the mean that holds every light, and the half-angle of a cone around the mean
+// direction that bounds every emitter normal.
+// ---------------------------------------------------------------------------------------------
+struct SgCluster {
+    XMFLOAT3 mean{0, 0, 0};
+    float variance = 0.f;
+    XMFLOAT3 rbar{0, 0, 0};
+    float power = 0.f;
+    float radius = 0.f;
+    float theta_o = LT_PI;
+};
+
+static XMFLOAT3 sgAxis(const XMFLOAT3& rbar) {
+    return length3(rbar) > 1e-9f ? normalize3(rbar) : XMFLOAT3{0, 0, 1};
+}
+
+static SgCluster sgTriangle(const ::LightTriangle& t) {
+    SgCluster c;
+    const XMFLOAT3 e1 = sub3(t.y, t.x), e2 = sub3(t.z, t.x);
+    c.mean = mul3(add3(t.x, add3(t.y, t.z)), 1.f / 3.f);
+    c.variance = (std::fmax)(0.f, (dot3(e1, e1) + dot3(e2, e2) - dot3(e1, e2)) / 18.f);
+    const XMFLOAT3 n = cross3(e1, e2);
+    if (length3(n) > 1e-12f) {
+        c.rbar = mul3(normalize3(n), 0.5f);
+        c.theta_o = 0.f;
+    }
+    c.power = (std::fmax)(t.weight, 0.f);
+    c.radius = (std::fmax)(length3(sub3(t.x, c.mean)),
+                           (std::fmax)(length3(sub3(t.y, c.mean)), length3(sub3(t.z, c.mean))));
+    return c;
+}
+
+// Exact statistics of the union of clusters: flux-weighted mean, total variance around it, mean
+// resultant vector, enclosing radius and normal cone. Zero total flux weighs the members evenly.
+template <class It, class Get> static SgCluster sgMerge(It begin, It end, Get get) {
+    SgCluster out;
+    double power = 0.0, count = 0.0;
+    for (It i = begin; i != end; ++i) {
+        power += (std::fmax)(get(*i).power, 0.f);
+        count += 1.0;
+    }
+    if (count == 0.0)
+        return out;
+    const bool weighted = power > 0.0;
+    auto weightOf = [&](const SgCluster& c) { return weighted ? (std::fmax)(c.power, 0.f) / power : 1.0 / count; };
+    double mx = 0.0, my = 0.0, mz = 0.0;
+    for (It i = begin; i != end; ++i) {
+        const SgCluster& c = get(*i);
+        const double w = weightOf(c);
+        mx += w * c.mean.x;
+        my += w * c.mean.y;
+        mz += w * c.mean.z;
+    }
+    out.mean = {float(mx), float(my), float(mz)};
+    out.power = float(power);
+    double var = 0.0, rx = 0.0, ry = 0.0, rz = 0.0;
+    float radius = 0.f;
+    for (It i = begin; i != end; ++i) {
+        const SgCluster& c = get(*i);
+        const double w = weightOf(c);
+        const XMFLOAT3 d = sub3(c.mean, out.mean);
+        const double d2 = double(d.x) * d.x + double(d.y) * d.y + double(d.z) * d.z;
+        var += w * (double(c.variance) + d2);
+        rx += w * c.rbar.x;
+        ry += w * c.rbar.y;
+        rz += w * c.rbar.z;
+        radius = (std::fmax)(radius, length3(d) + c.radius);
+    }
+    out.variance = float(var);
+    // A vanishing resultant carries no direction: snap it to zero so every decoder and this
+    // cone agree on the fallback axis.
+    out.rbar = {float(rx), float(ry), float(rz)};
+    if (length3(out.rbar) < 1e-6f)
+        out.rbar = {0, 0, 0};
+    out.radius = radius;
+    const XMFLOAT3 axis = sgAxis(out.rbar);
+    float theta = 0.f;
+    for (It i = begin; i != end; ++i) {
+        const SgCluster& c = get(*i);
+        theta = (std::fmax)(theta, safe_acosf(dot3(axis, sgAxis(c.rbar))) + c.theta_o);
+    }
+    out.theta_o = (std::fmin)(theta, LT_PI);
+    return out;
+}
+static SgCluster sgMerge(const std::vector<SgCluster>& members) {
+    return sgMerge(members.begin(), members.end(), [](const SgCluster& c) -> const SgCluster& { return c; });
+}
+
+// The cosine of a cone half-angle, rounded towards the wider cone.
+static float conservativeCosine(float theta) {
+    const float c = std::cos(clampf(theta, 0.f, LT_PI));
+    return c <= -1.f ? -1.f : std::nextafter(c, -std::numeric_limits<float>::infinity());
+}
+template <class Node> static void sgToGpu(Node& g, const SgCluster& c) {
+    g.mean = c.mean;
+    g.variance = c.variance;
+    g.rbar = c.rbar;
+    g.power = c.power;
+    g.radius = c.radius;
+    g.cosTheta_o = conservativeCosine(c.theta_o);
+}
+template <class Node> static SgCluster sgFromGpu(const Node& g) {
+    SgCluster c;
+    c.mean = g.mean;
+    c.variance = g.variance;
+    c.rbar = g.rbar;
+    c.power = g.power;
+    c.radius = g.radius;
+    c.theta_o = safe_acosf(g.cosTheta_o);
+    return c;
+}
+
 static const XMFLOAT4X4 LT_IDENTITY_4X4 = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
 static const XMFLOAT3X3 LT_IDENTITY_3X3 = {1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -367,6 +486,45 @@ static float areaScale(const XMFLOAT4X4& w) {
     return std::cbrt(det * det);
 }
 
+// Largest singular value of the linear part: the factor by which the transform can stretch a
+// length (power iteration on M M^T, exact for rotations with uniform scale).
+static float maxScale(const XMFLOAT4X4& w) {
+    const XMFLOAT3 r[3] = {{w._11, w._12, w._13}, {w._21, w._22, w._23}, {w._31, w._32, w._33}};
+    float B[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            B[i][j] = dot3(r[i], r[j]);
+    XMFLOAT3 v{0.57735f, 0.57735f, 0.57735f};
+    float sigma2 = 0.f;
+    for (int it = 0; it < 16; ++it) {
+        const XMFLOAT3 bv{B[0][0] * v.x + B[0][1] * v.y + B[0][2] * v.z, B[1][0] * v.x + B[1][1] * v.y + B[1][2] * v.z,
+                          B[2][0] * v.x + B[2][1] * v.y + B[2][2] * v.z};
+        sigma2 = dot3(bv, v);
+        const float len = length3(bv);
+        if (!(len > 1e-30f))
+            break;
+        v = mul3(bv, 1.f / len);
+    }
+    const float s = std::sqrt((std::fmax)(sigma2, 0.f));
+    return std::isfinite(s) ? s : 1.f;
+}
+
+// A cluster of a mesh seen through its instance transform.
+static SgCluster sgTransform(const SgCluster& c, const XMFLOAT4X4& world, const XMFLOAT3X3& normal33,
+                             float powerScale) {
+    SgCluster r;
+    r.mean = transformPointW(c.mean, world);
+    const float s = maxScale(world);
+    r.variance = c.variance * s * s;
+    r.radius = c.radius * s;
+    const float len = length3(c.rbar);
+    r.rbar = len >= 1e-6f ? mul3(transformNormalW(sgAxis(c.rbar), normal33), len) : XMFLOAT3{0, 0, 0};
+    r.power = c.power * powerScale;
+    // Nonuniform scale can widen normals beyond the original cone.
+    r.theta_o = similarityTransform(world) ? c.theta_o : LT_PI;
+    return r;
+}
+
 static void setSlotTransform(LightSlotGpu& s, const XMFLOAT4X4& world) {
     XMVECTOR det;
     XMMATRIX inv = XMMatrixInverse(&det, XMLoadFloat4x4(&world));
@@ -392,9 +550,7 @@ static LightSlotGpu makeSlotRecord(UINT instanceID, uint32_t nodeOffset, const X
 }
 
 struct BLASNode {
-    Aabb aabb{};
-    float power = 0.f;
-    Cone cone{};
+    SgCluster sg{};
     uint32_t firstChild = 0xFFFFFFFF;
     uint32_t childCount = 0;
     uint32_t primCount = 0;
@@ -420,6 +576,7 @@ class LightTreeBuilder {
         XMFLOAT3 c;
         float p;
         Cone cone;
+        SgCluster sg;
         uint32_t primCount;
         float sumP, sumP2;
     };
@@ -859,6 +1016,7 @@ class LightTreeBuilder {
         Aabb aabb;
         float power;
         Cone cone;
+        SgCluster sg;
     };
 
     static TmpTri makeTmpTri(const ::LightTriangle& t, uint32_t triIndex) {
@@ -875,7 +1033,7 @@ class LightTreeBuilder {
             lc.theta_o = 0.f;
             lc.theta_e = LT_HALF_PI;
         }
-        return TmpTri{triIndex, c, a, t.weight, lc};
+        return TmpTri{triIndex, c, a, t.weight, lc, sgTriangle(t)};
     }
 
     void rebuildXformCaches() {
@@ -1025,9 +1183,8 @@ class LightTreeBuilder {
         for (uint32_t i = begin; i < end; ++i)
             aggAdd(parent, tmp[i]);
 
-        N0.aabb = parent.a;
-        N0.power = parent.E;
-        N0.cone = parent.cone;
+        N0.sg = sgMerge(tmp.begin() + begin, tmp.begin() + end,
+                        [](const TmpTri& t) -> const SgCluster& { return t.sg; });
         N0.primCount = parent.N;
         N0.sumPower = parent.sumP;
         N0.sumPowerSq = parent.sumP2;
@@ -1240,14 +1397,14 @@ class LightTreeBuilder {
             const float scale = m_slotGpu[s].powerScale;
             TItem it;
             it.idx = s;
-            it.a = transformBounds(r.aabb, world);
+            it.sg = sgTransform(r.sg, world, normalXformFor(inst), scale);
+            it.a = transformBounds({sub3(r.sg.mean, {r.sg.radius, r.sg.radius, r.sg.radius}),
+                                    add3(r.sg.mean, {r.sg.radius, r.sg.radius, r.sg.radius})}, world);
             it.c = aabbCenter(it.a);
-            it.p = r.power * scale;
-            it.cone = r.cone;
-            it.cone.axis = transformNormalW(r.cone.axis, normalXformFor(inst));
-            // Nonuniform scale can widen normals beyond the original cone.
-            if (!similarityTransform(world))
-                it.cone.theta_o = LT_PI;
+            it.p = it.sg.power;
+            it.cone.axis = sgAxis(it.sg.rbar);
+            it.cone.theta_o = it.sg.theta_o;
+            it.cone.theta_e = LT_HALF_PI;
 
             it.primCount = r.primCount;
             it.sumP = r.sumPower * scale;
@@ -1321,17 +1478,14 @@ class LightTreeBuilder {
         for (uint32_t i = begin; i < end; ++i)
             aggTAdd(parent, it[i]);
 
-        N0.bmin = parent.a.mn;
-        N0.bmax = parent.a.mx;
-        N0.power = parent.E;
-        N0.axis = parent.cone.axis;
-        N0.cosTheta_o = std::cos(clampf(parent.cone.theta_o, 0.f, LT_PI));
-        N0.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - N0.cosTheta_o * N0.cosTheta_o));
+        sgToGpu(N0, sgMerge(it.begin() + begin, it.begin() + end,
+                            [](const TItem& t) -> const SgCluster& { return t.sg; }));
 
         N0.firstChild = 0xFFFFFFFF;
         N0.childCount = 0;
         N0.slot = UINT32_MAX;
         N0._pad = 0;
+        N0._reserved[0] = N0._reserved[1] = 0;
 
         const uint32_t count = end - begin;
         if (count == 1) {
@@ -1562,12 +1716,7 @@ class LightTreeBuilder {
 
     static LightBLASNodeGpu toGpu(const BLASNode& n) {
         LightBLASNodeGpu g{};
-        g.bmin = n.aabb.mn;
-        g.bmax = n.aabb.mx;
-        g.power = n.power;
-        g.axis = n.cone.axis;
-        g.cosTheta_o = std::cos(clampf(n.cone.theta_o, 0.f, LT_PI));
-        g.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - g.cosTheta_o * g.cosTheta_o));
+        sgToGpu(g, n.sg);
 
         g.firstChild = n.firstChild;
         g.childCount = n.childCount;

@@ -59,30 +59,24 @@ void Pass_pt_trace_v8()
     ray.Direction = rayDir;
     ray.TMin      = 0.0f;
     ray.TMax      = 2.0f * retrace;
-    // A degenerate camera record (a non-finite or zero-length primary segment) gets a harmless
-    // short ray instead, so the trace below never sees an invalid direction; the primary shading
-    // rejects the record itself.
-    if (!IsRayValid(ray.Origin, rayDir, ray.TMax))
-    {
-        ray.Origin    = InitOrigin();
-        ray.Direction = float3(0.0f, 0.0f, 1.0f);
-        ray.TMax      = PT_RETRACE_MIN;
-    }
+    // A degenerate camera record (a non-finite or zero-length primary segment) makes this ray
+    // invalid; the checked trace answers it with a miss, and the primary shading rejects the
+    // record itself.
     uint inFlags = PvInputFlags(ps, false, false, false);
     float3 prevN = float3(0.0f, 0.0f, 1.0f);   // shading normal of the vertex the ray left
+    uint4  prevRcv = 0u;                       // its packed light-tree receiver
 
     [loop]
     for (;;)
     {
         // ---- trace, reorder, shade ----
         const uint depth = PtPsDepth(ps);
-        TracePayload payload = (TracePayload)0;
-        dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE,
-            0xFF, 0, 1, 0, ray, payload);
+        dx::HitObject hitObj = TraceRayChecked(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF, ray);
         dx::MaybeReorderThread(hitObj);
         PtVertexIO io;
         io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist;
         io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u; io.nee = 0.0f; io.neeLite = 0.0f;
+        io.rcvPk = 0u;
         if (depth == 1u)
             PtShadePrimary(io, rayDir, pixel, pixelIdx);
         else if (hitObj.IsHit())
@@ -90,7 +84,7 @@ void Pass_pt_trace_v8()
             BuiltInTriangleIntersectionAttributes attr;
             hitObj.GetAttributes(attr);
             PtShadeHit(io, hitObj.GetInstanceID(), hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex(),
-                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pos, prevN, pixel, pixelIdx);
+                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pos, prevN, prevRcv, pixel, pixelIdx);
         }
         else
             PtShadeMiss(io, ray.Origin, rayDir);
@@ -216,11 +210,12 @@ void Pass_pt_trace_v8()
         rayDir = UnpackNormal(io.dirPk);
         const float3 vertexN = UnpackNormal(io.nPk);
         prevN = vertexN;
+        prevRcv = io.rcvPk;
         ray.Origin    = offset_ray(pos, (dot(rayDir, vertexN) >= 0.0f) ? vertexN : -vertexN);
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;
         ray.TMax      = RAY_TMAX_PLANET;
-        if (!IsRayValid(ray.Origin, rayDir, 10000.0f))
+        if (!IsRayDescValid(ray))
         {
             if (pending && immediate) info = (info & ~DV_KIND_MASK) | DV_KIND_NONE;
             break;

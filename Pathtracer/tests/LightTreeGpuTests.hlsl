@@ -5,7 +5,7 @@ cbuffer LightTreeTestConstants : register(b0, space1) {
 }
 RWStructuredBuffer<float4> results : register(u0, space1);
 StructuredBuffer<float4> testReceivers : register(t19);
-StructuredBuffer<LightBLASNodeGpu> unpackedLightNodes : register(t20);
+StructuredBuffer<LightBLASNodeFull> unpackedLightNodes : register(t20);
 uint TestInstOf(uint tri) { return g_EmissiveTriangles[tri].meshID; }
 uint TestSlotOf(uint tri) { return LT_SlotOfInstance(TestInstOf(tri)); }
 #define LT_TEST_Q(a) (LTC_Stats(a)+LT_ST_Q)
@@ -22,42 +22,71 @@ void LT_TEST_ClearRecord(uint a) {
 void main(uint3 tid : SV_DispatchThreadID) {
     if(tid.x>=workCount) return;
     if(testMode==47u || testMode==48u) {
-        LightBLASNodeGpu expected=unpackedLightNodes[tid.x];
+        LightBLASNodeGpu expected=LT_DecodeFullBLAS(unpackedLightNodes[tid.x]);
         LightBLASNodeGpu actual;
-        if(testMode==47u) actual=LT_LoadBLAS(testSeed,tid.x);
+        float unit=0.0f;
+        if(testMode==47u) {actual=LT_LoadBLAS(testSeed,tid.x);unit=LT_LoadBlasFrame(testSeed).diag;}
         else {
             LightTLASNodeGpu t=LT_LoadTLAS(tid.x);
-            actual.bmin=t.bmin;actual.bmax=t.bmax;actual.power=t.power;
-            actual.axis=t.axis;actual.cosTheta_o=t.cosTheta_o;actual.sinTheta_o=t.sinTheta_o;
+            actual.mean=t.mean;actual.variance=t.variance;actual.axis=t.axis;actual.kappa=t.kappa;
+            actual.power=t.power;actual.radius=t.radius;actual.cosTheta_o=t.cosTheta_o;
             actual.firstChild=t.firstChild;actual.childCount=t.childCount;actual.triFirst=t.slot;actual.triCount=1u;
         }
-        bool bounds=all(actual.bmin<=expected.bmin) && all(actual.bmax>=expected.bmax);
+        // The mean keeps FP32 in both layouts; a packed mesh widens its extent by at most the half
+        // rounding (relative, or one subnormal step of the mesh unit), never narrows it.
+        const float slack=4e-7f*unit;
+        bool extent=all(asuint(actual.mean)==asuint(expected.mean)) &&
+            actual.radius>=expected.radius && actual.radius<=expected.radius*1.002f+slack &&
+            actual.variance>=expected.variance*0.999999f &&
+            sqrt(actual.variance)<=sqrt(expected.variance)*1.002f+slack;
         bool topology=actual.childCount==expected.childCount && (actual.childCount?
             actual.firstChild==expected.firstChild:actual.triFirst==expected.triFirst);
-        float delta=acos(clamp(dot(normalize(actual.axis),normalize(expected.axis)),-1.0f,1.0f));
+        float delta=acos(clamp(dot(actual.axis,expected.axis),-1.0f,1.0f));
         bool cone=actual.cosTheta_o==-1.0f || delta+acos(clamp(expected.cosTheta_o,-1.0f,1.0f))<=acos(actual.cosTheta_o)+1e-6f;
+        // The lobe sharpness rounds towards the blurrier side; the axis keeps the octahedral precision.
+        bool lobe=actual.kappa<=expected.kappa*1.0001f+1e-6f && actual.kappa>=expected.kappa*0.99f-1e-3f &&
+            (expected.kappa<1e-3f || delta<=2e-3f);
         if ((rs_flags & RS_FLAG_COMPACT_LIGHT_TREE) == 0u) {
-            bounds=all(asuint(actual.bmin)==asuint(expected.bmin)) && all(asuint(actual.bmax)==asuint(expected.bmax));
-            cone=all(asuint(actual.axis)==asuint(expected.axis)) && asuint(actual.cosTheta_o)==asuint(expected.cosTheta_o) &&
-                 asuint(actual.sinTheta_o)==asuint(expected.sinTheta_o);
+            extent=all(asuint(actual.mean)==asuint(expected.mean)) && asuint(actual.radius)==asuint(expected.radius) &&
+                asuint(actual.variance)==asuint(expected.variance);
+            cone=asuint(actual.cosTheta_o)==asuint(expected.cosTheta_o);
+            lobe=all(asuint(actual.axis)==asuint(expected.axis)) && asuint(actual.kappa)==asuint(expected.kappa);
         }
-        results[tid.x]=float4(bounds,asuint(actual.power)==asuint(expected.power),topology,cone);return;
+        results[tid.x]=float4(extent,asuint(actual.power)==asuint(expected.power),topology,cone && lobe);return;
+    }
+    if(testMode==49u) {
+        // Node importance for a receiver and cluster given as records: [0] x, wd; [1] n, wg;
+        // [2] view, ax; [3] tangent, ay; [4] mean, variance; [5] axis, resultant length;
+        // [6] power, radius, cone cosine.
+        const uint base=tid.x*7u;
+        const float4 r0=testReceivers[base],r1=testReceivers[base+1u],r2=testReceivers[base+2u],r3=testReceivers[base+3u];
+        const float4 c0=testReceivers[base+4u],c1=testReceivers[base+5u],c2=testReceivers[base+6u];
+        const LT_Receiver R=LT_MakeReceiver(r0.xyz,normalize(r1.xyz),normalize(r2.xyz),r3.xyz,r0.w,r1.w,r2.w,r3.w);
+        results[tid.x]=float4(LT_NodeImportance(R,c0.xyz,c0.w,normalize(c1.xyz),LT_KappaOf(c1.w),c2.x,c2.y,c2.z),0,0,0);
+        return;
     }
     if(testMode==45u || testMode==46u) {
         float4 receiver=testReceivers[0],coat=testReceivers[1];
         float3 x=receiver.xyz,n=float3(0,0,1);
+        // A glossy receiver seen from a slant, through the packed form the passes use. Roughness
+        // one is a diffuse receiver; a clearcoat merges its roughness into the glossy lobe.
+        const float rough=max(receiver.w,0.001f),alpha=rough*rough;
+        float a2=alpha*alpha,wg=rough<1.0f?0.6f:0.0f,wd=0.4f;
+        if(coat.x>0.0f) {const float ac=max(coat.y*coat.y,0.001f);a2=0.5f*(a2+ac*ac);wg+=0.3f*coat.x;}
+        const float3 view=normalize(float3(0.6f,0.1f,0.8f));
+        const LT_Receiver R=LT_UnpackReceiver(LT_PackReceiver(view,float3(1,0,0),wd,wg,sqrt(a2),sqrt(a2)),x,n);
         uint pathSeed=LTC_Hash(tid.x^testSeed),rng=RcBounceSeed(pathSeed,1u,RC_STREAM_NEE);
         uint bsdfRng=RcBounceSeed(pathSeed,1u,RC_STREAM_BSDF);
         const bool learned=LTC_UseSurfaceLearning();
-        LT_Sample s=LT_SampleLight(x,n,rng,learned);
-        float evaluated=LT_PdfSelectTriangle(x,n,s.id,s.inst,learned);
+        LT_Sample s=LT_SampleLight(R,rng,learned);
+        float evaluated=LT_PdfSelectTriangle(R,s.id,s.inst,learned);
         float estimate=s.id==0u?1.0f/(s.pdf+0.75f):0.0f;
         if(RandomFloatSingle(bsdfRng)<0.75f) {
-            float q=LT_PdfSelectTriangle(x,n,0u,TestInstOf(0u),testMode==46u?false:learned);
+            float q=LT_PdfSelectTriangle(R,0u,TestInstOf(0u),testMode==46u?false:learned);
             estimate+=1.0f/(q+0.75f);
         }
         bool clean=learned || (all(s.learningToken==0u) &&
-            abs(s.pdf-LT_PdfSubtree(x,n,s.id,LT_SlotOfInstance(s.inst)))<=s.pdf*3e-5f);
+            abs(s.pdf-LT_PdfSubtree(R,s.id,LT_SlotOfInstance(s.inst)))<=s.pdf*3e-5f);
         results[tid.x]=float4(s.pdf,evaluated,estimate,clean?(learned?1:0):-1);return;
     }
     if(testMode==44u) {
@@ -212,8 +241,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
         results[tid.x]=float4(s.pdf,LT_PdfSelectTriangle(x,n,s.id,s.inst),estimate,
             s.learningToken.y!=0u?float((s.learningToken.y-1u)/LT_CUT_MAX):-1.0f);return;
     }
-    if(testMode>=11u && testMode<=19u) {
-        uint receiver=testMode>=13u && testMode<=16u?
+    if((testMode>=11u && testMode<=19u) || testMode==50u || testMode==51u) {
+        uint receiver=(testMode>=13u && testMode<=16u) || testMode>=50u?
             ((testSeed&0x80000000u)!=0u?LTC_Hash(tid.x)%triangleCount:(tid.x/256u)%triangleCount):tid.x%triangleCount;
         float3 x=testReceivers[receiver].xyz,n=float3(0,0,1);
         if(testMode==19u) {
@@ -231,11 +260,15 @@ void main(uint3 tid : SV_DispatchThreadID) {
             return;
         }
         if(testMode>=14u) {
-            uint rng=LTC_Hash(tid.x+testSeed)+1u;LT_Sample light=LT_SampleLight(x,n,rng);
+            uint rng=LTC_Hash(tid.x+testSeed)+1u;
+            // Modes 50/51 time a glossy receiver seen at a slant (the sample and sample+PDF cases).
+            LT_Receiver R=LT_DiffuseReceiver(x,n);
+            if(testMode>=50u) R=LT_MakeReceiver(x,n,normalize(float3(0.6f,0.1f,0.8f)),float3(1,0,0),0.4f,0.6f,0.3f,0.3f);
+            LT_Sample light=LT_SampleLight(R,rng);
             if(testMode==15u) {
                 LT_TrainSample(light.learningToken,testRewardScale*float(light.id%7u)/light.pdf);
             }
-            results[tid.x]=float4(light.id,light.pdf,testMode==16u?LT_PdfSelectTriangle(x,n,light.id,light.inst):0,0);return;
+            results[tid.x]=float4(light.id,light.pdf,(testMode==16u || testMode==51u)?LT_PdfSelectTriangle(R,light.id,light.inst):0,0);return;
         }
         uint cell;bool found=LTC_Find(x,n,cell);
         if(testMode!=12u) {
@@ -250,12 +283,14 @@ void main(uint3 tid : SV_DispatchThreadID) {
     }
 
     if(testMode==5u) {
-        float3 bmin=float3(-.1f,-.1f,0),bmax=float3(.1f,.1f,0);
-        float front=LT_NodeImportance_Common(float3(0,0,-2),float3(0,0,1),bmin,bmax,float3(0,0,-1),1,0,2);
-        float back=LT_NodeImportance_Common(float3(0,0,-2),float3(0,0,1),bmin,bmax,float3(0,0,1),1,0,2);
-        float near1=LT_NodeImportance_Common(float3(0,0,-.01f),float3(0,0,1),bmin,bmax,float3(0,0,-1),1,0,2);
-        float near2=LT_NodeImportance_Common(float3(0,0,-.02f),float3(0,0,1),2*bmin,2*bmax,float3(0,0,-1),1,0,2);
-        if(tid.x==0) results[tid.x]=float4(front,back,near1,near2);
+        // A small emitter at the origin facing -z; receivers on its -z side.
+        const float3 mean=0,axis=float3(0,0,-1);const float variance=1e-4f,kappa=LT_KappaOf(0.5f),power=2,radius=.1f;
+        const LT_Receiver up=LT_DiffuseReceiver(float3(0,0,-2),float3(0,0,1));
+        float front=LT_NodeImportance(up,mean,variance,axis,kappa,power,radius,1.0f);
+        float back=LT_NodeImportance(up,mean,variance,-axis,kappa,power,radius,1.0f);
+        float below=LT_NodeImportance(LT_DiffuseReceiver(float3(0,0,-2),float3(0,0,-1)),mean,variance,axis,kappa,power,radius,1.0f);
+        float far=LT_NodeImportance(LT_DiffuseReceiver(float3(0,0,-4),float3(0,0,1)),mean,variance,axis,kappa,power,radius,1.0f);
+        if(tid.x==0) results[tid.x]=float4(front,back,below,front/max(far,1e-30f));
         else {
             float4x4 inverse=float4x4(.5f,0,0,0,0,1.0f/3.0f,0,0,0,0,.25f,0,0,0,0,1);
             results[tid.x]=float4(LT_LocalReceiverNormal((float3x4)inverse,normalize(float3(1,1,1))),0);

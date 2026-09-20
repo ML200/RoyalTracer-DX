@@ -17,8 +17,11 @@ void main(uint3 tid : SV_DispatchThreadID)
     if ((info & DV_VALID) == 0u) return;
     if ((DvLoadVertexFlags(pixelIdx) & DVF_PERFORM_NEE) == 0u) return;
 
-    float3 pos, n;
-    DvLoadVertexSurface(pixelIdx, pos, n);
+    // The receiver of the deferred vertex: its material decides which lobes the light sample
+    // stands for, and the same words weight a pending emitter hit below.
+    const DvVertex v = DvLoadVertex(pixelIdx);
+    const float3 pos = v.pos, n = v.n;
+    const LT_Receiver receiver = LT_UnpackReceiver(LT_PackVertexReceiver(DvContext(v), -v.dirIn), pos, n);
     const uint ps        = DvLoadPs(pixelIdx);
     const uint depth     = PtPsDepth(ps);
     const uint s         = PtPsSample(ps);
@@ -36,13 +39,13 @@ void main(uint3 tid : SV_DispatchThreadID)
     if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) == 0u)
     {
         uint sNee = RcBounceSeed(pathSeed, depth, RC_STREAM_NEE);
-        pick = LT_SampleLight(pos, n, sNee, useLearnedLights);
+        pick = LT_SampleLight(receiver, sNee, useLearnedLights);
     }
     float emitterPdfArea = 0.0f;
     if (((info >> DV_END_SHIFT) & DV_END_MASK) == DV_END_EMITTER && (info & DV_MIS_NONE) == 0u)
     {
         const DvEmitter e = DvLoadEmitter(pixelIdx);
-        emitterPdfArea = LT_Pdf_LightTree_Area(pos, n, e.lightID, e.inst, useLearnedLights);
+        emitterPdfArea = LT_Pdf_LightTree_Area(receiver, e.lightID, e.inst, useLearnedLights);
     }
     DvStoreLightPick(pixelIdx, pick.learningToken, emitterPdfArea);
 

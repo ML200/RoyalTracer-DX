@@ -106,13 +106,12 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
     [loop]
     for (uint bounce = 0u; bounce < maxBounces; ++bounce)
     {
-        if (!IsRayValid(origin, dir, 10000.0f)) break;
-
         RayDesc r;
         r.Origin    = origin;
         r.Direction = dir;
         r.TMin      = 0.00001f;
         r.TMax      = RAY_TMAX_PLANET;
+        if (!IsRayDescValid(r)) break;
         RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
         q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
         [loop]

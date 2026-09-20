@@ -69,7 +69,7 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            {"sponza_tex/sponza_tex.obj",
+            {"bistrofull.glb",
              XMMatrixIdentity(), "Modern Tank Garage"},
             /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},

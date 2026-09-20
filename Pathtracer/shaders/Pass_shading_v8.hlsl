@@ -62,24 +62,30 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
         r.TMin      = 0.00001f;
         r.TMax      = RAY_TMAX_PLANET;
 
+        // A degenerate pane ray (the surface at the camera, or a broken record) is never traced;
+        // it ends the walk like a miss.
+        const bool traceable = IsRayDescValid(r);
         RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-        q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
-        [loop]
-        for (uint it = 0u; q.Proceed() && it < 64u; ++it)
+        if (traceable)
         {
-            if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+            q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
+            [loop]
+            for (uint it = 0u; q.Proceed() && it < 64u; ++it)
             {
-                const uint ci = q.CandidateInstanceID();
-                const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-                const uint cm = GetMatIDFast(ci, cp);
-                if (LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON)
-                    q.CommitNonOpaqueTriangleHit();
-                else if (AlphaCandidateOccludes(ci, cp, q.CandidateTriangleBarycentrics()))
-                    q.CommitNonOpaqueTriangleHit();
+                if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+                {
+                    const uint ci = q.CandidateInstanceID();
+                    const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+                    const uint cm = GetMatIDFast(ci, cp);
+                    if (LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON)
+                        q.CommitNonOpaqueTriangleHit();
+                    else if (AlphaCandidateOccludes(ci, cp, q.CandidateTriangleBarycentrics()))
+                        q.CommitNonOpaqueTriangleHit();
+                }
             }
         }
 
-        if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+        if (!traceable || q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
         {
 
             g.x = camPos + vdir * cameraFar; g.n = -vdir;

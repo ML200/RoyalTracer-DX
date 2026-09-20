@@ -112,8 +112,6 @@ inline SSSWalkResult SubsurfaceWalk(
     [loop]
     for (uint step = 0u; step < SSS_MAX_STEPS; ++step)
     {
-        if (!IsRayValid(pos, dir, 10000.0f)) return r;
-
         const float u  = RandomFloatSingle(seed);
         const float dl = -log(max(1.0f - u, 1e-6f)) / sigma_t;
 
@@ -121,7 +119,8 @@ inline SSSWalkResult SubsurfaceWalk(
         ray.Origin    = pos;
         ray.Direction = dir;
         ray.TMin      = 0.0001f;
-        ray.TMax      = dl;
+        ray.TMax      = max(dl, 2.0f * ray.TMin);   // a step shorter than the start offset would invert the extents
+        if (!IsRayDescValid(ray)) return r;
 
         RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
         q.TraceRayInline(SceneBVH, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);

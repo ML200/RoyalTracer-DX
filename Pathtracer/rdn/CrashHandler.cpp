@@ -22,6 +22,54 @@ void module_and_offset(uintptr_t addr, wchar_t* out, size_t cap) {
         _snwprintf_s(out, cap, _TRUNCATE, L"0x%llX", (unsigned long long)addr);
     }
 }
+
+// dbghelp symbols are initialized once per process; a second SymInitialize fails, so the crash
+// filter and the call-stack logging share this.
+bool EnsureSymbols(HANDLE process) {
+    static bool initialized = false, ok = false;
+    if (!initialized) {
+        initialized = true;
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        ok = SymInitializeW(process, nullptr, TRUE) != FALSE;
+    }
+    return ok;
+}
+
+void symbol_line(HANDLE process, bool haveSyms, uintptr_t addr, wchar_t* name, size_t cap) {
+    name[0] = L'\0';
+    if (!haveSyms)
+        return;
+    alignas(SYMBOL_INFOW) char buf[sizeof(SYMBOL_INFOW) + 256 * sizeof(wchar_t)] = {};
+    SYMBOL_INFOW* sym = reinterpret_cast<SYMBOL_INFOW*>(buf);
+    sym->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    sym->MaxNameLen = 256;
+    DWORD64 disp = 0;
+    if (!SymFromAddrW(process, (DWORD64)addr, &disp, sym))
+        return;
+    IMAGEHLP_LINEW64 line = {};
+    line.SizeOfStruct = sizeof(line);
+    DWORD ldisp = 0;
+    if (SymGetLineFromAddrW64(process, (DWORD64)addr, &ldisp, &line))
+        _snwprintf_s(name, cap, _TRUNCATE, L"  %ls+0x%llX  (%ls:%lu)", sym->Name, (unsigned long long)disp,
+                     line.FileName, line.LineNumber);
+    else
+        _snwprintf_s(name, cap, _TRUNCATE, L"  %ls+0x%llX", sym->Name, (unsigned long long)disp);
+}
+}
+
+void LogCallStack(const wchar_t* title) {
+    void* frames[40] = {};
+    const USHORT n = CaptureStackBackTrace(1, 40, frames, nullptr);
+    const HANDLE process = GetCurrentProcess();
+    const bool haveSyms = EnsureSymbols(process);
+    if (title && title[0])
+        CrashLogF(L"%ls\n", title);
+    for (USHORT i = 0; i < n; ++i) {
+        wchar_t loc[300], name[512];
+        module_and_offset((uintptr_t)frames[i], loc, 300);
+        symbol_line(process, haveSyms, (uintptr_t)frames[i], name, 512);
+        CrashLogF(L"  #%02d %ls%ls\n", i, loc, name);
+    }
 }
 
 LONG WINAPI CrashExceptionFilter(EXCEPTION_POINTERS* ep) {
@@ -44,8 +92,7 @@ LONG WINAPI CrashExceptionFilter(EXCEPTION_POINTERS* ep) {
         CrashLog(L"  (unhandled C++ exception)\n");
 
     const HANDLE process = GetCurrentProcess();
-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-    const bool haveSyms = SymInitializeW(process, nullptr, TRUE) != FALSE;
+    const bool haveSyms = EnsureSymbols(process);
     if (ep && ep->ContextRecord) {
         CONTEXT ctx = *ep->ContextRecord;
         STACKFRAME64 frame = {};
@@ -61,31 +108,12 @@ LONG WINAPI CrashExceptionFilter(EXCEPTION_POINTERS* ep) {
                 break;
             if (frame.AddrPC.Offset == 0)
                 break;
-            wchar_t loc[300];
+            wchar_t loc[300], name[512];
             module_and_offset((uintptr_t)frame.AddrPC.Offset, loc, 300);
-            wchar_t name[512] = L"";
-            if (haveSyms) {
-                alignas(SYMBOL_INFOW) char buf[sizeof(SYMBOL_INFOW) + 256 * sizeof(wchar_t)] = {};
-                SYMBOL_INFOW* sym = reinterpret_cast<SYMBOL_INFOW*>(buf);
-                sym->SizeOfStruct = sizeof(SYMBOL_INFOW);
-                sym->MaxNameLen = 256;
-                DWORD64 disp = 0;
-                if (SymFromAddrW(process, frame.AddrPC.Offset, &disp, sym)) {
-                    IMAGEHLP_LINEW64 line = {};
-                    line.SizeOfStruct = sizeof(line);
-                    DWORD ldisp = 0;
-                    if (SymGetLineFromAddrW64(process, frame.AddrPC.Offset, &ldisp, &line))
-                        _snwprintf_s(name, _TRUNCATE, L"  %ls+0x%llX  (%ls:%lu)", sym->Name, (unsigned long long)disp,
-                                     line.FileName, line.LineNumber);
-                    else
-                        _snwprintf_s(name, _TRUNCATE, L"  %ls+0x%llX", sym->Name, (unsigned long long)disp);
-                }
-            }
+            symbol_line(process, haveSyms, (uintptr_t)frame.AddrPC.Offset, name, 512);
             CrashLogF(L"  #%02d %ls%ls\n", i, loc, name);
         }
     }
-    if (haveSyms)
-        SymCleanup(process);
     CrashLog(L"*** end of exception report ***\n");
     return EXCEPTION_CONTINUE_SEARCH;
 }

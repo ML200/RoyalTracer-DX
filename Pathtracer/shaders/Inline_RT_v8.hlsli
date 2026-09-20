@@ -52,15 +52,48 @@ inline float3 offset_ray(float3 p, float3 n)
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
+// Every ray handed to the hardware passes this check first, whether it goes through
+// HitObject::TraceRay (TraceRayChecked below) or a RayQuery. NaN or Inf in any component, a
+// direction far from unit length, an origin outside the representable scene, or extents that
+// are inverted, negative or infinite make the traversal undefined and have hung the GPU before.
+// Such a ray is never traced: the caller treats it as a miss (or as occluded) instead.
+static const float RAY_ORIGIN_LIMIT = 5.0e7f;
+
+inline bool IsRayDescValid(RayDesc r)
+{
+    if (any(isnan(r.Origin))    || any(isinf(r.Origin)))    return false;
+    if (any(isnan(r.Direction)) || any(isinf(r.Direction))) return false;
+    const float d2 = dot(r.Direction, r.Direction);
+    if (!(d2 >= 0.25f && d2 <= 4.0f)) return false;
+    if (!(r.TMin >= 0.0f)) return false;                   // also rejects NaN
+    if (!(r.TMax > r.TMin) || isinf(r.TMax)) return false; // also rejects NaN and inverted extents
+    if (any(abs(r.Origin) > RAY_ORIGIN_LIMIT)) return false;
+    return true;
+}
+
 inline bool IsRayValid(float3 origin, float3 direction, float tMax)
 {
-    if (any(isnan(direction)) || any(isinf(direction))) return false;
-    if (any(isnan(origin))    || any(isinf(origin)))    return false;
-    const float d2 = dot(direction, direction);
-    if (d2 < 0.25f || d2 > 4.0f) return false;
-    if (tMax <= 1e-4f) return false;
-    if (any(abs(origin) > 5.0e7f)) return false;
-    return true;
+    RayDesc r;
+    r.Origin = origin; r.Direction = direction; r.TMin = 0.0f; r.TMax = tMax;
+    return IsRayDescValid(r) && tMax > 1e-4f;
+}
+
+// The hit-object trace of every raygen. An invalid ray is swapped for a well-formed one with an
+// empty instance mask, which the hardware answers with a miss, so the caller sees a plain miss
+// instead of undefined traversal. No reorder happens here: each raygen keeps its single reorder
+// point, and the closest-hit and miss shaders are never invoked.
+inline dx::HitObject TraceRayChecked(RaytracingAccelerationStructure bvh, uint rayFlags, uint instanceMask, RayDesc ray)
+{
+    if (!IsRayDescValid(ray))
+    {
+        ray.Origin    = float3(0.0f, 0.0f, 0.0f);
+        ray.Direction = float3(0.0f, 0.0f, 1.0f);
+        ray.TMin      = 0.0f;
+        ray.TMax      = 1.0f;
+        instanceMask  = 0u;
+    }
+    TracePayload payload = (TracePayload)0;
+    return dx::HitObject::TraceRay(bvh, rayFlags, instanceMask, 0, 1, 0, ray, payload);
 }
 
 inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
@@ -106,13 +139,14 @@ inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
 
     const float3 direction = conn / dist;
 
-    if (!IsRayValid(oA, direction, dist)) return false;
-
     RayDesc ray;
     ray.Origin    = oA;
     ray.Direction = direction;
     ray.TMin      = 0.001f;
     ray.TMax      = dist*0.998f;
+    // Endpoints closer than the ray's own start offset touch: nothing fits between them.
+    if (ray.TMax <= ray.TMin) return true;
+    if (!IsRayDescValid(ray)) return false;
 
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
        | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
@@ -167,13 +201,15 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
     if (dist <= EPSILON) return 1.0.xxx;
 
     const float3 direction = conn / dist;
-    if (!IsRayValid(oA, direction, dist)) return 0.0.xxx;
 
     RayDesc ray;
     ray.Origin    = oA;
     ray.Direction = direction;
     ray.TMin      = 0.001f;
     ray.TMax      = dist * 0.998f;
+    // Endpoints closer than the ray's own start offset touch: nothing fits between them.
+    if (ray.TMax <= ray.TMin) return 1.0.xxx;
+    if (!IsRayDescValid(ray)) return 0.0.xxx;
 
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
        | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
@@ -353,10 +389,7 @@ inline dx::HitObject TraceRay_Custom(
     uint lowHint = 0u,
     uint lowHintBits = 0u)
 {
-
-    TracePayload payload = (TracePayload)0;
-
-    dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
+    dx::HitObject hitObj = TraceRayChecked(SceneBVH, rayFlags, instanceMask, ray);
 
     const uint hint = ((hitObj.IsHit() ? (0x40u | (hitObj.GetInstanceID() & 0x3Fu)) : 0u) << lowHintBits) | lowHint;
     dx::MaybeReorderThread(hitObj, hint, 7u + lowHintBits);

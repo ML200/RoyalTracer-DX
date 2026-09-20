@@ -5,14 +5,13 @@
 // probe below it. Returns false when the pixel needs no path: a miss, or a mesh light seen directly.
 inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 rayDir)
 {
-    if (!IsRayValid(rayOrigin, rayDir, 10000.0f))
-        return false;
-
     RayDesc ray;
     ray.Origin    = rayOrigin;
     ray.Direction = rayDir;
     ray.TMin      = 0.00001f;
     ray.TMax      = RAY_TMAX_PLANET;
+    if (!IsRayDescValid(ray))
+        return false;
     dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
     if (!hitObj.IsHit())

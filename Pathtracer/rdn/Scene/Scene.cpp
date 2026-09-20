@@ -127,7 +127,10 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     const uint64_t sceneVbBytes = (uint64_t)totalVertexCount * sizeof(BTriVertex);
     const uint64_t sceneIbBytes = (uint64_t)totalIndexCount * sizeof(uint32_t);
 
-    const bool hasTerrain = combinedVertexCount() > totalVertexCount;
+    // Only the planet's terrain generator writes vertices from the CPU and needs the buffers
+    // mapped in host memory. Voxel chunks arrive through GPU copies, which need a default-heap
+    // destination; an upload heap can neither be copied into nor be fetched from at speed.
+    const bool hasTerrain = terrainVertexElems > 0 || terrainIndexElems > 0;
 
     uint8_t* dstVertsRaw;
     uint8_t* dstIdxRaw;

@@ -269,6 +269,7 @@ StructuredBuffer<LightSlotGpu>     gLT_Slot         : register(t7);
 
 #include "SunSampler_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
+#include "LightTreeReceiver_v8.hlsli"
 #include "Material_SSS_v8.hlsli"
 #include "Path_State_v8.hlsli"
 

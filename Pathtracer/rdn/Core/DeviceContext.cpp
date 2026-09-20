@@ -61,6 +61,7 @@ void DeviceContext::Init(HWND hwnd, UINT w, UINT h, bool useWarp) {
 
     ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAllocators[frameIndex].Get(), nullptr,
                                             IID_PPV_ARGS(&cmdList)));
+    cmdList->SetName(L"MainGraphicsList"); // the debug layer names the list in its messages
 
     ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
     for (UINT n = 0; n < bufferCount; ++n)
@@ -379,9 +380,11 @@ void DeviceContext::InitPlanetStreaming() {
     }
     ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, planetComputeAllocators[0].Get(),
                                             nullptr, IID_PPV_ARGS(&planetComputeList)));
+    planetComputeList->SetName(L"PlanetComputeList");
     ThrowIfFailed(planetComputeList->Close());
     ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, planetCopyAllocators[0].Get(), nullptr,
                                             IID_PPV_ARGS(&planetCopyList)));
+    planetCopyList->SetName(L"PlanetCopyList");
     ThrowIfFailed(planetCopyList->Close());
 
     planetComputeFence.init(device.Get());
