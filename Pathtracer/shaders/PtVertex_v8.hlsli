@@ -15,6 +15,8 @@ struct PtVertexIO {
     uint   nPk;      // out: shading normal of the vertex the next ray leaves
     float3 color;    // out: throughput multiplier (see PV_CAPTURED), or sky radiance on a miss
     uint   auxPk;    // out: packed radiance or weight, see the result flags
+    float3 nee;      // out: direct light of an in-place vertex from its own light sample (PV_NEE)
+    float3 neeLite;  // out: the same for the reuse suffix (broad lobes only at the parked vertex)
 };
 
 // Input flags (raygen -> hit/miss shaders).
@@ -49,6 +51,7 @@ struct PtVertexIO {
 #define PV_STRATEGY_SHIFT   13u  // 2 bits
 #define PV_PRIMARY_LITE     (1u << 15u)
 #define PV_SSS_WALKED       (1u << 16u)  // the subsurface exit consumed one extra depth
+#define PV_NEE              (1u << 17u)  // nee/neeLite carry the light sample of this in-place vertex
 
 uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
 {
@@ -57,6 +60,88 @@ uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
         ((ps & PT_PS_SSS) != 0u ? PV_IN_SSS : 0u) | ((ps & PT_PS_LITE_VERTEX) != 0u ? PV_IN_LITE_VERTEX : 0u) |
         ((ps & PT_PS_SPREAD) != 0u ? PV_IN_SPREAD : 0u) | ((ps & PT_PS_MIS_NONE) != 0u ? PV_IN_MIS_NONE : 0u) |
         (pending ? PV_IN_PENDING : 0u) | (immediate ? PV_IN_IMMEDIATE : 0u) | (last ? PV_IN_LAST : 0u);
+}
+
+// Light sample of an in-place wide vertex: the cache did not cover its broad lobes and the
+// deferred record is taken, so the vertex resolves its own here, as every vertex did before the
+// split. One light-tree pick and the sun, each with its shadow ray and the MIS weight against the
+// BSDF sample that continues from the vertex; the pick also trains the light tree. liteBroadOnly
+// restricts the reuse-suffix share to the broad lobes, as at the parked vertex.
+void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed, uint depth, bool blue,
+    uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath, out float3 direct, out float3 liteDirect)
+{
+    direct = 0.0f;
+    liteDirect = 0.0f;
+    const bool useLearnedLights = LTC_UseSurfaceLearning();
+    uint sNee = RcBounceSeed(pathSeed, depth, RC_STREAM_NEE);
+    [loop]
+    for (uint tech = 0u; tech < 2u; ++tech)
+    {
+        float3 L = 0.0f, visTarget = 0.0f, visTargetN = 0.0f, radiance = 0.0f;
+        float  lightPdf = 0.0f, cosSurf = 0.0f;
+        uint2  token = 0u;
+        bool   sampled = false;
+        if (tech == 0u)
+        {
+            if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u) continue;
+            const LT_Sample pick = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee, useLearnedLights);
+            token = pick.learningToken;
+            const LT_LightSampleResult light = LT_SamplePointOnLightTree(ctx.hitPos, pick, sNee);
+            const float3 toLight = light.position - ctx.hitPos;
+            const float  dist    = sqrt(max(dot(toLight, toLight), 1e-20f));
+            L = toLight / dist;
+            cosSurf = dot(ctx.hitNormal, L);
+            if (cosSurf > 1e-6f && dot(light.normal, -L) > 1e-6f && light.pdfSolidAngle > 1e-20f)
+            {
+                sampled    = true;
+                visTarget  = light.position;
+                visTargetN = light.normal;
+                radiance   = light.emission;
+                lightPdf   = light.pdfSolidAngle;
+            }
+        }
+        else
+        {
+            float2 rSun = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
+            if (blue) rSun = PtBlue2(pixel, blueIndex, depth, BN_PAIR_SUN);
+            const SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
+            L = sun.direction;
+            cosSurf = dot(ctx.hitNormal, L);
+            if (cosSurf > 1e-6f && sun.pdf > 1e-20f)
+            {
+                sampled    = true;
+                visTarget  = ctx.hitPos + sun.direction * RAY_TMAX_PLANET;
+                visTargetN = -sun.direction;
+                radiance   = sun.radiance;
+                lightPdf   = sun.pdf;
+            }
+        }
+
+        float reward = 0.0f;
+        if (sampled)
+        {
+            const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN);
+            if (any(visT > 0.0f))
+            {
+                float3 broadNEE; float broadNeePdf;
+                const BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal,
+                    ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y,
+                    false, broadNEE, broadNeePdf);
+                if (bdataNEE.pdf > 0.0f)
+                {
+                    reward = dot(radiance * cosSurf * visT *
+                        LTC_TrainShare((float)ctx.hitLocalPr, ctx.matID, bdataNEE.val, broadNEE) / lightPdf,
+                        float3(0.2126f, 0.7152f, 0.0722f));
+                    const float  misWeight  = lightPdf / (lightPdf + bdataNEE.pdf);
+                    const float3 lightScale = radiance * cosSurf * visT * (misWeight / lightPdf);
+                    direct += bdataNEE.val * lightScale;
+                    if (litePath) liteDirect += (liteBroadOnly ? broadNEE : bdataNEE.val) * lightScale;
+                }
+            }
+        }
+        // A pick that finds no light still trains its cluster, with the zero reward it earned.
+        if (tech == 0u) LT_TrainSample(token, reward);
+    }
 }
 
 // Shade one vertex: subsurface walk, cache lookup, the lobe pick that classifies the vertex,
@@ -93,6 +178,7 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     float3 dir    = 0.0f;
     float  pdfOut = io.pdf;
     bool   alive  = true;
+    float3 nee = 0.0f, neeLite = 0.0f;
     g_regularizeRoughness = io.spread > 0.0f ? PT_REGULARIZE_ROUGHNESS : 0.0f;
 
     // --- subsurface: the walk moves the vertex to its exit before anything else looks at it.
@@ -190,20 +276,25 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     if (alive)
     {
         // --- classification: a narrow pick bounces in place, a wide one is deferred unless a
-        // deferred vertex already exists ---
+        // deferred vertex already exists. The light sample of a vertex is taken on its wide picks:
+        // deferred at the captured vertex, right here at an in-place one. ---
         const bool neeBase = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || (float)ctx.hitLocalPr >= SMOOTH_SPECULAR_THRESHOLD);
         const bool performNEE  = neeBase && wide;
         const bool capture     = wide && !pending;
         const bool budgetBreak = !freeBounce && diffDepth >= (uint)pt_maxDiffuseBounces;
+        // Share of the lobe picks that are narrow and take no light sample; the wide picks stand
+        // for the whole vertex. Wherever some pick takes one, the hits along every pick's
+        // direction are weighted against it, so both techniques partition the light.
+        const float narrowShare = ((float)ctx.hitLocalPr < SMOOTH_SPECULAR_THRESHOLD ? spPath.Pspec : 0.0f) +
+            (LoadPcr(ctx.matID) < SMOOTH_SPECULAR_THRESHOLD ? spPath.Pcoat : 0.0f);
+        const bool neeCovered = neeBase && (1.0f - narrowShare) > EPSILON;
 
         if (capture)
         {
             // Defer this vertex: the light and material passes finish it. Written first so its
             // inputs are not kept alive through the sampling below. The record carries the share
             // of the lobe picks that defer here, since only those take the light sample.
-            const float narrowShare = ((float)ctx.hitLocalPr < SMOOTH_SPECULAR_THRESHOLD ? spPath.Pspec : 0.0f) +
-                (LoadPcr(ctx.matID) < SMOOTH_SPECULAR_THRESHOLD ? spPath.Pcoat : 0.0f);
             DvVertex dv;
             dv.pos = ctx.hitPos; dv.n = n; dv.dirIn = rayDir;
             dv.matID = ctx.matID; dv.instID = ctx.instID; dv.Kd = (float3)ctx.hitLocalKd;
@@ -215,6 +306,14 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
             color *= cacheScale;
             cacheScale = 1.0f;
             res |= PV_CAPTURED;
+        }
+        else if (performNEE)
+        {
+            // In place after the deferred vertex, and the cache did not end the path here (or it
+            // left only the narrow lobes): the vertex takes its own light sample.
+            PtInlineNee(ctx, spPath, rayDir, pathSeed, depth, blue, pixel, blueIndex, liteX2 && cacheSurface,
+                depth >= 2u && liteVertex, nee, neeLite);
+            res |= PV_NEE;
         }
 
         if (budgetBreak)
@@ -308,9 +407,10 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                     if (passThrough) res |= PV_PASS_THROUGH;
                     else
                     {
-                        // No light sample competes here, but the footprint still tracks the density.
+                        // The footprint tracks the density; the hits along this direction are
+                        // weighted against the light sample of the vertex wherever one is taken.
                         if (neeBase) pdfOut = bdata.pdf;
-                        res |= PV_MIS_NONE;
+                        if (!neeCovered) res |= PV_MIS_NONE;
                     }
                     color *= W * cacheScale;
                     if (liteX2 && cacheSurface && (res & PV_CACHE_HIT) == 0u)
@@ -324,12 +424,14 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     }
 
     if (!alive) res |= PV_TERMINATE;
-    io.flags = res;
-    io.pdf   = pdfOut;
-    io.dirPk = PackNormal(dir);
-    io.nPk   = PackNormal(outN);
-    io.color = color;
-    io.auxPk = auxPk;
+    io.flags   = res;
+    io.pdf     = pdfOut;
+    io.dirPk   = PackNormal(dir);
+    io.nPk     = PackNormal(outN);
+    io.color   = color;
+    io.auxPk   = auxPk;
+    io.nee     = nee;
+    io.neeLite = neeLite;
 }
 
 // Shade the primary vertex from the camera record: the camera pass resolved its surface
@@ -361,9 +463,10 @@ void PtShadePrimary(inout PtVertexIO io, float3 rayDir, uint2 pixel, uint pixelI
 }
 
 // Shade a secondary hit the raygen found: evaluate the surface and the material, then feed the
-// vertex routine.
+// vertex routine. prevPos and prevN are the vertex the ray left, for the MIS weight of an emitter
+// hit against that vertex's light sample.
 void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex,
-    float2 barycentrics, float hitT, float3 rayDir, uint2 pixel, uint pixelIdx)
+    float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, float3 prevN, uint2 pixel, uint pixelIdx)
 {
     const uint   depth    = (io.flags >> PV_IN_DEPTH_SHIFT) & 0x7Fu;
     const uint primID = FlatPrimID(instID, geometryIndex, primitiveIndex);
@@ -402,8 +505,19 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
         }
         else
         {
+            // The hit competes with the light sample of the vertex the ray left, wherever that
+            // vertex takes one on any of its lobe picks; without one it counts in full.
+            float misWeight = 1.0f;
+            if ((io.flags & PV_IN_MIS_NONE) == 0u)
+            {
+                const float lightPdfArea = LT_Pdf_LightTree_Area(prevPos, prevN, hinfo.lightID, instID,
+                    LTC_UseSurfaceLearning());
+                const float cosLight   = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
+                const float lightPdfSA = (cosLight > EPSILON) ? (lightPdfArea * max(hitT * hitT, EPSILON) / cosLight) : 0.0f;
+                misWeight = io.pdf / max(io.pdf + lightPdfSA, EPSILON);
+            }
             io.flags = PV_EMITTER;
-            io.auxPk = PvPackRadiance(emission);
+            io.auxPk = PvPackRadiance(emission * misWeight);
         }
         shade = false;
     }

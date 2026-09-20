@@ -69,6 +69,7 @@ void Pass_pt_trace_v8()
         ray.TMax      = PT_RETRACE_MIN;
     }
     uint inFlags = PvInputFlags(ps, false, false, false);
+    float3 prevN = float3(0.0f, 0.0f, 1.0f);   // shading normal of the vertex the ray left
 
     [loop]
     for (;;)
@@ -81,7 +82,7 @@ void Pass_pt_trace_v8()
         dx::MaybeReorderThread(hitObj);
         PtVertexIO io;
         io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist;
-        io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u;
+        io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u; io.nee = 0.0f; io.neeLite = 0.0f;
         if (depth == 1u)
             PtShadePrimary(io, rayDir, pixel, pixelIdx);
         else if (hitObj.IsHit())
@@ -89,7 +90,7 @@ void Pass_pt_trace_v8()
             BuiltInTriangleIntersectionAttributes attr;
             hitObj.GetAttributes(attr);
             PtShadeHit(io, hitObj.GetInstanceID(), hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex(),
-                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pixel, pixelIdx);
+                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pos, prevN, pixel, pixelIdx);
         }
         else
             PtShadeMiss(io, ray.Origin, rayDir);
@@ -157,6 +158,12 @@ void Pass_pt_trace_v8()
                 if (!any(throughput > 0.0f)) break;
             }
         }
+        // The light sample of an in-place vertex, taken where the cache did not end the path.
+        if ((io.flags & PV_NEE) != 0u)
+        {
+            if (pending) relL += throughput * io.nee; else total += throughput * io.nee;
+            if (litePath) liteL += liteSuffix * io.neeLite;
+        }
         // A subsurface walk moved the vertex to its exit, one depth further along the path.
         if ((io.flags & PV_SSS_WALKED) != 0u)
         {
@@ -208,6 +215,7 @@ void Pass_pt_trace_v8()
         // ---- next ray ----
         rayDir = UnpackNormal(io.dirPk);
         const float3 vertexN = UnpackNormal(io.nPk);
+        prevN = vertexN;
         ray.Origin    = offset_ray(pos, (dot(rayDir, vertexN) >= 0.0f) ? vertexN : -vertexN);
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;
