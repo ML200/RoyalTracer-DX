@@ -37,6 +37,9 @@ struct Runner {
     float rewardScale = 1.0f;
     bool compactNodes = true;
     XMFLOAT3 testCamera{};
+    // Third column of the inverse view, the camera's forward direction. Left at zero the
+    // retention rule has no orientation to work with and leaves every cell in front.
+    XMFLOAT3 testForward{};
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
     ~Runner() { CloseHandle(event); }
@@ -157,7 +160,9 @@ struct Runner {
     void BindLearning(UINT flags, UINT frame=0u, bool reset=false) {
         if (compactNodes) flags |= RS_FLAG_COMPACT_LIGHT_TREE;
         if(frame!=0u) currentFrame=frame;
-        {void* cam=nullptr;Check(cameraBuffer->Map(0,nullptr,&cam));memset(cam,0,4096);memcpy(static_cast<float*>(cam)+44,&testCamera,sizeof(testCamera));cameraBuffer->Unmap(0,nullptr);}
+        {void* cam=nullptr;Check(cameraBuffer->Map(0,nullptr,&cam));memset(cam,0,4096);
+         memcpy(static_cast<float*>(cam)+40,&testForward,sizeof(testForward));
+         memcpy(static_cast<float*>(cam)+44,&testCamera,sizeof(testCamera));cameraBuffer->Unmap(0,nullptr);}
         ID3D12DescriptorHeap* heaps[]={heap.Get()};commands->SetDescriptorHeaps(1,heaps);
         commands->SetComputeRootSignature(root.Get());
         commands->SetComputeRootConstantBufferView(5,cameraBuffer->GetGPUVirtualAddress());
@@ -1009,6 +1014,66 @@ void VerifyGridReview(Runner& runner) {
     runner.clockMs=0;runner.testCamera={0,0,0};
 }
 
+// A cell the camera turns away from offers its slot from that frame, so a newly visible cell in
+// a full table does not wait out the idle delay, and it gives the slot up for good on the short
+// timer. A cell that paths still reach keeps being touched and survives however long it spends
+// behind the camera.
+void VerifyBehindCameraRetention(Runner& runner) {
+    constexpr UINT lights=128,flags=LT_FLAG_LEARNING;
+    std::vector<LightTriangle> tris(lights);
+    for(UINT i=0;i<lights;++i) {
+        auto& t=tris[i];float x=float(i%16)*.025f,y=float(i/16)*.025f;
+        t.x={x,y,0};t.y={x,y+.01f,0};t.z={x+.01f,y,0};t.weight=1;t.meshID=i/16u;
+    }
+    lt::LightTreeBuilder builder;builder.Build(tris);builder.UploadAll(runner.device.Get(),runner.commands.Get());
+    builder.WriteSrvs(runner.device.Get(),runner.Handle(9));builder.WriteLookupSrvs(runner.device.Get(),runner.Handle(16));builder.WriteSlotSrv(runner.device.Get(),runner.Handle(7));
+    auto emission=runner.Upload(tris);runner.Srv(emission.Get(),6,sizeof(LightTriangle));
+    auto input=runner.Upload(std::vector<XMFLOAT4>{{.25f,.25f,-9.75f,0}});runner.Srv(input.Get(),19,sizeof(XMFLOAT4));runner.Flush();
+    // Three units in front of the receiver, so a cell one unit wide is behind by more than its
+    // own width once the camera turns around.
+    runner.lodScale=.05f;runner.clockMs=0;runner.testCamera={.25f,.25f,-6.75f};runner.testForward={0,0,-1};
+    UINT frame=1;
+    const auto feed=[&](UINT steps,UINT stepMs=16u) {
+        for(UINT i=0;i<steps;++i) {
+            runner.LearningSamples(lights,64,24,(127u<<16u)|((frame*7919u)&65535u),flags);
+            runner.clockMs+=stepMs;runner.PrepareLearning(flags,++frame);
+        }
+    };
+    const auto retention=[&]{return runner.LearningSamples(lights,1,49,0,flags)[0];};
+    runner.PrepareLearning(flags,++frame,true);feed(8);
+
+    const auto facing=retention();
+    Require(facing.x>=0,"Behind-camera fixture never allocated a cell for the receiver");
+    Require(facing.x==0 && facing.y==0 && facing.w==0,
+        "A cell the camera is looking at was offered for replacement");
+
+    // Turning away does not by itself make a cell a victim: a view facing a wall would otherwise
+    // recycle every cell behind it each frame, including the ones its own bounces are using.
+    runner.testForward={0,0,1};runner.PrepareLearning(flags,++frame);
+    const auto turned=retention();
+    Require(turned.w==0,"A cell the paths still reach was offered for replacement once the camera turned");
+
+    feed(40);
+    const auto reached=retention();
+    Require(reached.w==0 && reached.y==0,
+        "A cell behind the camera was recycled although paths still reached it");
+
+    runner.clockMs+=LT_CELL_DISTANT_MS+64u;runner.PrepareLearning(flags,++frame);
+    const auto idle=retention();
+    Require(idle.x==1 && idle.y==1,"A cell behind the camera outlived the short idle timer");
+
+    // Turning back restores the ten-second tolerance the cell would have had all along, so a
+    // glance away costs nothing as long as the slot was not taken in the meantime.
+    runner.testForward={0,0,-1};runner.PrepareLearning(flags,++frame);
+    const auto returned=retention();
+    Require(returned.x==0 && returned.y==0 && returned.w==1,
+        "Turning back towards an idle cell did not restore its ordinary idle tolerance");
+
+    std::cout<<"Behind the camera: survives "<<40u*16u<<" ms of being reached, then ranks above idle cells in front and expires "
+        <<LT_CELL_DISTANT_MS<<" ms after the paths stop\n";
+    runner.testForward={0,0,0};runner.testCamera={0,0,0};runner.clockMs=0;
+}
+
 void VerifySurfaceLearning(Runner& runner) {
     constexpr UINT lights=128,flags=LT_FLAG_LEARNING;
     std::vector<LightTriangle> tris(lights);
@@ -1209,6 +1274,7 @@ int main(int argc, char** argv) {
         Runner runner(argv[1]);
         if(argc==3 && std::string(argv[2])=="--surface") {VerifySurfaceLearning(runner);return 0;}
         if(argc==3 && std::string(argv[2])=="--cold-lod") {VerifyColdLodTransition(runner);return 0;}
+        if(argc==3 && std::string(argv[2])=="--behind") {VerifyBehindCameraRetention(runner);return 0;}
         if(argc==3) {std::string option=argv[2];if(option=="--grid-review"){VerifyGridReview(runner);return 0;}if(option=="--lod"){VerifyIntermediateDistance(runner);return 0;}if(option=="--recovery"){VerifyCutRecovery(runner);VerifyCutRecovery(runner,true);return 0;}Require(option=="--benchmark" || option=="--hot-benchmark","Unknown option");BenchmarkLearning(runner,option=="--hot-benchmark");return 0;}
         D3D12_SHADER_RESOURCE_VIEW_DESC nullSrv{};
         nullSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1260,6 +1326,7 @@ int main(int argc, char** argv) {
         VerifyCutRecovery(runner,true);
         VerifyIntermediateDistance(runner);
         VerifyGridReview(runner);
+        VerifyBehindCameraRetention(runner);
         VerifySurfaceLearning(runner);
         VerifyColdLodTransition(runner);
         std::cout << "All light-tree tests passed\n";

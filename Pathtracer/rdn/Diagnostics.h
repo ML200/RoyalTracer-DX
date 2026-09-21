@@ -101,8 +101,12 @@ inline void InstallCrashHandler() {
     SetUnhandledExceptionFilter(&CrashExceptionFilter);
 }
 
+// Off by default: the validation layer is heavy enough that a pass which is merely expensive can
+// cross the driver's timeout under it, which reads as a hang that does not happen otherwise.
+// Build with DXDIAG_ENABLE_DEBUG_LAYER=1 to put it back. DRED below is unaffected and stays on,
+// so a device removal still comes with breadcrumbs either way.
 #ifndef DXDIAG_ENABLE_DEBUG_LAYER
-#define DXDIAG_ENABLE_DEBUG_LAYER 1
+#define DXDIAG_ENABLE_DEBUG_LAYER 0
 #endif
 
 // Enable device-removal breadcrumbs before creating the D3D12 device.

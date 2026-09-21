@@ -60,6 +60,15 @@ void main(uint3 tid : SV_DispatchThreadID) {
             abs(s.pdf-LT_PdfSubtree(x,n,s.id,LT_SlotOfInstance(s.inst)))<=s.pdf*3e-5f);
         results[tid.x]=float4(s.pdf,evaluated,estimate,clean?(learned?1:0):-1);return;
     }
+    if(testMode==49u) {
+        // Retention of the cell at the receiver: which band its score sits in, and whether the
+        // request path would take its slot under pressure or discard it outright.
+        float3 x=testReceivers[0].xyz,n=float3(0,0,1);uint cell;
+        if(!LTC_Find(x,n,cell)) {results[tid.x]=float4(-1,-1,-1,-1);return;}
+        uint score=g_sharc.Load(cell+20u);
+        results[tid.x]=float4(score>=LTC_BEHIND_SCORE?1:0,score>=LTC_EXPIRED_SCORE?1:0,
+            score&(LTC_BEHIND_SCORE-1u),LTC_Replaceable(cell,true)?1:0);return;
+    }
     if(testMode==44u) {
         uint requests=0u;
         uint4 key=LTC_KeyAtLevel(testReceivers[0].xyz,float3(0,0,1),0u);
@@ -95,8 +104,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
         results[tid.x]=float4(valid?1:0,0,0,0);return;
     }
     if(testMode==41u || testMode==42u) {
-        float3 x=testReceivers[0].xyz,n=float3(0,0,1);uint cell;
-        LTC_Find(x,n,cell);uint count=g_sharc.Load(cell+4u);
+        float3 x=testReceivers[0].xyz,n=float3(0,0,1);uint cell;bool own;
+        LTC_Find(x,n,cell,own);uint count=g_sharc.Load(cell+4u);
         if(testMode==41u) {
             for(uint j=0u;j<count;++j) {
                 uint a=LTC_Cluster(cell,j);
@@ -111,7 +120,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
                 g_sharc.Store2(LT_TEST_PROBABILITY(a),asuint(float2(next-cdf,next)));cdf=next;
             }
         }
-        results[tid.x]=float4(LTC_Sum(cell,count),LTC_Index(cell)>=LT_GRID_CAPACITY?25u:
+        results[tid.x]=float4(LTC_Sum(cell,count),(!own||LTC_Index(cell)>=LT_GRID_CAPACITY)?25u:
             LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell)))),g_sharc.Load(cell+8u),g_sharc.Load(cell+28u));return;
     }
     if(testMode==38u) {
@@ -217,8 +226,10 @@ void main(uint3 tid : SV_DispatchThreadID) {
             ((testSeed&0x80000000u)!=0u?LTC_Hash(tid.x)%triangleCount:(tid.x/256u)%triangleCount):tid.x%triangleCount;
         float3 x=testReceivers[receiver].xyz,n=float3(0,0,1);
         if(testMode==19u) {
-            uint cell;bool found=LTC_Find(x,n,cell);
-            uint level=found?(LTC_Index(cell)>=LT_GRID_CAPACITY?LT_MAX_LEVEL+1u:LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell))))):99u;
+            // A borrowed neighbour sits at the receiver's own level but is not its cell, so it
+            // reports as a fallback, like the shared root.
+            uint cell;bool own;bool found=LTC_Find(x,n,cell,own);
+            uint level=found?((!own||LTC_Index(cell)>=LT_GRID_CAPACITY)?LT_MAX_LEVEL+1u:LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell))))):99u;
             results[tid.x]=float4(LTC_Level(x),level,found?g_sharc.Load(cell+8u):0,found?float(LTC_Index(cell)):-1);return;
         }
         if(testMode==17u || testMode==18u) {

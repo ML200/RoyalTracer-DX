@@ -31,6 +31,16 @@ float3 LTC_FaceNormal(uint face) { float3 n=0;n[face/2u]=(face&1u)!=0u?-1.0f:1.0
 float3 LTC_CameraPosition() {
     return mul(viewI,float4(0,0,0,1)).xyz;
 }
+float3 LTC_CameraForward() { return mul(viewI,float4(0,0,1,0)).xyz; }
+// True when the cell lies behind the plane of the camera by more than its own width, so that a
+// cell straddling the plane is not churned by a small turn. A view without an orientation, as
+// the offline fixtures supply, leaves every cell in front.
+bool LTC_Behind(float3 x,float width) {
+    const float3 f=LTC_CameraForward();
+    const float l2=dot(f,f);
+    if(!(l2>0.25f)) return false;
+    return dot(x-LTC_CameraPosition(),f)*rsqrt(l2)<-width;
+}
 // Map camera distance to a clamped adaptive grid level.
 float LTC_ContinuousLevel(float3 x) {
     float width=max(lt_cellSize,1e-4f);
@@ -62,6 +72,10 @@ float3 LTC_TrainShare(float roughness,uint matID,float3 full,float3 broad) {
     return (roughness>=lo && !smoothCoat)?full:broad;
 }
 static const uint LTC_EXPIRED_SCORE=0x40000000u;
+// Ranks a cell the camera has turned away from above every cell still in front, however long
+// those have been idle, while leaving it below the expiry bands: it is the first slot a new
+// cell takes, but nothing discards it while no one needs the room.
+static const uint LTC_BEHIND_SCORE=0x20000000u;
 bool LTC_Replaceable(uint cell,bool underPressure=false) {
     return LTC_Index(cell)<LT_GRID_CAPACITY && (g_sharc.Load(cell)!=1u ||
         g_sharc.Load(cell+20u)>=(underPressure?1u:LTC_EXPIRED_SCORE));
@@ -76,11 +90,19 @@ void LTC_UpdateRetention(uint cell) {
         float3 x=asfloat(g_sharc.Load3(cell+32u))-sceneOriginWorld;
         uint desired=LTC_Level(x),age=LTC_Now()-g_sharc.Load(cell+24u);
         bool distant=level+1u<desired;
+        // Once a cell has gone idle, the camera having turned away from it puts it ahead of every
+        // idle cell still in front, whatever their ages, and it gives its slot up for good on the
+        // short timer rather than after the ten-second history. Idleness still comes first: a
+        // cell that paths reach this frame is never a victim, however far behind the camera it
+        // is, or a view that faces a wall would recycle the whole grid every frame.
+        bool behind=LTC_Behind(x,max(lt_cellSize,1e-4f)*exp2(float(level)));
+        bool stale=distant||behind;
+        uint aged=min(age,LTC_BEHIND_SCORE-1u),flags=behind?LTC_BEHIND_SCORE:0u;
 
-        if(age>LT_CELL_PRESSURE_MS) score=min(age,LTC_EXPIRED_SCORE-1u);
+        if(age>LT_CELL_PRESSURE_MS) score=aged|flags;
 
-        if(age>(distant?LT_CELL_DISTANT_MS:LT_CELL_HISTORY_MS))
-            score=min(age,LTC_EXPIRED_SCORE-1u)|(distant?0x80000000u:LTC_EXPIRED_SCORE);
+        if(age>(stale?LT_CELL_DISTANT_MS:LT_CELL_HISTORY_MS))
+            score=aged|flags|(distant?0x80000000u:LTC_EXPIRED_SCORE);
     }
     g_sharc.Store(cell+20u,score);
 }
@@ -93,16 +115,49 @@ bool LTC_FindExact(uint4 key,out uint cell) {
     }
     return false;
 }
-bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell) {
+// A place with no cell of its own and no ancestor within LT_PARENT_LEVELS borrows a neighbouring
+// grid cell at its own level before it falls back to the shared root. The surface runs on into
+// the neighbour and the key holds the same quantized normal, so the neighbour sees much the same
+// lights, where the root stands for the whole scene at once and is a poor proposal anywhere. The
+// four neighbours across the normal are the ones a surface reaches; the two along it are where
+// the surface has just left. `own` is false for a borrowed cell, so the caller keeps asking for
+// one of its own and hands the borrowed cut to it as the starting point.
+bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell,out bool own) {
+    own=true;
     [loop] for(uint parent=0;parent<LT_PARENT_LEVELS && level+parent<=LT_MAX_LEVEL;++parent)
         if(LTC_FindExact(LTC_KeyAtLevel(x,n,level+parent),cell)) return true;
+    own=false;
+#if LT_BORROW_NEIGHBOURS
+    // Only the two sides the receiver stands nearest, one per axis across its normal and the
+    // nearer one first. A surface that runs on into a neighbour crosses the boundary it is
+    // closest to, and every lookup that misses reaches this point, so the cost of looking is
+    // kept to two probes rather than all four sides.
+    const uint axis=LTC_NormalFace(n)/2u;
+    const float width=max(lt_cellSize,1e-4f)*exp2(float(level));
+    const float3 within=frac((x+sceneOriginWorld)/width)-0.5f;
+    uint first=(axis+1u)%3u,second=(axis+2u)%3u;
+    if(abs(within[second])>abs(within[first])) { const uint swap=first;first=second;second=swap; }
+    [unroll] for(uint probe=0u;probe<2u;++probe) {
+        const uint side=probe==0u?first:second;
+        float3 offset=0.0f;offset[side]=within[side]>=0.0f?width:-width;
+        if(LTC_FindExact(LTC_KeyAtLevel(x+offset,n,level),cell)) return true;
+    }
+#endif
     cell=LTC_Cell(LT_GRID_CAPACITY+LTC_NormalFace(n));
     return g_sharc.Load(cell)==1u;
 }
-bool LTC_Find(float3 x,float3 n,out uint cell) {
-    cell=0u;return LTC_Enabled() && LTC_FindFrom(x,n,LTC_Level(x),cell);
+bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell) {
+    bool own;return LTC_FindFrom(x,n,level,cell,own);
 }
-struct LTC_Proposal { uint fine,coarse;float blend; };
+bool LTC_Find(float3 x,float3 n,out uint cell,out bool own) {
+    cell=0u;own=false;return LTC_Enabled() && LTC_FindFrom(x,n,LTC_Level(x),cell,own);
+}
+bool LTC_Find(float3 x,float3 n,out uint cell) {
+    bool own;return LTC_Find(x,n,cell,own);
+}
+// `own` and `ownCoarse` are false when that cell was borrowed from a neighbour or is the shared
+// root, which is what tells the sampler to keep asking for a cell of this place's own.
+struct LTC_Proposal { uint fine,coarse;float blend;bool own,ownCoarse; };
 // Select fine and ancestor cells for a blended proposal.
 bool LTC_GetProposal(float3 x,float3 n,out LTC_Proposal proposal,bool warmup=false) {
     proposal=(LTC_Proposal)0;if(!LTC_Enabled()) return false;
@@ -110,11 +165,11 @@ bool LTC_GetProposal(float3 x,float3 n,out LTC_Proposal proposal,bool warmup=fal
     uint selectedLevel=0u;
 
     [loop] for(uint pass=0u;pass<2u;++pass) {
-        uint found;
-        bool ok=LTC_FindFrom(x,n,pass==0u?(uint)level:selectedLevel+1u,found);
-        if(pass!=0u) {proposal.coarse=found;break;}
+        uint found;bool own;
+        bool ok=LTC_FindFrom(x,n,pass==0u?(uint)level:selectedLevel+1u,found,own);
+        if(pass!=0u) {proposal.coarse=found;proposal.ownCoarse=own;break;}
         if(!ok) return false;
-        proposal.fine=found;proposal.coarse=found;
+        proposal.fine=found;proposal.coarse=found;proposal.own=own;proposal.ownCoarse=own;
         uint index=LTC_Index(proposal.fine);
         if(index>=LT_GRID_CAPACITY) return true;
         selectedLevel=LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)));
@@ -128,7 +183,7 @@ bool LTC_GetProposal(float3 x,float3 n,out LTC_Proposal proposal,bool warmup=fal
     return true;
 }
 // Queue refinement without blocking the sampling path.
-void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alternatives) {
+void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alternatives,bool feedSource=true) {
     uint index=LTC_Index(sourceCell);
     uint4 key=LTC_KeyAtLevel(x,n,desired);uint candidate=LT_SENTINEL;
 
@@ -183,7 +238,8 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
     g_sharc.Store3(candidate+112u,asuint(n));
     g_sharc.Store(candidate+76u,index);
 
-    g_sharc.InterlockedExchange(sourceCell+68u,sharc_frame,old);
+    // Borrowing must not keep the lender alive: its own place decides how long it stays.
+    if(feedSource) g_sharc.InterlockedExchange(sourceCell+68u,sharc_frame,old);
 }
 void LTC_RequestRefinement(float3 x,float3 n,uint parentCell,uint desired) {
     uint index=LTC_Index(parentCell);
@@ -338,17 +394,22 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
             if(request==0u) {
                 desired=LTC_Level(x);
                 uint index=LTC_Index(proposal.fine);
-                uint parentLevel=index>=LT_GRID_CAPACITY?min(desired+LT_PARENT_LEVELS,LT_MAX_LEVEL+1u):LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)));
+                // A borrowed neighbour sits at this very level, so its key level would say there
+                // is nothing left to ask for. It counts as no cell at all here, exactly like the
+                // shared root, and its cut seeds the cell this place is still waiting for.
+                uint parentLevel=(index>=LT_GRID_CAPACITY || !proposal.own)
+                    ?min(desired+LT_PARENT_LEVELS,LT_MAX_LEVEL+1u):LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)));
                 if(parentLevel<=desired) continue;
                 alternatives=min(parentLevel-desired-1u,LT_PARENT_LEVELS-1u);
             } else {
                 if(proposal.coarse==proposal.fine) break;
                 desired=min(LTC_Level(x)+1u,LT_MAX_LEVEL);
                 uint index=LTC_Index(proposal.coarse);
-                if(!(index>=LT_GRID_CAPACITY || LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)))>desired)) break;
+                if(!(index>=LT_GRID_CAPACITY || !proposal.ownCoarse ||
+                     LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)))>desired)) break;
                 alternatives=0u;
             }
-            LTC_RequestCell(x,n,proposal.fine,desired,alternatives);
+            LTC_RequestCell(x,n,proposal.fine,desired,alternatives,proposal.own);
         }
 
         refreshTicket=min((uint)(RandomFloatSingle(rng)*float(4u*LT_PARENT_FEEDBACK_RATE)),4u*LT_PARENT_FEEDBACK_RATE-1u);
@@ -357,6 +418,10 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
         cell=useCoarse?proposal.coarse:proposal.fine;
         uint count=g_sharc.Load(cell+4u);
         if(count!=0u && count<=LT_CUT_MAX) {
+            // One independent draw per lane. Splitting the unit interval between the lanes of a
+            // wave that share a cell covers the cut more evenly per batch, but a wave covers a
+            // tile of pixels, so the stratum a pixel is given follows its place in that tile and
+            // the cluster it picks with it, which reads as stripes across the cell.
             float target=RandomFloatSingle(rng);
             uint lo=0u,hi=count-1u;
             [loop] while(lo<hi) {

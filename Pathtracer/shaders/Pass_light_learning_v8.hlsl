@@ -132,8 +132,16 @@ void LTC_InitializeRoot(uint cell,uint face) {
 }
 void LTC_Initialize(uint cell) {
     uint parent=g_sharc.Load(cell+76u);
-    if(parent>=LT_CELL_CAPACITY || g_sharc.Load(LTC_Cell(parent))!=1u) return;
-    uint source=LTC_Cell(parent),count=g_sharc.Load(source+4u);
+    uint source=parent<LT_CELL_CAPACITY?LTC_Cell(parent):0u;
+    uint count=(parent<LT_CELL_CAPACITY && g_sharc.Load(source)==1u)?g_sharc.Load(source+4u):0u;
+    // The cell this one was to inherit from can have been recycled since the request was made,
+    // or can still be filling itself. Dropping the request would leave the place without a cell
+    // of its own for another frame, and asking again would meet the same race, so it starts from
+    // the shared root of its normal instead, which always stands.
+    if(count==0u || count>LT_CUT_MAX) {
+        source=LTC_Cell(LT_GRID_CAPACITY+LTC_NormalFace(asfloat(g_sharc.Load3(cell+112u))));
+        count=g_sharc.Load(source)==1u?g_sharc.Load(source+4u):0u;
+    }
     if(count==0u || count>LT_CUT_MAX) return;
 
     [loop] for(uint j=0;j<LT_CUT_MAX;++j) {
@@ -172,7 +180,13 @@ bool LTC_Update(uint cell,uint cellSlot) {
     }
     if(samples==0u) return false;
     uint initial=max(g_sharc.Load(cell+44u),1u);
-    uint budget=4u*max((count+initial-1u)/initial,2u);
+    // A cell refines once its batch holds one sample for every time its cut has grown, with a
+    // floor of two. Asking for several times that changed nothing for a cell that many paths
+    // reach, which clears any such budget every frame, and it held a cell that few paths reach
+    // idle for frames on end while its batch filled. The step it takes when it finally refines
+    // is no larger for having waited, because the blend weight follows the sample count, so the
+    // wait bought no accuracy and cost the cell every frame it spent waiting.
+    uint budget=max((count+initial-1u)/initial,2u);
     if(samples<budget) return false;
     uint iteration=g_sharc.Load(cell+8u)+1u;
     uint history=g_sharc.Load(cell+16u);
