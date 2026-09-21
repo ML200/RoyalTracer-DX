@@ -69,6 +69,11 @@ class Camera {
     float skyGroundY = 0.0f;
     float terrainHeightFrequency = 0.0f;
 
+    // First instance-property index owned by the ocean. Every instance at or above it is an ocean
+    // tile, which is how the hit evaluator recognises one without an extra buffer read.
+    uint32_t oceanInstanceBase = 0xFFFFFFFFu;
+    bool oceanEnabled = false;
+
   private:
     ComPtr<ID3D12Resource> m_buffer;
     ComPtr<ID3D12DescriptorHeap> m_constHeap;

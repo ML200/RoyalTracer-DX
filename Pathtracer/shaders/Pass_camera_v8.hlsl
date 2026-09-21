@@ -26,13 +26,19 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     const float hitT   = hitObj.GetRayTCurrent();
     const uint  instID = hitObj.GetInstanceID();
     const uint  primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
-    const uint  matID  = GetMatIDFast(instID, primID);
     BuiltInTriangleIntersectionAttributes attr;
     hitObj.GetAttributes(attr);
     const HitInfo hinfo    = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, PixelConeAngle() * hitT);
+    const uint matID = ResolveSurfaceMaterial(GetMatIDFast(instID, primID), hinfo);
     const float3  hitPos   = hinfo.hitPos;
     const float3  emission = GetEmissionFast(instID, primID);
     const bool    isEmitter = any(emission > 0.0f);
+
+    // Save correspondence only. Evaluate previous geometry in the existing motion compute pass,
+    // avoiding a large texture-sampling expansion in the ray-generation program.
+    if (hinfo.isOcean)
+        gScratchPing[uint3(pixel, OCEAN_PREVIOUS_POSITION_SLOT)] =
+            float4(attr.barycentrics, asfloat(primID), asfloat(instID));
 
     // --- the material: written out, then dead ---
     uint mediumMatID;
@@ -44,8 +50,9 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
         mediumMatID = flipIOR ? matID : MEDIUM_INVALID;
 
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
-        RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, hinfo.uvFootprint);
-        psrCandidate = (dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) == 0u && PsrCandidateMaterial(matID, hitLocalPr);
+        RefetchMaterial(matID, hinfo, hitLocalKd, hitLocalPr, hitLocalPm);
+        psrCandidate = !hinfo.isOcean && (dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) == 0u &&
+            PsrCandidateMaterial(matID, hitLocalPr) && !OceanPointInside(rayOrigin);
 
         store_instID    (g_sample_current, pixelIdx, instID);
         store_flags     (g_sample_current, pixelIdx, isEmitter, hinfo.backface);
@@ -55,7 +62,7 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
         store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
         store_x1        (g_sample_current, pixelIdx, hitPos, instID);
         store_rg_primaryExtra(pixelIdx, flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi), mediumMatID,
-            flipIOR ? CalculateAbsorptionThroughput(LoadTf(matID), hitT) : float3(1, 1, 1));
+            flipIOR && !LoadIsOceanMaterial(matID) ? CalculateAbsorptionThroughput(LoadTf(matID), hitT) : float3(1, 1, 1));
     }
 
     gScratchPing[uint3(pixel, 3)] = float4(hinfo.rawNormal, 0.0f);
@@ -71,6 +78,13 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     // Mirror probe: the virtual point of the reflection feeds specular reprojection everywhere;
     // near-delta reflectors also follow the reflection through delta surfaces for primary surface
     // replacement. Only the probe inputs are live here.
+    if (hinfo.isOcean)
+    {
+        gScratchPing[uint3(pixel, 4)] = float4(hitPos, asfloat(instID));
+        gScratchPing[uint3(pixel, DLSS_PSR_CHAIN_SLOT)] = float4(hitPos, asfloat(instID));
+        gScratchPing[uint3(pixel, DLSS_PSR_PROBE_SLOT)] = 0.0f;
+    }
+    else
     {
         const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
         const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
@@ -104,6 +118,7 @@ void Pass_camera_v8()
     }
 
     store_sky(g_sample_current, pixelIdx);
+    gScratchPing[uint3(pixel, OCEAN_PREVIOUS_POSITION_SLOT)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
 
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
 

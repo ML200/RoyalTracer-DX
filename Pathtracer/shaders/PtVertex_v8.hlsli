@@ -31,6 +31,8 @@ struct PtVertexIO {
 #define PV_IN_PENDING       (1u << 25u)  // a deferred vertex exists: no capture, no light sampling
 #define PV_IN_IMMEDIATE     (1u << 26u)  // this hit directly follows the deferred scatter
 #define PV_IN_LAST          (1u << 27u)  // bounce limit: emission only
+#define PV_IN_WATER_DIRECT  (1u << 28u)  // water NEE already owns direct-light radiance on this segment
+#define PV_IN_WATER_MEDIUM  (1u << 29u)
 
 // Result flags (hit/miss shaders -> raygen).
 #define PV_RESULT_MASK      7u
@@ -52,6 +54,8 @@ struct PtVertexIO {
 #define PV_PRIMARY_LITE     (1u << 15u)
 #define PV_SSS_WALKED       (1u << 16u)  // the subsurface exit consumed one extra depth
 #define PV_NEE              (1u << 17u)  // nee/neeLite carry the light sample of this in-place vertex
+#define PV_WATER_DIRECT     (1u << 18u)
+#define PV_WATER_MEDIUM     (1u << 19u)
 
 uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
 {
@@ -72,6 +76,8 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed,
 {
     direct = 0.0f;
     liteDirect = 0.0f;
+    const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
+    const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr) : ctx.hitLocalPr;
     const bool useLearnedLights = LTC_UseSurfaceLearning();
     uint sNee = RcBounceSeed(pathSeed, depth, RC_STREAM_NEE);
     [loop]
@@ -120,19 +126,20 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed,
         float reward = 0.0f;
         if (sampled)
         {
-            const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN);
+            const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
             if (any(visT > 0.0f))
             {
                 float3 broadNEE; float broadNeePdf;
                 const BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal,
-                    ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y,
+                    ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y,
                     false, broadNEE, broadNeePdf);
                 if (bdataNEE.pdf > 0.0f)
                 {
                     reward = dot(radiance * cosSurf * visT *
                         LTC_TrainShare((float)ctx.hitLocalPr, ctx.matID, bdataNEE.val, broadNEE) / lightPdf,
                         float3(0.2126f, 0.7152f, 0.0722f));
-                    const float  misWeight  = lightPdf / (lightPdf + bdataNEE.pdf);
+                    // Water direct lighting has no BSDF-hit partner: continuation stays sharp.
+                    const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + bdataNEE.pdf);
                     const float3 lightScale = radiance * cosSurf * visT * (misWeight / lightPdf);
                     direct += bdataNEE.val * lightScale;
                     if (litePath) liteDirect += (liteBroadOnly ? broadNEE : bdataNEE.val) * lightScale;
@@ -264,9 +271,10 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     const float uStrategy = blue ? PtBlue1(pixel, blueIndex, depth, BN_DIM_STRATEGY) : RandomFloatSingle(sBsdf);
     const uint  strategy  = SelectSamplingStrategyFrom(spPath, uStrategy);
     const bool  wide      = SharcScatterHasSpread(strategy, ctx.matID, ctx.hitLocalPr);
+    const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
     if (depth == 1u)
     {
-        liteVertex = LITE_ENABLED && !sssEntered && wide &&
+        liteVertex = LITE_ENABLED && (inFlags & PV_IN_WATER_MEDIUM) == 0u && !waterDirect && !sssEntered && wide &&
             HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) &&
             !LoadIsSSS(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID &&
             LoadKd_w(ctx.matID) >= EPSILON && !freeBounce;
@@ -279,14 +287,16 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         // deferred vertex already exists. The light sample of a vertex is taken on its wide picks:
         // deferred at the captured vertex, right here at an in-place one. ---
         const bool neeBase = ctx.mediumMatID == MEDIUM_INVALID &&
-            (LoadKd_w(ctx.matID) >= EPSILON || (float)ctx.hitLocalPr >= SMOOTH_SPECULAR_THRESHOLD);
-        const bool performNEE  = neeBase && wide;
-        const bool capture     = wide && !pending;
+            (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
+        // Take water NEE once per vertex, irrespective of the continuation lobe pick.
+        // Keep it in place so its special light model never enters deferred/reuse records.
+        const bool performNEE  = waterDirect || (neeBase && wide);
+        const bool capture     = !waterDirect && (inFlags & PV_IN_WATER_MEDIUM) == 0u && wide && !pending;
         const bool budgetBreak = !freeBounce && diffDepth >= (uint)pt_maxDiffuseBounces;
         // Share of the lobe picks that are narrow and take no light sample; the wide picks stand
         // for the whole vertex. Wherever some pick takes one, the hits along every pick's
         // direction are weighted against it, so both techniques partition the light.
-        const float narrowShare = ((float)ctx.hitLocalPr < SMOOTH_SPECULAR_THRESHOLD ? spPath.Pspec : 0.0f) +
+        const float narrowShare = (GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr) ? spPath.Pspec : 0.0f) +
             (LoadPcr(ctx.matID) < SMOOTH_SPECULAR_THRESHOLD ? spPath.Pcoat : 0.0f);
         const bool neeCovered = neeBase && (1.0f - narrowShare) > EPSILON;
 
@@ -375,6 +385,9 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
             const float pdfTotal = guideQ > 0.0f ? max(bdata.pdf + pShare * guideQ * (guidePdf - broadPdf), 0.0f) : bdata.pdf;
             const bool  valid    = dot(dir, dir) > 1e-12f && pdfTotal > 1e-6f;
             const bool  passThrough = strategy == 1u && dot(dir, n) < 0.0f && LoadKd_w(ctx.matID) < 1.0f - EPSILON;
+            if (OceanDirectLightingOwnsRay(waterDirect, dot(dir, n)) ||
+                (passThrough && LoadIsThinGlass(ctx.matID) && (inFlags & PV_IN_WATER_DIRECT) != 0u))
+                res |= PV_WATER_DIRECT;
 
             if (capture)
             {
@@ -423,6 +436,12 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         }
     }
 
+    // Carry the medium through submerged object hits. Only a water interface
+    // changes membership; reflection (including TIR) stays on the incident side.
+    bool waterMedium = (inFlags & PV_IN_WATER_MEDIUM) != 0u;
+    if (LoadIsOceanMaterial(ctx.matID) && !LoadIsThinGlass(ctx.matID))
+        waterMedium = ctx.backface ? dot(dir,n) >= 0.0f : dot(dir,n) < 0.0f;
+    if (waterMedium) res |= PV_WATER_MEDIUM;
     if (!alive) res |= PV_TERMINATE;
     io.flags   = res;
     io.pdf     = pdfOut;
@@ -477,7 +496,6 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
     uint   presetOut = 0u;
     bool   shade     = true;
 
-    const uint  matID = GetMatIDFast(instID, primID);
     // The beam width at this hit: the pixel cone over the path length, plus the spread of the
     // rough scatters so far and of the one that led here.
     const float spreadHere = (io.flags & PV_IN_SPREAD) != 0u
@@ -485,11 +503,20 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
     const float footprint = PixelConeAngle() * (io.dist + hitT) + io.spread + spreadHere;
     io.dist += hitT;
     const HitInfo hinfo = EvalSurfaceStateDir(instID, primID, barycentrics, rayDir, footprint);
+    const uint matID = ResolveSurfaceMaterial(GetMatIDFast(instID, primID), hinfo);
     const float3  emission = (hinfo.lightID != 0xFFFFFFFFu)
         ? g_EmissiveTriangles[hinfo.lightID].emission * GLOBAL_EMISSION_STRENGTH
         : float3(0, 0, 0);
     if (any(emission > 0.0f))
     {
+        // Suppress only emitters that the preceding water NEE can sample. Keep the
+        // geometry as an occluder and retain BSDF-hit emission when mesh NEE is disabled.
+        if ((io.flags & PV_IN_WATER_DIRECT) != 0u && (rs_flags & RS_FLAG_NO_MESH_LIGHTS) == 0u)
+        {
+            io.flags = PV_TERMINATE;
+            io.auxPk = 0u;
+            return;
+        }
         const bool pending   = (io.flags & PV_IN_PENDING) != 0u;
         const bool immediate = (io.flags & PV_IN_IMMEDIATE) != 0u;
         if (pending && immediate)
@@ -532,7 +559,7 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
         const bool  transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
         flipIOR = hinfo.backface && transmissive && !LoadIsThinGlass(matID);
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
-        RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, hinfo.uvFootprint);
+        RefetchMaterial(matID, hinfo, hitLocalKd, hitLocalPr, hitLocalPm);
 
         if (depth == 2u && (io.flags & PV_IN_LITE_VERTEX) != 0u)
         {
@@ -559,7 +586,7 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
         ctx.hitLocalPm     = (half)hitLocalPm;
         ctx.iors           = (half2)(flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi));
         ctx.mediumMatID    = flipIOR ? matID : MEDIUM_INVALID;
-        ctx.absorptionTint = (half3)(flipIOR ? CalculateAbsorptionThroughput(LoadTf(matID), hitT) : float3(1, 1, 1));
+        ctx.absorptionTint = (half3)(flipIOR && !LoadIsOceanMaterial(matID) ? CalculateAbsorptionThroughput(LoadTf(matID), hitT) : float3(1, 1, 1));
     }
 
     if (shade) PtVertexShade(io, ctx, geoN, rayDir, flipIOR, pixel, pixelIdx, presetOut);
@@ -571,7 +598,8 @@ void PtShadeMiss(inout PtVertexIO io, float3 rayOrigin, float3 rayDir)
 {
     const bool underground = WorldPosIsUnderground(rayOrigin + sceneOriginWorld);
     SetSkyObserver(InitOrigin() + sceneOriginWorld);
-    const float  sunSAPdf   = underground ? 0.0f : GetSunPdf(rayDir);
+    const bool waterDirect = (io.flags & PV_IN_WATER_DIRECT) != 0u;
+    const float  sunSAPdf   = underground || waterDirect ? 0.0f : GetSunPdf(rayDir);
     const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
     const float  sunMisBsdf = (sunSAPdf > 0.0f)
         ? ((io.flags & PV_IN_MIS_NONE) != 0u ? 1.0f : io.pdf / max(io.pdf + sunSAPdf, EPSILON)) : 0.0f;

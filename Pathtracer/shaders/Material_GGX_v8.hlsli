@@ -1,3 +1,4 @@
+#include "OceanOptics.hlsli"
 // Walter 2007 microfacet transmission.
 inline bool RefractVector(float3 wo, float3 m, float eta, out float3 wi)
 {
@@ -23,11 +24,19 @@ inline float3 MirrorAcrossPlane(float3 v, float3 n)
 }
 
 static const float GGX_REFLECT_PICK_MIN = 0.125f;
+// Water uses the same finite GGX distribution in sampling and evaluation, including
+// the evaluator's existing numerical alpha minimum. Do not collapse its sampler to
+// H=N while still returning a continuous solid-angle PDF and accepting light samples.
+inline bool GGXUsesDeltaSampling(uint matID, float roughness)
+{
+    return !LoadIsOceanMaterial(matID) && roughness < SMOOTH_SPECULAR_THRESHOLD;
+}
 // Choose reflection probability from Fresnel and lobe availability.
 inline float GGXReflectPick(uint mID, float p_refl, float p_tran)
 {
     const float p_sum = p_refl + p_tran;
     if (!(p_sum > 0.0f)) return 0.0f;
+    if (LoadIsOceanMaterial(mID)) return OceanReflectionProbability(p_refl, p_tran);
     const float physical = p_refl / p_sum;
     const bool  transmits = LoadKd_w(mID) < 1.0f - EPSILON;
     return transmits ? max(physical, GGX_REFLECT_PICK_MIN) : physical;
@@ -192,7 +201,7 @@ inline float3 SampleBRDF_GGX(
     BuildAnisotropicFrame(N, anisoRot, T, B);
 
     float3 H;
-    if (r < SMOOTH_SPECULAR_THRESHOLD)
+    if (GGXUsesDeltaSampling(mID, r))
         H = N;
     else
         H = SampleVNDF_H_Aniso(ax, ay, V, N, T, B, seed);

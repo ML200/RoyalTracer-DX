@@ -1,5 +1,6 @@
 #include "Includes_v8.hlsli"
 #include "PtVertex_v8.hlsli"
+#include "OceanVolume.hlsli"
 
 // Half-length of the ray that hands the camera hit to the closest-hit shader, relative to the
 // distance from the scene origin (positions are stored relative to it).
@@ -63,6 +64,13 @@ void Pass_pt_trace_v8()
     // invalid; the checked trace answers it with a miss, and the primary shading rejects the
     // record itself.
     uint inFlags = PvInputFlags(ps, false, false, false);
+    uint cameraSeed = initRandomData(pixel, uint2(8,4), time, 1u);
+    float3 cameraOrigin, cameraDirection;
+    InitCameraRayDoF(pixel,imgSize,cameraSeed,cameraOrigin,cameraDirection);
+    const uint primaryMat = load_matID(g_sample_current,pixelIdx);
+    const bool cameraWater = LoadIsOceanMaterial(primaryMat) ?
+        (load_flagsWord(g_sample_current,pixelIdx) & SD_FLAG_BACKFACE) != 0u : OceanPointInside(cameraOrigin);
+    if (cameraWater) inFlags |= PV_IN_WATER_MEDIUM;
     float3 prevN = float3(0.0f, 0.0f, 1.0f);   // shading normal of the vertex the ray left
 
     [loop]
@@ -72,6 +80,24 @@ void Pass_pt_trace_v8()
         const uint depth = PtPsDepth(ps);
         dx::HitObject hitObj = TraceRayChecked(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF, ray);
         dx::MaybeReorderThread(hitObj);
+        // The primary segment is composed once in the final pass, also covering
+        // camera misses and directly visible emitters that bypass this path loop.
+        if (depth > 1u && (inFlags & PV_IN_WATER_MEDIUM) != 0u) {
+            uint sVolume = RcBounceSeed(pathSeed, depth, 0x57415452u);
+            float3 waterT, waterL;
+            OceanIntegrateVolume(ray.Origin, rayDir, hitObj.IsHit() ? hitObj.GetRayTCurrent() : ray.TMax,
+                sVolume, waterT, waterL);
+            if (pending) relL += throughput*waterL; else total += throughput*waterL;
+            if (depth >= 2u && (ps & PT_PS_LITE_VERTEX) != 0u) {
+                liteL += liteSuffix*waterL;
+                liteSuffix *= waterT;
+            }
+            throughput *= waterT;
+            // A deferred emitter replay has no slot for segment attenuation.
+            // Resolve this endpoint in place using the now-attenuated throughput.
+            immediate = false;
+            inFlags &= ~PV_IN_IMMEDIATE;
+        }
         PtVertexIO io;
         io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist;
         io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u; io.nee = 0.0f; io.neeLite = 0.0f;
@@ -221,6 +247,8 @@ void Pass_pt_trace_v8()
         if (nextDepth > maxBounces) break;
         ps += 1u << PT_PS_DEPTH_SHIFT;
         inFlags = PvInputFlags(ps, pending, immediate, nextDepth >= maxBounces);
+        inFlags |= (io.flags & PV_WATER_DIRECT) != 0u ? PV_IN_WATER_DIRECT : 0u;
+        inFlags |= (io.flags & PV_WATER_MEDIUM) != 0u ? PV_IN_WATER_MEDIUM : 0u;
     }
 
     PtAddRadiance(pixel, total);

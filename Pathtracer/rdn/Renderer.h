@@ -28,6 +28,7 @@
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 
 #include "planet/stream_orchestrator.h"
+#include "ocean/OceanSystem.h"
 #include "minecraft/mc_config.h"
 #include "minecraft/mc_omm.h"
 #include "Scene/OmmBuilder.h"
@@ -62,6 +63,7 @@ class Renderer {
 
     Scene& GetScene() { return m_scene; }
     Camera& GetCamera() { return m_camera; }
+    ocean::OceanSystem& GetOcean() { return m_ocean; }
     DeviceContext& GetContext() { return m_ctx; }
     void SetFlyCam(FlyCamController* fc) { m_flyCam = fc; }
     UINT GetWidth() const { return m_width; }
@@ -94,6 +96,8 @@ class Renderer {
     ComPtr<ID3D12Resource> m_dlssHudlessColor;
     Editor m_editor;
     planet::StreamOrchestrator m_planet;
+    ocean::OceanSystem m_ocean;
+    float m_lastDt = 0.0f;
 
     uint32_t m_planetFrame = 0; // Monotonic, independent of the swapchain index.
 

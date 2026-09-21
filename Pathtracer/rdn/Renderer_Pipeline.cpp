@@ -954,6 +954,12 @@ void Renderer::CreateShaderResourceHeap() {
     writeBatch(m_scene.bindlessAlbedoBase, albedoCount);
     writeBatch(m_scene.bindlessNormalBase, normalCount);
     writeBatch(m_scene.bindlessRmaBase, rmaCount);
+
+    // The ocean owns a fixed block of slots below the bindless range and reaches all of them
+    // through direct heap indexing, so it needs no descriptor table of its own.
+    static_assert(OCEAN_HEAP_BASE + OCEAN_HEAP_COUNT <= BINDLESS_HEAP_START,
+                  "Ocean descriptors overlap the bindless texture range");
+    m_ocean.CreateDescriptors(dev, m_srvUavHeap.Get());
 }
 
 // Match pass indices and instance hit-group offsets used during dispatch.

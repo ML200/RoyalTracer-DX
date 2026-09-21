@@ -1,6 +1,7 @@
 #include "../stdafx.h"
 #include <fstream>
 #include "Scene.h"
+#include "../../shaders/OceanLayout.h"
 #include "../DXRHelper.h"
 
 void MeshGPU::CreateBlasBuildInputs(ID3D12Device* device) {
@@ -83,6 +84,36 @@ void Scene::ReserveTerrain(UINT vertexElems, UINT indexElems, UINT matIDElems, U
     terrainMatIndex = (UINT)materials.size() - 1;
 }
 
+void Scene::ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots,
+                         const Material& mat) {
+    // Read the count while the ocean's own slots are still zero, so the ocean lands after every
+    // other range. The shader relies on that ordering to identify an ocean hit by index alone.
+    oceanPropsBase = instancePropsCount();
+    oceanVertexElems = vertexElems;
+    oceanIndexElems = indexElems;
+    oceanMatIDElems = matIDElems;
+    oceanInstanceSlots = instanceSlots;
+
+    oceanMatIndex = (UINT)materials.size();
+    oceanMaterialEdited = false;
+    // Coverage survives the deferred path and denoiser records as an ordinary material ID.
+    // Clear water transmits; increasingly dense whitecaps replace transmission with diffuse light.
+    for (uint32_t i = 0; i < OCEAN_MATERIAL_COUNT; ++i) {
+        Material layer = mat;
+        const float foam = float(i % OCEAN_MATERIAL_LEVELS) / float(OCEAN_MATERIAL_LEVELS - 1);
+        layer.Kd.w = mat.Kd.w + (1.0f - mat.Kd.w) * foam;
+        layer.sssWeight = mat.sssWeight * (1.0f - foam);
+        layer.sssEnable = layer.sssWeight > 0.0f ? mat.sssEnable : 0u;
+        layer.Pcr_aniso_anisor.y = 0.8f * float((i / OCEAN_MATERIAL_LEVELS) % OCEAN_ANISO_LEVELS) /
+            float(OCEAN_ANISO_LEVELS - 1);
+        layer.Pcr_aniso_anisor.z = float(i / (OCEAN_MATERIAL_LEVELS * OCEAN_ANISO_LEVELS)) /
+            float(OCEAN_DIRECTION_LEVELS);
+        materials.push_back(layer);
+    }
+    materialNames.resize(materials.size());
+    materialNames[oceanMatIndex] = "Water";
+}
+
 void Scene::ReserveRocks(UINT instanceSlots) {
     rockInstanceSlots = instanceSlots;
     rockPropsBase = terrainPropsBase + terrainInstanceSlots;
@@ -121,6 +152,9 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     voxelVertexBase = totalVertexCount + terrainVertexElems;
     voxelIndexBase = totalIndexCount + terrainIndexElems;
 
+    oceanVertexBase = voxelVertexBase + voxelVertexElems;
+    oceanIndexBase = voxelIndexBase + voxelIndexElems;
+
     const uint64_t vbBytes = (uint64_t)combinedVertexCount() * sizeof(BTriVertex);
     const uint64_t ibBytes = (uint64_t)combinedIndexCount() * sizeof(uint32_t);
 
@@ -131,6 +165,19 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     // mapped in host memory. Voxel chunks arrive through GPU copies, which need a default-heap
     // destination; an upload heap can neither be copied into nor be fetched from at speed.
     const bool hasTerrain = terrainVertexElems > 0 || terrainIndexElems > 0;
+
+    // The ocean tessellates itself on the GPU every frame and writes into its reserved range, so
+    // the vertex buffer has to be a default-heap resource that a compute shader can bind as an
+    // unordered access view. An upload heap cannot be one, which is why the two are exclusive.
+    const bool hasOcean = oceanVertexElems > 0;
+    if (hasTerrain && hasOcean)
+        throw std::runtime_error("Streamed terrain and the ocean cannot share the global vertex buffer");
+    const D3D12_RESOURCE_FLAGS vbFlags =
+        hasOcean ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
+    // The ocean's simulation runs on the streaming compute queue, where the read-only state has to
+    // be one a compute queue accepts; GENERIC_READ is not.
+    const D3D12_RESOURCE_STATES vbReadState =
+        hasOcean ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_GENERIC_READ;
 
     uint8_t* dstVertsRaw;
     uint8_t* dstIdxRaw;
@@ -150,19 +197,23 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
         dstVertsRaw = vertexGlobalMapped;
         dstIdxRaw = indexGlobalMapped;
     } else {
-        vertexGlobal =
-            nv_helpers_dx12::CreateBuffer(device, vbBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
-                                          nv_helpers_dx12::kDefaultHeapProps);
+        vertexGlobal = nv_helpers_dx12::CreateBuffer(device, vbBytes, vbFlags, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                     nv_helpers_dx12::kDefaultHeapProps);
         vertexGlobal->SetName(L"GlobalVertexBuffer");
         indexGlobal = nv_helpers_dx12::CreateBuffer(device, ibBytes, D3D12_RESOURCE_FLAG_NONE,
                                                     D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
         indexGlobal->SetName(L"GlobalIndexBuffer");
 
+        // The ocean's index range never changes, so it is staged once alongside the scene meshes.
+        const uint64_t stagedVbBytes = sceneVbBytes;
+        const uint64_t stagedIbBytes =
+            sceneIbBytes + (uint64_t)oceanIndexElems * sizeof(uint32_t);
+
         vertexGlobalUpload =
-            nv_helpers_dx12::CreateBuffer(device, sceneVbBytes, D3D12_RESOURCE_FLAG_NONE,
+            nv_helpers_dx12::CreateBuffer(device, std::max<uint64_t>(stagedVbBytes, 256), D3D12_RESOURCE_FLAG_NONE,
                                           D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
         indexGlobalUpload =
-            nv_helpers_dx12::CreateBuffer(device, sceneIbBytes, D3D12_RESOURCE_FLAG_NONE,
+            nv_helpers_dx12::CreateBuffer(device, std::max<uint64_t>(stagedIbBytes, 256), D3D12_RESOURCE_FLAG_NONE,
                                           D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 
         CD3DX12_RANGE noRead(0, 0);
@@ -194,6 +245,31 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
             outI[i] = mesh.cpuIndices[i] + vBase;
     }
 
+    // Ocean tiles all share one topology, laid out so that a tile's triangles index only its own
+    // vertex block. Written once here and never touched again; only the positions change.
+    if (hasOcean) {
+        uint32_t* out = dstIdx + totalIndexCount;
+        constexpr uint32_t edge = OCEAN_TILE_EDGE_VERTS;
+        for (uint32_t t = 0; t < OCEAN_MAX_TILES; ++t) {
+            const uint32_t base = oceanVertexBase + t * OCEAN_TILE_VERTS;
+            for (uint32_t j = 0; j < OCEAN_TILE_GRID; ++j) {
+                for (uint32_t i = 0; i < OCEAN_TILE_GRID; ++i) {
+                    const uint32_t v00 = base + j * edge + i;
+                    const uint32_t v10 = v00 + 1;
+                    const uint32_t v01 = v00 + edge;
+                    const uint32_t v11 = v01 + 1;
+                    // Wound so the geometric normal of every ocean triangle points at the sky.
+                    *out++ = v00;
+                    *out++ = v01;
+                    *out++ = v11;
+                    *out++ = v00;
+                    *out++ = v11;
+                    *out++ = v10;
+                }
+            }
+        }
+    }
+
     if (!hasTerrain) {
         vertexGlobalUpload->Unmap(0, nullptr);
         indexGlobalUpload->Unmap(0, nullptr);
@@ -201,11 +277,13 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
             cmdList->CopyBufferRegion(vertexGlobal.Get(), 0, vertexGlobalUpload.Get(), 0, sceneVbBytes);
         if (sceneIbBytes)
             cmdList->CopyBufferRegion(indexGlobal.Get(), 0, indexGlobalUpload.Get(), 0, sceneIbBytes);
+        if (hasOcean)
+            cmdList->CopyBufferRegion(indexGlobal.Get(), (uint64_t)oceanIndexBase * sizeof(uint32_t),
+                                      indexGlobalUpload.Get(), sceneIbBytes,
+                                      (uint64_t)oceanIndexElems * sizeof(uint32_t));
         const D3D12_RESOURCE_BARRIER toRead[2] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                 D3D12_RESOURCE_STATE_GENERIC_READ),
-            CD3DX12_RESOURCE_BARRIER::Transition(indexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                 D3D12_RESOURCE_STATE_GENERIC_READ),
+            CD3DX12_RESOURCE_BARRIER::Transition(vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST, vbReadState),
+            CD3DX12_RESOURCE_BARRIER::Transition(indexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST, vbReadState),
         };
         cmdList->ResourceBarrier(2, toRead);
     }
@@ -434,6 +512,14 @@ void Scene::UploadMaterials(ID3D12Device* device) {
         voxelMatIDBase = (UINT)materialIDs.size();
         materialIDs.resize((size_t)voxelMatIDBase + voxelMatIDElems, 0u);
         voxelMatIDReserved = true;
+    }
+
+    // Every ocean triangle shares one material, so one tile's worth of identifiers serves all the
+    // tiles and each one points at the same base.
+    if (oceanMatIDElems && !oceanMatIDReserved) {
+        oceanMatIDBase = (UINT)materialIDs.size();
+        materialIDs.resize((size_t)oceanMatIDBase + oceanMatIDElems, oceanMatIndex);
+        oceanMatIDReserved = true;
     }
 
     materials.BuildGpuPacked(materialPacked);

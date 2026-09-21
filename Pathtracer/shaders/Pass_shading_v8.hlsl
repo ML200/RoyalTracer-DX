@@ -1,4 +1,5 @@
 #include "Includes_v8.hlsli"
+#include "OceanVolume.hlsli"
 
 
 #define DLSS_PT_INPUT_LUMA_CAP 64.0f
@@ -110,12 +111,32 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
 
         HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), ro, PixelConeAngle() * pathLength);
         float3 bKd; float bPr, bPm;
-        RefetchMaterial(hm, bh.uv, bKd, bPr, bPm, bh.uvFootprint);
+        RefetchMaterial(hm, bh, bKd, bPr, bPm);
         g.x = bh.hitPos; g.n = bh.hitNormal; g.Kd = bKd * tint; g.Pr = bPr; g.Pm = bPm;
         g.instID = hi;
         return g;
     }
     return g;
+}
+
+// Water guides are always attached to the primary interface. They never trace through thin
+// glass, blend in the sky/seabed, or inherit the hit distance of the reflection probe.
+void WriteOceanGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out DlssGuides g)
+{
+    const uint instID = load_instID(g_sample_current, pixelIdx);
+    const float3 pos = load_x1(g_sample_current, pixelIdx);
+    const SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, pos, camPos);
+    g.depth = DLSS_GuideDepthFromWorldPos(sv.x);
+    g.n = sv.n_s;
+    g.roughness = sv.Pr;
+    const float3 fresnel = FresnelDielectricTIR(sv.o, sv.n_s, sv.etai, sv.etat);
+    g.specularAlbedo = lerp(fresnel, FresnelConductor(sv.Kd, sv.o, sv.n_s), sv.Pm);
+    g.diffuseAlbedo = float4(sv.Kd * LoadKd_w(sv.matID) * (1.0f - sv.Pm) * (1.0f - fresnel), 1.0f);
+    g.mv = SurfaceMotionVector(px, dims, sv.x, instID);
+    g.specMv = g.mv;
+    g.specHitDist = 0.0f;
+    if (SHADING_DEBUG_SLICES)
+        gOutput[uint3(px, 5)] = g.diffuseAlbedo;
 }
 
 // Guides before primary surface replacement: everything describes the reflector, except that
@@ -151,7 +172,7 @@ void WriteLegacyGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out 
         : DLSS_SPEC_HIT_MAX;
 
     float2 specMV = LoadIsThinGlass(sv.matID) ? SurfaceMotionVector(px, dims, sv.x, sInstID) : mvPixels;
-    if (reflW > 0.04f && sv.Pr < DLSS_SPEC_ROUGHNESS_THRESHOLD && reflInstID != 0xFFFFFFFFu)
+    if (!IS_OCEAN_INSTANCE(sInstID) && reflW > 0.04f && sv.Pr < DLSS_SPEC_ROUGHNESS_THRESHOLD && reflInstID != 0xFFFFFFFFu)
     {
         const float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(reflData.xyz, prevView, prevProjection, dims, reflInstID);
         const float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(reflData.xyz, view, projection, dims, reflInstID);
@@ -339,6 +360,26 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float3 accumulation = (output_primary + output_indirect) * atmosphereTr + atmosphereL;
 
+    // Apply camera-to-first-hit water transport once to every primary path,
+    // including sky/emitter pixels. Recreate the camera's exact jitter/DoF ray.
+    uint waterSeed = initRandomData(DTid.xy, uint2(8,4), time, 1u);
+    float3 waterOrigin, waterDir;
+    InitCameraRayDoF(DTid.xy, uint2(IMG_W,IMG_H), waterSeed, waterOrigin, waterDir);
+    const uint waterPixel = MapPixelID(uint2(IMG_W,IMG_H), DTid.xy);
+    const uint waterInst = load_instID(g_sample_current, waterPixel);
+    bool cameraWater = OceanPointInside(waterOrigin);
+    if (waterInst != 0xffffffffu && LoadIsOceanMaterial(load_matID(g_sample_current,waterPixel)))
+        cameraWater = (load_flagsWord(g_sample_current,waterPixel) & SD_FLAG_BACKFACE) != 0u;
+    if (cameraWater && OceanMediumEnabled()) {
+        const float distanceM = waterInst == 0xffffffffu ? RAY_TMAX_PLANET :
+            length(load_x1(g_sample_current,waterPixel)-waterOrigin);
+        float3 waterT, waterL;
+        OceanIntegrateVolume(waterOrigin,waterDir,distanceM,waterSeed,waterT,waterL);
+        // Atmospheric aerial perspective belongs to air, not the submerged camera leg.
+        const float3 incident = waterInst == 0xffffffffu ? accumulation : output_primary+output_indirect;
+        accumulation = incident*waterT+waterL;
+    }
+
     if (SHADING_DEBUG_SLICES) {
     gScratchPing[uint3(DTid.xy, 1)] = float4(accumulation, 0);
     }
@@ -437,7 +478,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
     }
     else{
-        if ((dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) != 0u)
+        // A deforming water interface is not a rigid mirror. Keep its own depth, normal and
+        // deformation motion in both reconstruction channels instead of replacing them with
+        // the static sky/ship behind a specular probe. Other materials keep their PSR path.
+        const uint primaryInst = load_instID(g_sample_current, pixelIdx);
+        if (IS_OCEAN_INSTANCE(primaryInst))
+            WriteOceanGuides(DTid.xy, pixelIdx, dims, camPosWorld, g);
+        else if ((dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) != 0u)
             WriteLegacyGuides(DTid.xy, pixelIdx, dims, camPosWorld, g);
         else
             psrBias = WritePsrGuides(DTid.xy, pixelIdx, dims, camPosWorld, g);

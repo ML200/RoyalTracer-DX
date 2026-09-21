@@ -136,7 +136,13 @@ cbuffer CameraParams : register(b0)
     float planetRadius;
     float skyGroundY;
     float terrainHeightFrequency;
+    float oceanInstanceBase;
+    float oceanEnabled;
 }
+
+// Instance-property records from this index up belong to the ocean.
+#define OCEAN_ENABLED (oceanEnabled > 0.5f)
+#define IS_OCEAN_INSTANCE(instID) (OCEAN_ENABLED && ((instID) >= (uint)oceanInstanceBase))
 
 #define SUN_LATITUDE_DEG    sunLatitude
 #define SUN_LONGITUDE_DEG   sunLongitude
@@ -268,6 +274,8 @@ StructuredBuffer<LightSlotGpu>     gLT_Slot         : register(t7);
 #include "BXDF_v8.hlsli"
 
 #include "SunSampler_v8.hlsli"
+#include "Ocean_v8.hlsli"
+#include "OceanMediumState.hlsli"
 #include "Inline_RT_v8.hlsli"
 #include "Material_SSS_v8.hlsli"
 #include "Path_State_v8.hlsli"

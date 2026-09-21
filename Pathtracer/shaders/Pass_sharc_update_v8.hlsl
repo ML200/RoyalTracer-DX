@@ -1,6 +1,7 @@
 #include "IncludesTraining_v8.hlsli"
 #include "SharcPath_v8.hlsli"
 #include "SharcTraining_v8.hlsli"
+#include "OceanVolume.hlsli"
 
 // Cache training: one strided path per tile that deposits its radiance into the cache entries it
 // touches and observes the guide lobes along the way. Stays a single reordered kernel; the path
@@ -146,6 +147,11 @@ void Pass_sharc_update_v8()
     float3 geometricNormal = gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz;
     float pathSpread = 0.0f;
     float pathDist   = length(sd.x1 - InitOrigin());   // one training path stands for a tile of pixels
+    bool waterDirectSegment = false;
+    uint cameraSeed = initRandomData(samplePixel, uint2(8,4), time, 1u);
+    float3 cameraOrigin, cameraDirection;
+    InitCameraRayDoF(samplePixel,imgSize,cameraSeed,cameraOrigin,cameraDirection);
+    bool waterMedium = LoadIsOceanMaterial(sd.matID) ? ctx.backface : OceanPointInside(cameraOrigin);
     g_regularizeRoughness = 0.0f;
 
     [loop]
@@ -181,8 +187,10 @@ void Pass_sharc_update_v8()
         }
         const bool scatterLive = !enterSSS;
 
+        const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
+        const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr) : ctx.hitLocalPr;
         const bool performNEE = ctx.mediumMatID == MEDIUM_INVALID &&
-            (LoadKd_w(ctx.matID) >= EPSILON || (float)ctx.hitLocalPr >= SMOOTH_SPECULAR_THRESHOLD);
+            (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
 
         // --- light sampling first: both shadow traversals run before any scatter state exists ---
         float3 directSum = float3(0, 0, 0);
@@ -245,18 +253,18 @@ void Pass_sharc_update_v8()
 
                 if (sampled)
                 {
-                    const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN);
+                    const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
                     if (any(visT > 0.0f))
                     {
                         float3 broadNEE; float broadNeePdf;
                         const BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir,
-                            ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadNEE, broadNeePdf);
+                            ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadNEE, broadNeePdf);
                         if (bdataNEE.pdf > 0.0f)
                         {
                             trainingReward = dot(radiance*cosSurf*visT*LTC_TrainShare((float)ctx.hitLocalPr,ctx.matID,bdataNEE.val,broadNEE)/lightPdf,
                                 float3(0.2126f,0.7152f,0.0722f));
 
-                            const float  misWeight  = lightPdf / (lightPdf + bdataNEE.pdf);
+                            const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + bdataNEE.pdf);
                             const float3 lightScale = radiance * cosSurf * visT * (misWeight / lightPdf);
                             directSum += bdataNEE.val * lightScale;
 
@@ -350,6 +358,7 @@ void Pass_sharc_update_v8()
             ctx.absorptionTint = (half3)float3(1, 1, 1);
             rayDirPk           = PackNormal(-w.exitNormal);
             ps = (ps | PT_PS_SSS) & ~PT_PS_DIFF_CACHED;
+            waterDirectSegment = false;
             ps += 1u << PT_PS_DEPTH_SHIFT;
             if (PtPsGuideDepth(ps) < 15u) ps += 1u << PT_PS_GUIDE_SHIFT;
             continue;
@@ -372,6 +381,10 @@ void Pass_sharc_update_v8()
 
         const bool passThrough = sampledStrategy == 1u && dot(dir, ctx.hitNormal) < 0.0f &&
             LoadKd_w(ctx.matID) < 1.0f - EPSILON;
+        waterDirectSegment = OceanDirectLightingOwnsRay(waterDirect, dot(dir, ctx.hitNormal)) ||
+            (waterDirectSegment && passThrough && LoadIsThinGlass(ctx.matID));
+        if (LoadIsOceanMaterial(ctx.matID) && !LoadIsThinGlass(ctx.matID))
+            waterMedium = ctx.backface ? dot(dir,ctx.hitNormal) >= 0.0f : dot(dir,ctx.hitNormal) < 0.0f;
         if (passThrough) { }
         else if (performNEE)
         {
@@ -423,6 +436,17 @@ void Pass_sharc_update_v8()
 
         rayDir = UnpackNormal(rayDirPk);
         const bool missed = !hitObj.IsHit();
+        if (waterMedium) {
+            uint sVolume = RcBounceSeed(pathSeed, depth, 0x57415452u);
+            float3 waterT, waterL;
+            OceanIntegrateVolume(rayOrigin,rayDir,missed ? rayB.TMax : hitObj.GetRayTCurrent(),sVolume,waterT,waterL);
+            SharcTrainingRadiance(training, waterL);
+            SharcTrainingScatter(training, waterT);
+            GuideRootsAddSource(GuideLane(), PtPsRoots(ps), waterL);
+            GuideRootsScale(GuideLane(), PtPsRoots(ps), waterT);
+            throughput *= waterT;
+            training.suffixLuma *= Luma(waterT);
+        }
 
         bool    terminate = missed;
         float3  terminalL = 0.0f;
@@ -433,7 +457,7 @@ void Pass_sharc_update_v8()
         if (missed)
         {
             const bool underground = WorldPosIsUnderground(ctx.hitPos + sceneOriginWorld);
-            const float  sunSAPdf   = underground ? 0.0f : GetSunPdf(rayDir);
+            const float  sunSAPdf   = underground || waterDirectSegment ? 0.0f : GetSunPdf(rayDir);
             const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
             const float  sunMisBsdf = (sunSAPdf > 0.0f)
                 ? ((ps & PT_PS_MIS_NONE) != 0u ? 1.0f : prev_pdf / max(prev_pdf + sunSAPdf, EPSILON)) : 0.0f;
@@ -463,6 +487,7 @@ void Pass_sharc_update_v8()
                 pathDist += hitT_n;
             }
             hitPos_n = hinfo_n.hitPos;
+            matID_n = ResolveSurfaceMaterial(matID_n, hinfo_n);
 
             const float3 emission_n = (hinfo_n.lightID != 0xFFFFFFFFu)
                 ? g_EmissiveTriangles[hinfo_n.lightID].emission * GLOBAL_EMISSION_STRENGTH
@@ -478,7 +503,8 @@ void Pass_sharc_update_v8()
                 const float  cosLight      = max(dot(hinfo_n.hitNormal, -rayDir), 0.0f);
                 const float  dist2         = max(hitT_n * hitT_n, EPSILON);
                 const float  lightPdfSA    = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
-                const float  misWeight     = noPartner ? 1.0f : prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
+                const bool neeOwned = waterDirectSegment && (rs_flags & RS_FLAG_NO_MESH_LIGHTS) == 0u;
+                const float  misWeight     = neeOwned ? 0.0f : (noPartner ? 1.0f : prev_pdf / max(prev_pdf + lightPdfSA, EPSILON));
                 terminalL = emission_n * misWeight;
                 GuideRootsAddSource(GuideLane(), PtPsRoots(ps), emission_n * misWeight);
             }
@@ -493,9 +519,9 @@ void Pass_sharc_update_v8()
             const uint   mediumMatID_n  = flipIOR_n ? matID_n : MEDIUM_INVALID;
 
             float3 hitLocalKd_n; float hitLocalPr_n, hitLocalPm_n;
-            RefetchMaterial(matID_n, hinfo_n.uv, hitLocalKd_n, hitLocalPr_n, hitLocalPm_n, hinfo_n.uvFootprint);
+            RefetchMaterial(matID_n, hinfo_n, hitLocalKd_n, hitLocalPr_n, hitLocalPm_n);
 
-            const float3 absorptionTint_n = (mediumMatID_n != MEDIUM_INVALID)
+            const float3 absorptionTint_n = (mediumMatID_n != MEDIUM_INVALID && !LoadIsOceanMaterial(mediumMatID_n))
                 ? CalculateAbsorptionThroughput(LoadTf(mediumMatID_n), hitT_n)
                 : float3(1, 1, 1);
 
@@ -540,7 +566,7 @@ void Pass_sharc_update_v8()
             const float ni     = LoadNi(ctx.matID);
             ctx.iors           = (half2)(enters ? float2(ni, 1.0f) : float2(1.0f, ni));
             ctx.mediumMatID    = enters ? ctx.matID : MEDIUM_INVALID;
-            ctx.absorptionTint = (half3)(enters
+            ctx.absorptionTint = (half3)(enters && !LoadIsOceanMaterial(ctx.matID)
                 ? CalculateAbsorptionThroughput(LoadTf(ctx.matID), hitT_n) : float3(1, 1, 1));
         }
         ps += 1u << PT_PS_DEPTH_SHIFT;

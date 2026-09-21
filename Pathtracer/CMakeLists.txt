@@ -157,6 +157,10 @@ add_executable(Pathtracer WIN32
         rdn/planet/stream_orchestrator.cpp
         rdn/planet/tlas_builder.h
         rdn/planet/tlas_builder.cpp
+        rdn/ocean/OceanCommon.h
+        rdn/ocean/OceanQuadtree.h
+        rdn/ocean/OceanSystem.h
+        rdn/ocean/OceanSystem.cpp
 
         rdn/minecraft/mc_types.h
         rdn/minecraft/mc_config.h
@@ -203,6 +207,8 @@ add_executable(Pathtracer WIN32
         engine/Scene/SceneManager.cpp
         engine/Scene/EmissiveCubes.h
         engine/Scene/EmissiveCubes.cpp
+        engine/Scene/Ocean.h
+        engine/Scene/Ocean.cpp
         engine/Camera/FlyCamController.h
         engine/Camera/FlyCamController.cpp
         engine/EngineApp.h

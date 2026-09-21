@@ -13,6 +13,8 @@ bool SharcScatterHasSpread(uint strategy, uint matID, half roughness)
 // Restrict cache updates to stable, sufficiently diffuse surfaces.
 bool SharcMaterialEligible(HitContext ctx, SamplingP sp, float3 geometricNormal)
 {
+    // Water's direct-highlight model differs from its continuation response.
+    if (LoadIsOceanMaterial(ctx.matID)) return false;
     if (ctx.mediumMatID != MEDIUM_INVALID || LoadIsSSS(ctx.matID)) return false;
     if (LoadKd_w(ctx.matID) < 1.0f - EPSILON) return false;
     if (!HasBroadShare(sp, ctx.hitLocalPr, ctx.hitLocalPm)) return false;
@@ -50,4 +52,3 @@ SharcSurface SharcMakeSurface(HitContext ctx, float3 geometricNormal)
     s.roughness = ctx.hitLocalPr;
     return s;
 }
-

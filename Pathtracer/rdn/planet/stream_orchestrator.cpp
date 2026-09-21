@@ -298,6 +298,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  slot * TS_PER_SLOT + 0);
     if (m_external) m_external->record_gpu_work(m_ctx->CopyList(), cl);
+    if (m_external2) m_external2->record_gpu_work(m_ctx->CopyList(), cl);
     const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
 
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
@@ -332,6 +333,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     const uint64_t cv = m_ctx->SubmitPlanetCompute(copyVal);
     if (recorded > 0) m_builder.on_submitted(cv);
     if (m_external) m_external->on_submitted(copyVal, cv);
+    if (m_external2) m_external2->on_submitted(copyVal, cv);
 
     m_tsRing[slot] = TsSlot{ cv, m_frame, m_tlas.instance_count(), m_tlas.last_build_recorded(), true };
     m_tsWrite++;
@@ -433,6 +435,8 @@ void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t sc
 
     bool externalForce = false;
     if (m_external) m_external->append_instances(m_tlas, props, m_sceneOrigin, external_hit_group, externalForce);
+    // Ocean tiles share the terrain hit group; per-instance flags select their material classification.
+    if (m_external2) m_external2->append_instances(m_tlas, props, m_sceneOrigin, terrain_hit_group, externalForce);
 
     if (props) m_instanceProps->Unmap(0, nullptr);
     m_stats.cells_dropped = dropped;

@@ -32,7 +32,21 @@ struct HitInfo {
     uint   lightID;
     float2 uv;
     float  uvFootprint;   // width of the ray beam at the hit, in texture coordinates of the surface
+
+    // The ocean resolves its own shading state from the wave cascades rather than from textures,
+    // because the roughness it needs depends on the ray footprint. These carry that result past
+    // the material fetch the other surfaces use.
+    bool   isOcean;
+    float3 oceanKd;
+    float  oceanPr;
+    uint   oceanMaterialOffset;
 };
+
+uint ResolveSurfaceMaterial(uint matID, HitInfo hit)
+{
+    return hit.isOcean ? OceanParams().materialBase +
+        hit.oceanMaterialOffset : matID;
+}
 
 
 static const float RTG_ORIGIN      = 1.0f / 32.0f;
@@ -188,7 +202,39 @@ inline float3 ThinGlassShadowTr(uint matID, uint instID, uint primID, float3 dir
     return (1.0f - F) * LoadTf(matID);
 }
 
-inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
+// Previous/current displacement difference at a vertex of the current stitched topology.
+float3 OceanVertexMotion(uint instID, float2 uv) {
+    const float size = asfloat(instanceProps[instID]._pad[1]);
+    const uint stitch = instanceProps[instID]._pad[0];
+    const uint2 ij = (uint2)round(uv * OCEAN_TILE_GRID);
+    const bool xEdge = (ij.x == 0 && (stitch & OCEAN_EDGE_NEG_X)) ||
+                       (ij.x == OCEAN_TILE_GRID && (stitch & OCEAN_EDGE_POS_X));
+    const bool zEdge = (ij.y == 0 && (stitch & OCEAN_EDGE_NEG_Z)) ||
+                       (ij.y == OCEAN_TILE_GRID && (stitch & OCEAN_EDGE_POS_Z));
+    const bool collapse = xEdge ? ((ij.y & 1u) != 0) : zEdge && ((ij.x & 1u) != 0);
+    const float step = size / OCEAN_TILE_GRID;
+    const float width = step * ((xEdge || zEdge) ? 2.0f : 1.0f);
+    const float2 q = float2(instanceProps[instID].objectToWorld[0][3], instanceProps[instID].objectToWorld[2][3]) + uv * size;
+    const float2 offset = collapse ? (xEdge ? float2(0,step) : float2(step,0)) : 0.0f;
+    float3 delta = 0.0f;
+    [unroll] for (uint i = 0; i < 2; ++i) {
+        const float2 p = q + (i == 0 ? -offset : offset);
+        delta += OceanDisplacementFrom(p, width, OCEAN_SRV_PREV_DISP) - OceanDisplacement(p, width);
+    }
+    return delta * 0.5f;
+}
+float3 OceanPreviousHit(uint instID, uint primID, float2 bary, float3 hitPos) {
+    const uint base = instanceProps[instID].indexBase + 3u * primID;
+    const float3 a = OceanVertexMotion(instID, (float2)BTriVertex[indices[base]].texCoord);
+    const float3 b = OceanVertexMotion(instID, (float2)BTriVertex[indices[base+1]].texCoord);
+    const float3 c = OceanVertexMotion(instID, (float2)BTriVertex[indices[base+2]].texCoord);
+    // prevView is already rebased by Camera::PollSceneOrigin. Both positions must remain in
+    // the CURRENT scene-origin frame; adding originDelta here would apply the rebase twice.
+    return hitPos + a * (1-bary.x-bary.y) + b * bary.x + c * bary.y;
+}
+
+inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
+    bool explicitWater = false, bool waterAttenuation = true)
 {
     const float3 link = B - A;
     const float3 oA = offset_ray(A, dot( link, nA) >= 0.0f ? nA : -nA);
@@ -215,7 +261,7 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
        | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
 
-    float3 tr = 1.0.xxx;
+    float3 tr = explicitWater || !waterAttenuation ? 1.0f.xxx : OceanShadowTransmittance(oA, oB);
     [loop]
     for (uint i = 0u; q.Proceed() && i < 128u; ++i)
     {
@@ -224,6 +270,8 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
             const uint cInstID = q.CandidateInstanceID();
             const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
             const uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
+
+            if (explicitWater && LoadIsOceanMaterial(cMatID)) continue;
 
             if (LoadIsThinGlass(cMatID))
             {
@@ -373,12 +421,31 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, float uvFootprint)
     return pbrProps;
 }
 
-inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, float uvFootprint = 0.0f)
+inline void RefetchMaterialUV(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, float uvFootprint = 0.0f)
 {
     localKd = EvaluateAlbedo(matID, uv, uvFootprint);
     float2 pbr = EvaluatePBRProperties(matID, uv, uvFootprint);
     localPr = pbr.x;
     localPm = pbr.y;
+}
+
+// Beauty water uses the editable scene material, like other surfaces. Procedural ocean
+// evaluation supplies its full-resolution wave normal. Direct lights filter their
+// own highlight lobe; that filter must not enter the continuation or guide roughness.
+inline void RefetchMaterial(uint matID, HitInfo hit, out float3 localKd, out float localPr, out float localPm)
+{
+    [branch]
+    if (hit.isOcean)
+    {
+        if (OceanParams().debugMode != 0u)
+        {
+            localKd = hit.oceanKd;
+            localPr = hit.oceanPr;
+            localPm = 0.0f;
+            return;
+        }
+    }
+    RefetchMaterialUV(matID, hit.uv, localKd, localPr, localPm, hit.uvFootprint);
 }
 
 inline dx::HitObject TraceRay_Custom(
@@ -548,6 +615,34 @@ HitInfo EvalSurfaceStateImpl(
     // The beam stretches across the surface at grazing angles.
     hit.uvFootprint = footprint * uvPerWorld / max(abs(dot(viewDir, geoNormW)), 0.05f);
 
+    [branch]
+    if (IS_OCEAN_INSTANCE(instID))
+    {
+        // Area-equivalent grazing footprint, retained for diagnostics only.
+        const float cosV = max(abs(dot(viewDir, geoNormW)), 1e-3f);
+        const float width = footprint * rsqrt(cosV);
+
+        // UVs retain the undisplaced material coordinates even on stitched tile edges.
+        // Sampling at posW.xz would shift the normals/foam away from their own crests.
+        const float tileSize = asfloat(instanceProps[instID]._pad[1]);
+        const float2 tileOrigin = float2(instanceProps[instID].objectToWorld[0][3],
+                                         instanceProps[instID].objectToWorld[2][3]);
+        const float2 oceanPosition = tileOrigin + uv * tileSize;
+        const OceanSurface sea = OceanEvalSurface(oceanPosition, width);
+
+        normW = sea.normal;
+        // Keep the shading normal on the visible side of the triangle the ray actually hit: the
+        // cascades are filtered at a different width than the tessellation, so the two can
+        // disagree by more than the interpolated normal ever would.
+        if (dot(normW, geoNormW) < 0.0f)
+            normW = normalize(normW - 2.0f * dot(normW, geoNormW) * geoNormW);
+
+        hit.isOcean = true;
+        hit.oceanKd = sea.albedo;
+        hit.oceanPr = sea.roughness;
+        hit.oceanMaterialOffset = sea.materialOffset;
+    }
+
     const int normalTexID = LoadNormalTexID(materialID);
     [branch]
     if (normalTexID != -1)
@@ -615,4 +710,3 @@ inline uint GetMatIDFast(in uint instID, in uint primID){
 }
 
 #include "SurfaceVertex_v8.hlsli"
-

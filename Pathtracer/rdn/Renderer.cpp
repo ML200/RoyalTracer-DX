@@ -8,6 +8,7 @@
 #include <random>
 #include <unordered_set>
 #include <DirectXPackedVector.h>
+#include <DirectXTex.h>
 
 #undef SL_CHECK
 #define SL_CHECK(x)                                                                                                    \
@@ -184,6 +185,7 @@ void Renderer::InitSceneGPU() {
         }
         // MINECRAFT: attach the voxel streamer before the unified TLAS is sized.
         m_planet.set_external(m_voxels.enabled() ? &m_voxels : nullptr);
+        m_planet.set_external2(m_ocean.Enabled() ? &m_ocean : nullptr);
         m_planet.reserve_scene_instances((uint32_t)m_scene.instances.size());
         CreateAccelerationStructures();
 
@@ -203,6 +205,13 @@ void Renderer::InitSceneGPU() {
             const mc::StreamerConfig& sc = m_voxels.config();
             m_scene.ReserveVoxels(sc.vertexCapacity, sc.indexCapacity, sc.matIdCapacity, sc.maxInstances, 4096u);
         }
+
+        if (m_ocean.Enabled()) {
+            const auto orv = m_ocean.GetReservation();
+            m_scene.ReserveOcean(orv.vertexElems, orv.indexElems, orv.matIDElems, orv.instanceSlots,
+                                 ocean::OceanSystem::MakeMaterial(m_ocean.GetParams()));
+        }
+
         m_scene.BuildGlobalMeshBuffers(m_ctx.Device(), m_ctx.CmdList());
         m_ctx.FlushAndReset();
 
@@ -237,6 +246,21 @@ void Renderer::InitSceneGPU() {
         m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
 
         m_scene.UploadMaterials(m_ctx.Device());
+
+        if (m_ocean.Enabled()) {
+            // Bind before Init: the acceleration-structure size query needs the vertex span, which
+            // depends on where the ocean's range landed in the global buffer.
+            m_ocean.BindScene(m_scene.vertexGlobal.Get(), m_scene.indexGlobal.Get(), m_scene.oceanVertexBase,
+                              m_scene.oceanIndexBase, m_scene.oceanMatIDBase, m_scene.oceanPropsBase,
+                              m_scene.oceanMatIndex);
+            m_ocean.Init(m_ctx.Device(), &m_ctx);
+            // The orchestrator hands this pointer to every external stream so it can fill in its
+            // own instance records; without it the ocean's tiles would have no geometry offsets.
+            m_planet.bind_instance_properties(m_scene.instanceProperties.Get());
+            m_camera.oceanInstanceBase = m_scene.oceanPropsBase;
+            m_camera.oceanEnabled = true;
+        }
+
         m_dlss.CreateResources(m_ctx.Device(), GetWidth(), GetHeight());
 
         m_dlssNR.Initialize(GetWidth(), GetHeight());
@@ -300,6 +324,7 @@ void Renderer::InitSceneGPU() {
 
 // Apply scene edits and synchronize resources before recording the next frame.
 void Renderer::UpdateRenderer(float dt) {
+    m_lastDt = dt;
     using hrc = std::chrono::high_resolution_clock;
 
     // Reflex sleep — must be called every frame regardless of mode
@@ -421,6 +446,31 @@ void Renderer::UpdateRenderer(float dt) {
                   m_integratorSettings, m_fps, m_frameStats, m_planet.stats(),
                   m_voxels.enabled() ? &m_voxels : nullptr);
     // Transport changes invalidate accumulated reconstruction and learning history.
+    if (m_ocean.Enabled() && m_scene.oceanInstanceSlots && !m_scene.oceanMaterialEdited) {
+        const Material water = ocean::OceanSystem::MakeMaterial(m_ocean.GetParams());
+        const UINT base = m_scene.oceanMatIndex;
+        const auto oldTf = m_scene.materials.Tf[base];
+        const auto oldSss = m_scene.materials.sssAlbedo[base];
+        if (m_scene.materials.Kd[base].w != water.Kd.w ||
+            oldTf.x != water.Tf.x || oldTf.y != water.Tf.y || oldTf.z != water.Tf.z ||
+            oldSss.x != water.sssAlbedo.x || oldSss.y != water.sssAlbedo.y || oldSss.z != water.sssAlbedo.z ||
+            m_scene.materials.sssRadius[base] != water.sssRadius ||
+            m_scene.materials.sssPhaseG[base] != water.sssPhaseG ||
+            m_scene.materials.sssWeight[base] != water.sssWeight ||
+            m_scene.materials.sssEnable[base] != water.sssEnable) {
+            for (UINT i=0;i<OCEAN_MATERIAL_COUNT;++i) {
+                const float coverage = float(i % OCEAN_MATERIAL_LEVELS) / (OCEAN_MATERIAL_LEVELS-1);
+                m_scene.materials.Kd[base+i].w = water.Kd.w + (1.0f-water.Kd.w)*coverage;
+                m_scene.materials.Tf[base+i] = water.Tf;
+                m_scene.materials.sssAlbedo[base+i] = water.sssAlbedo;
+                m_scene.materials.sssRadius[base+i] = water.sssRadius;
+                m_scene.materials.sssPhaseG[base+i] = water.sssPhaseG;
+                m_scene.materials.sssWeight[base+i] = water.sssWeight * (1.0f-coverage);
+                m_scene.materials.sssEnable[base+i] = coverage < 1.0f ? water.sssEnable : 0u;
+            }
+            m_scene.materialsDirty = true;
+        }
+    }
     const auto& settings = m_integratorSettings;
     if (!m_integratorHistoryValid || settings.forceDiffuseMats != m_previousIntegratorSettings.forceDiffuseMats)
         m_lightLearningResetPending = true;
@@ -1084,6 +1134,11 @@ void Renderer::RenderFrame() {
 
     m_planet.begin_frame(m_planetFrame++, MakePlanetCamera());
 
+    // The ocean picks its tiles from the same camera the terrain streamer uses, one frame ahead of
+    // the work the orchestrator records for it.
+    if (m_ocean.Enabled())
+        m_ocean.BeginFrame(m_lastDt, MakePlanetCamera(), m_planetFrame);
+
     slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *m_ctx.frameToken);
 
     try {
@@ -1141,7 +1196,34 @@ void Renderer::RenderFrame() {
         slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
 
         slPCLSetMarker(sl::PCLMarker::ePresentStart, *m_ctx.frameToken);
+        ID3D12Resource* presentedBuffer = m_ctx.BackBuffer();
         m_ctx.ExecuteAndPresent();
+
+        // Opt-in image capture for reproducible, hidden-window rendering reviews.
+        // Synchronous readback runs only at explicitly requested capture frames.
+        static uint32_t captureFrame = 0;
+        static const std::wstring capturePath = [] {
+            wchar_t path[32768]{};
+            const DWORD n = GetEnvironmentVariableW(L"RT_CAPTURE_PATH", path, _countof(path));
+            return n && n < _countof(path) ? std::wstring(path) : std::wstring();
+        }();
+        if (!capturePath.empty()) {
+            wchar_t frameText[32]{};
+            GetEnvironmentVariableW(L"RT_CAPTURE_FRAME", frameText, _countof(frameText));
+            const uint32_t requestedFrame = std::max(1ul, frameText[0] ? wcstoul(frameText, nullptr, 10) : 64ul);
+            frameText[0] = 0;
+            GetEnvironmentVariableW(L"RT_CAPTURE_EVERY", frameText, _countof(frameText));
+            const uint32_t interval = wcstoul(frameText, nullptr, 10);
+            ++captureFrame;
+            if (captureFrame >= requestedFrame && (interval ? (captureFrame-requestedFrame)%interval == 0 : captureFrame == requestedFrame)) {
+                const std::wstring outputPath = interval ? capturePath + L"-" + std::to_wstring(captureFrame) + L".png" : capturePath;
+                DirectX::ScratchImage capture;
+                ThrowIfFailed(DirectX::CaptureTexture(m_ctx.CmdQueue(), presentedBuffer, false, capture,
+                    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT));
+                ThrowIfFailed(DirectX::SaveToWICFile(*capture.GetImage(0, 0, 0), DirectX::WIC_FLAGS_NONE,
+                    DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), outputPath.c_str()));
+            }
+        }
 
         slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
         m_editor.RenderPlatformWindows();
@@ -1180,6 +1262,14 @@ void Renderer::RenderFrame() {
             ss << L"Frame Time: " << 1000.0f / m_fps << L" ms (" << m_fps << L" fps)";
         }
         SetWindowTextW(Win32Application::GetHwnd(), ss.str().c_str());
+
+        if (m_ocean.Enabled()) {
+            const auto& os = m_ocean.GetStats();
+            std::wcout << L"[ocean] tiles=" << os.tiles << L"/" << os.leaves << L" dropped=" << os.dropped
+                       << L" tris=" << (os.triangles / 1000) << L"k blas[build=" << os.builds << L" refit="
+                       << os.refits << L"] Hs=" << os.significantWaveHeight << L" m whitecap=" << (os.whitecapMeasured * 100.0) << L"%/" << (os.whitecapCoverage * 100.0) << L"% slopeVar=" << os.slopeVarSpectrum
+                       << L"/" << os.slopeVarCoxMunk << L" chopGain=" << os.conditioningGain << std::endl;
+        }
 
         const auto& ps = m_planet.stats();
         std::wcout << L"[planet] built=" << ps.built << L" leaves=" << ps.leaf_count << L" cells=" << ps.cell_count

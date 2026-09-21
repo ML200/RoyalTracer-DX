@@ -1,5 +1,17 @@
 #pragma once
+#include "OceanLayout.h"
+#include "OceanOptics.hlsli"
 
+// Only the editable water material uses this adapter; diagnostic palette entries and
+// unrelated glass keep their original closures and proposal probabilities.
+inline bool LoadIsOceanMaterial(uint matID)
+{
+    [branch] if (!OCEAN_ENABLED) return false;
+    StructuredBuffer<OceanParamsGPU> ocean = ResourceDescriptorHeap[OCEAN_SRV_PARAMS];
+    return matID == ocean[0].materialBase;
+}
+
+// Volume controls never change the surface opacity or its Fresnel energy split.
 inline float3 LoadKd_rgb(uint matID)
 {
     return UnpackRGB9E5(g_mat[matID].Kd_rgb);
@@ -7,15 +19,14 @@ inline float3 LoadKd_rgb(uint matID)
 
 inline float LoadKd_w(uint matID)
 {
-    return FORCE_DIFFUSE ? 1.0f : f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
+    if (FORCE_DIFFUSE) return 1.0f;
+    return f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
 }
 
 // Decode base color and material flags from packed storage.
 inline float4 LoadKd(uint matID)
 {
-    const MatPacked m = g_mat[matID];
-    return float4(UnpackRGB9E5(m.Kd_rgb),
-                  FORCE_DIFFUSE ? 1.0f : f16tof32(m.w_Ni & 0xFFFFu));
+    return float4(LoadKd_rgb(matID), LoadKd_w(matID));
 }
 
 inline float LoadNi(uint matID)
@@ -147,7 +158,9 @@ inline float2 LoadRmaUVScale(uint matID)
 
 inline bool LoadIsSSS(uint matID)
 {
-    return !FORCE_DIFFUSE && (g_mat[matID].texIDs_2 & (1u << 17)) != 0u;
+    if (FORCE_DIFFUSE || (g_mat[matID].texIDs_2 & (1u << 17)) == 0u) return false;
+    // Water's controls drive segment volume transport, never the solid-object walk.
+    return !LoadIsOceanMaterial(matID);
 }
 
 inline float3 LoadSSSAlbedo(uint matID)
@@ -180,4 +193,3 @@ inline bool MaterialIsFreeBounce(uint matID)
     const bool isTranslucent = LoadIsSSS(matID);
     return isGlass || isTranslucent;
 }
-

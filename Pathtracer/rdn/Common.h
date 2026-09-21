@@ -24,6 +24,7 @@
 #include "../shaders/SharcLayout.h"
 #include "../shaders/RenderFlags.h"
 #include "../shaders/SkyBakeLayout.h"
+#include "../shaders/OceanLayout.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -64,7 +65,7 @@ struct ScopedTimer {
 
 static constexpr UINT FRAME_COUNT = 3;
 static constexpr UINT MAX_BACK_BUFFERS = 6;
-static constexpr UINT SCRATCH_LAYER_COUNT = 13;
+static constexpr UINT SCRATCH_LAYER_COUNT = 14;
 static constexpr int NUM_LUTS = 2;
 static constexpr int LUT_RESOLUTION = 16;
 static constexpr int NUM_SAMPLES_LUT = 32000;
@@ -81,7 +82,8 @@ static constexpr UINT SKY_MULTISCATTER_LUT_HEAP_SLOT = 70;
 
 static constexpr UINT BLUE_NOISE_HEAP_SLOT = 86;
 static constexpr UINT BLUE_NOISE_MASK_SIZE = 128;
-static constexpr UINT BINDLESS_HEAP_START = 87;
+// Ocean descriptors occupy the range declared in OceanLayout.h; textures start above it.
+static constexpr UINT BINDLESS_HEAP_START = 256;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;

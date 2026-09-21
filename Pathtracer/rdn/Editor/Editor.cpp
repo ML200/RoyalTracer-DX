@@ -1,5 +1,6 @@
 #include "../stdafx.h"
 #include "Editor.h"
+#include "../../shaders/OceanLayout.h"
 #include <unordered_set>
 
 namespace {
@@ -834,8 +835,13 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         }
     }
 
+    const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
+        ? (int)scene.oceanMatIndex : -1;
+    // Internal water variants are reserved for diagnostics, not independent user materials.
+    if (waterMat >= 0 && m_selectedMat > waterMat && m_selectedMat < waterMat + OCEAN_MATERIAL_COUNT)
+        m_selectedMat = waterMat;
     int matchCount = 0;
-    for (int i = 0; i < (int)scene.materials.size(); ++i) {
+    auto drawMaterial = [&](int i) {
         const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
                                ? scene.materialNames[i].c_str()
                                : nullptr;
@@ -844,7 +850,7 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             const bool nameMatch = containsCI(name, m_matFilter);
             const bool idxMatch = numericQuery && (i == numericValue);
             if (!nameMatch && !idxMatch)
-                continue;
+                return;
         }
         ++matchCount;
 
@@ -861,6 +867,13 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             snprintf(label, sizeof(label), "%d##mat", i);
         if (ImGui::Selectable(label, m_selectedMat == i))
             m_selectedMat = i;
+    };
+    if (waterMat >= 0)
+        drawMaterial(waterMat);
+    for (int i = 0; i < (int)scene.materials.size(); ++i) {
+        if (waterMat >= 0 && i >= waterMat && i < waterMat + OCEAN_MATERIAL_COUNT)
+            continue;
+        drawMaterial(i);
     }
 
     if (m_matFilter[0] && matchCount == 0) {
@@ -897,7 +910,8 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
                 ImGui::SetTooltip("Index of Refraction\n1.0 = air, 1.33 = water, 1.5 = glass");
         }
 
-        if (ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Procedural ocean tiles are not registered as mesh emitters or alpha-tested geometry.
+        if (i != waterMat && ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
             XMFLOAT3& Ke = mats.Ke[i];
             bool emEdit = ImGui::ColorEdit3("Emission", &Ke.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (emEdit) {
@@ -945,14 +959,21 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         }
 
         if (ImGui::CollapsingHeader("Transmission")) {
-            changed |=
-                ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Volume absorption color (solid glass)\n"
-                                  "Thin glass: flat per-surface transmission tint\nWhite = no absorption");
-
             if (i >= (int)mats.thinGlass.size())
                 mats.thinGlass.resize(i + 1, 0u);
+            if (i == waterMat && mats.thinGlass[i] == 0u) {
+                changed |= ImGui::DragFloat3("Absorption (1/m)", &mats.Tf[i].x, 0.001f, 0.0f, 100.0f, "%.4f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Red, green and blue absorption per metre.\n"
+                                      "0 = no absorption; higher values absorb that channel faster.");
+            } else {
+                changed |= ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x,
+                                             ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Volume absorption color (solid glass)\n"
+                                      "Thin glass: flat per-surface transmission tint\nWhite = no absorption");
+            }
+
             bool thin = mats.thinGlass[i] != 0u;
             if (ImGui::Checkbox("Thin glass (Fresnel only)", &thin)) {
                 mats.thinGlass[i] = thin ? 1u : 0u;
@@ -980,30 +1001,39 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
                 mats.sssWeight.resize(i + 1, 1.0f);
 
             bool en = mats.sssEnable[i] != 0u;
-            if (ImGui::Checkbox("Enable SSS", &en)) {
+            if (ImGui::Checkbox(i == waterMat ? "Water volume scattering" : "Enable SSS", &en)) {
                 mats.sssEnable[i] = en ? 1u : 0u;
                 changed = true;
             }
-            changed |= ImGui::ColorEdit3("SSS Color", &mats.sssAlbedo[i].x, ImGuiColorEditFlags_Float);
+            changed |= ImGui::ColorEdit3(i == waterMat ? "Scattering color" : "SSS Color", &mats.sssAlbedo[i].x, ImGuiColorEditFlags_Float);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(
+                    i == waterMat ? "Relative RGB scattering coefficients in the water volume.\n"
+                                    "Sun and sky light scatter along the underwater ray; absorption determines the depth color." :
                     "Single-scattering albedo (the inside colour).\nCarried by the random walk's albedo product.");
             changed |=
-                ImGui::SliderFloat("Radius", &mats.sssRadius[i], 0.0005f, 50.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
+                ImGui::SliderFloat(i == waterMat ? "Scattering mean free path (m)" : "Radius", &mats.sssRadius[i],
+                    0.0005f, i == waterMat ? 1000.0f : 50.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(
+                    i == waterMat ? "Scattering mean free path in metres for the strongest color channel.\n"
+                                    "Larger values mean clearer water; thickness comes from the traced geometry." :
                     "Scatter distance / mean free path (world units), log scale.\nsigma_t = 1/radius. Small = "
                     "dense/opaque, large = translucent.\nUseful range is relative to the object's thickness.");
-            changed |= ImGui::SliderFloat("Phase g", &mats.sssPhaseG[i], -0.95f, 0.95f);
+            changed |= ImGui::SliderFloat(i == waterMat ? "Forward scattering" : "Phase g", &mats.sssPhaseG[i], -0.95f, 0.95f);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Henyey-Greenstein anisotropy.\n0 = isotropic, >0 forward, <0 backward scattering.");
-            changed |= ImGui::SliderFloat("Entry weight", &mats.sssWeight[i], 0.0f, 1.0f);
+                ImGui::SetTooltip(i == waterMat ? "Higher values concentrate volume scattering in the forward direction." :
+                    "Henyey-Greenstein anisotropy.\n0 = isotropic, >0 forward, <0 backward scattering.");
+            changed |= ImGui::SliderFloat(i == waterMat ? "Scattering density" : "Entry weight", &mats.sssWeight[i], 0.0f, 1.0f);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Probability scale for entering the medium vs reflecting.\np_enter = weight * "
+                ImGui::SetTooltip(i == waterMat ? "Scales the scattering coefficient, independently of absorption.\n"
+                                    "0 = absorption only; higher values increase underwater haze.\n"
+                                    "Surface Fresnel reflectance is unchanged." :
+                                  "Probability scale for entering the medium vs reflecting.\np_enter = weight * "
                                   "Fresnel-transmittance. 0 = pure reflection, 1 = mostly subsurface.");
         }
 
-        if (ImGui::CollapsingHeader("Alpha Test")) {
+        if (i != waterMat && ImGui::CollapsingHeader("Alpha Test")) {
             changed |= ImGui::SliderFloat("Threshold", &mats.alphaThreshold[i], 0.0f, 1.0f);
 
             if (i >= mats.invertAlpha.size())
@@ -1028,8 +1058,11 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             ImGui::Text("  RMA:    %s", mats.rmaTexID[i] >= 0 ? std::to_string(mats.rmaTexID[i]).c_str() : "none");
         }
 
-        if (changed)
+        if (changed) {
+            if (i == waterMat)
+                scene.oceanMaterialEdited = true;
             scene.MarkMaterialsDirty(emissionChanged);
+        }
     } else {
         ImGui::TextDisabled("Select a material.");
     }

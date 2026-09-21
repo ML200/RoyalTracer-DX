@@ -140,7 +140,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
         const float  t      = q.CommittedRayT();
         const uint   inst   = q.CommittedInstanceID();
         const uint   prim   = FlatPrimID(inst, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
-        const uint   matID  = GetMatIDFast(inst, prim);
+        uint matID = GetMatIDFast(inst, prim);
         const float3 hitPos = origin + dir * t;
         pathLength += t;
         if (mediumMatID != MEDIUM_INVALID)
@@ -156,8 +156,9 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
 
         const float   beam = PixelConeAngle() * (length(primaryHit - mul(viewI, float4(0, 0, 0, 1)).xyz) + pathLength);
         const HitInfo h    = EvalSurfaceStateDir(inst, prim, q.CommittedTriangleBarycentrics(), dir, beam);
+        matID = ResolveSurfaceMaterial(matID, h);
         float3 kd; float pr, pm;
-        RefetchMaterial(matID, h.uv, kd, pr, pm, h.uvFootprint);
+        RefetchMaterial(matID, h, kd, pr, pm);
         e.nVirtual = mul(M, h.hitNormal);
         e.Kd = kd; e.Pr = pr; e.Pm = pm;
 
@@ -287,7 +288,13 @@ inline float2 SkyMotionVector(uint2 px, float2 dims)
 inline float2 SurfaceMotionVector(uint2 px, float2 dims, float3 x, uint instID)
 {
     if (instID == 0xFFFFFFFFu) return SkyMotionVector(px, dims);
-    const float2 prevPix = GetLastFramePixelCoordinates_Unclamped(x, prevView, prevProjection, dims, instID);
+    float2 prevPix = GetLastFramePixelCoordinates_Unclamped(x, prevView, prevProjection, dims, instID);
+    if (IS_OCEAN_INSTANCE(instID)) {
+        const float4 correspondence = gScratchPing[uint3(px, OCEAN_PREVIOUS_POSITION_SLOT)];
+        if (OceanParams().historyValid <= 0.0f || asuint(correspondence.w) != instID) return 0.0f;
+        const float3 previous = OceanPreviousHit(instID, asuint(correspondence.z), correspondence.xy, x);
+        prevPix = GetLastFramePixelCoordinates_World(previous, prevView, prevProjection, dims);
+    }
     const float2 curPix  = GetCurrentFramePixelCoordinates_Unclamped(x, view, projection, dims, instID);
     return (prevPix.x > -1e8f && curPix.x > -1e8f) ? (prevPix - curPix) : float2(0.0f, 0.0f);
 }
@@ -297,6 +304,7 @@ inline float2 SurfaceMotionVector(uint2 px, float2 dims, float3 x, uint instID)
 inline float2 PsrChainMotionVector(uint2 px, float2 dims, PsrChainEnd e)
 {
     if (e.instID == 0xFFFFFFFFu) return SkyMotionVector(px, dims);
+    if (IS_OCEAN_INSTANCE(e.instID)) return SurfaceMotionVector(px, dims, e.xHit, e.instID);
     const float3 localHit    = mul(instanceProps[e.instID].objectToWorldInverse, float4(e.xHit, 1.0f));
     const float3 prevHit     = mul(instanceProps[e.instID].prevObjectToWorld, float4(localHit, 1.0f));
     const float3 prevVirtual = e.xVirtual + mul(e.M, prevHit - e.xHit);

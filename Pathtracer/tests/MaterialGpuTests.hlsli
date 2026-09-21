@@ -1,6 +1,7 @@
 #include "Constants_v8.hlsli"
 float Avg3(float3 v) { return (v.x + v.y + v.z) / 3.0f; }
-float LoadKd_w(uint m) { return m == 5u || m == 6u ? 0.0f : 1.0f; }
+float LoadKd_w(uint m) { return m == 5u || m == 6u || m == 10u ? 0.0f : 1.0f; }
+bool LoadIsOceanMaterial(uint m) { return m == 10u; }
 float LoadNi(uint m) { return m == 0u ? 1.0f : 1.5f; }
 float LoadDiffuseRoughness(uint m) { return testMode >= 100u ? testCamera.y : (m == 0u ? 0.0f : 0.5f); }
 float LoadAniso(uint m) { return m == 7u ? 0.8f : 0.0f; }
@@ -33,6 +34,7 @@ static MaterialFixtureInstance instanceProps[1];
 #include "Material_Coat_v8.hlsli"
 #include "Material_Sheen_v8.hlsli"
 #include "BXDF_v8.hlsli"
+#include "OceanGpuTests.hlsli"
 
 float MaterialRelativeError(float4 a, float4 b)
 {
@@ -45,16 +47,17 @@ float MaterialRelativeError(float4 a, float4 b)
 void materialCheck(uint3 tid : SV_DispatchThreadID)
 {
     uint seed = Hash32(tid.x);
-    float worst = 0.0f;
+    float worst = OceanRegressionError();
     [loop] for (uint i = 0u; i < 256u; ++i)
     {
-        uint m = i & 7u;
+        uint m = i % 9u == 8u ? 10u : (i & 7u);
         float3 n = float3(0, 1, 0);
         float z = 0.001f + 0.998f * RandomFloatSingle(seed);
         float3 v = float3(sqrt(1.0f - z * z), z, 0);
         float3 l = normalize(float3(RandomFloatSingle(seed) * 2.0f - 1.0f,
             RandomFloatSingle(seed) * 2.0f - 1.0f, RandomFloatSingle(seed) * 2.0f - 1.0f));
         half rough = (half)(0.08f + 0.9f * RandomFloatSingle(seed));
+        if (m == 10u && (i & 1u) != 0u) rough = (half)0.0f;
         half metal = m == 2u ? (half)1.0f : (half)0.0f;
         half etaI = (i & 16u) != 0u ? (half)LoadNi(m) : (half)1.0f;
         half etaT = (i & 16u) != 0u ? (half)1.0f : (half)LoadNi(m);

@@ -125,6 +125,8 @@ public:
     void end_frame();
 
     void set_external(IExternalStream* s) { m_external = s; }
+    // A second slot so the ocean can stream alongside voxel chunks; both append to the same TLAS.
+    void set_external2(IExternalStream* s) { m_external2 = s; }
     void bind_instance_properties(ID3D12Resource* props) { m_instanceProps = props; }
 
     struct RockVariantGPU {
@@ -214,9 +216,13 @@ private:
     void record_tlas(const SceneInstanceDesc* scene, uint32_t scene_count,
                      uint32_t terrain_hit_group, uint32_t external_hit_group,
                      ID3D12GraphicsCommandList4* compute_cl);
-    uint32_t external_capacity() const { return m_external ? m_external->instance_capacity() : 0u; }
+    uint32_t external_capacity() const {
+        return (m_external ? m_external->instance_capacity() : 0u) +
+               (m_external2 ? m_external2->instance_capacity() : 0u);
+    }
 
     IExternalStream* m_external = nullptr;
+    IExternalStream* m_external2 = nullptr;
     DeviceContext*  m_ctx    = nullptr;
     ID3D12Device5*  m_device = nullptr;
     StreamConfig    m_cfg;

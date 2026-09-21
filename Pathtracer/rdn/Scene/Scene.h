@@ -115,14 +115,33 @@ struct Scene {
     UINT voxelMatIDBase = 0;
     UINT voxelPropsBase = 0;
     bool voxelMatIDReserved = false;
-    UINT combinedVertexCount() const { return totalVertexCount + terrainVertexElems + voxelVertexElems; }
-    UINT combinedIndexCount() const { return totalIndexCount + terrainIndexElems + voxelIndexElems; }
+
+    UINT oceanVertexElems = 0;
+    UINT oceanIndexElems = 0;
+    UINT oceanMatIDElems = 0;
+    UINT oceanInstanceSlots = 0;
+    UINT oceanVertexBase = 0;
+    UINT oceanIndexBase = 0;
+    UINT oceanMatIDBase = 0;
+    UINT oceanPropsBase = 0;
+    UINT oceanMatIndex = 0;
+    bool oceanMaterialEdited = false; // live editor values take precedence over generated defaults
+    bool oceanMatIDReserved = false;
+
+    UINT combinedVertexCount() const {
+        return totalVertexCount + terrainVertexElems + voxelVertexElems + oceanVertexElems;
+    }
+    UINT combinedIndexCount() const {
+        return totalIndexCount + terrainIndexElems + voxelIndexElems + oceanIndexElems;
+    }
 
     UINT instancePropsCount() const {
-        // Property ranges are reserved independently for terrain, rocks, and voxels.
+        // Property ranges are reserved independently for terrain, rocks, voxels and the ocean.
         const UINT base = terrainInstanceSlots ? (terrainPropsBase + terrainInstanceSlots) : (UINT)instances.size();
         const UINT withRocks = base + rockInstanceSlots;
-        return voxelInstanceSlots ? std::max(withRocks, voxelPropsBase + voxelInstanceSlots) : withRocks;
+        const UINT withVoxels =
+            voxelInstanceSlots ? std::max(withRocks, voxelPropsBase + voxelInstanceSlots) : withRocks;
+        return oceanInstanceSlots ? std::max(withVoxels, oceanPropsBase + oceanInstanceSlots) : withVoxels;
     }
 
     UINT sceneInstanceCap() const {
@@ -207,6 +226,10 @@ struct Scene {
     void ReserveRocks(UINT instanceSlots);
 
     void ReserveVoxels(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, UINT minPropsBase);
+
+    // Reserves the ocean's geometry and instance ranges. Its instance records come last, which is
+    // what lets the shader recognise an ocean hit from a single threshold comparison.
+    void ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, const Material& mat);
 
     void BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
     void CreateInstancePropertiesBuffer(ID3D12Device* device);
