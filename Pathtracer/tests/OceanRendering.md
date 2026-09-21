@@ -51,13 +51,23 @@ Do not treat earlier captures or successful test runs as validation of this revi
 * Water DLSS guides always describe the primary surface: depth, normal, roughness,
   material albedos and deformation motion. Both motion guides follow the waves;
   specular hit distance is zero. Water bypasses mirror-chain/background probes.
-* Water's Subsurface controls now describe a homogeneous participating medium.
-  RGB absorption and scattering attenuate each underwater segment according to its
-  traced length. Sun and sky single scattering is integrated using RGB distance
-  importance sampling and a Henyey-Greenstein phase function. The old diffuse body
-  layer and forced green preset are removed. Surface opacity and Fresnel are
-  independent of scattering density. Camera-inside views, seabed/object hits,
-  emitter endpoints, misses and cache training use the volume transport.
+* Water's Subsurface controls describe a homogeneous participating medium. Each
+  underwater ray samples an RGB-mixture free-flight distance against its actual
+  nearest geometry (including a miss). A collision redirects that same path once
+  using the HG phase function; otherwise it reaches the surface. Both branches
+  divide by their sampling probabilities. Extinction applies after the one event.
+  Object bounces and fresh water entries reset the allowance; internal reflection
+  and thin-pane transmission preserve it. Actual surface Fresnel governs exits.
+* Camera classification runs once in the camera pass and is stored in an existing
+  flag word. Underwater paths start at the lens, including camera misses/direct
+  emitters, while the original surface record remains for denoiser guides. The
+  final pass no longer integrates a second volume or adds underwater atmospheric
+  aerial perspective. Cache training uses the same free flight and reset rules.
+* The previous two-point sun/sky integral is removed. Volume evaluation now makes
+  no height queries or shadow connections: each sampled collision adds one normal
+  continuation trace. The surface-bounce limit stays unchanged, with at most one
+  added collision between object bounces. The default material coefficients,
+  accepted direct-highlight width, sharp reflection and Fresnel proposal remain.
 
 The 1024-square fields increase texture memory and simulation cost; neither cost nor
 visual convergence has been measured for this revision. No build or visual test was run.
@@ -106,23 +116,23 @@ stitched mesh topology; LOD-change correspondence remains an approximation.
 
 ## Limits of the existing closures
 
-The solid-object SSS walk remains excluded. The replacement integrates single
-scattering from sun and sky; it is not multiple scattering, local-emitter volume
-NEE, resolved plankton particles or a caustic solver. Light entry uses a local
-horizontal refracting interface and height-field depth, with shadow visibility
-on both sides. Ordinary surface shadow connections use a local height-plane
-water interval. Those connections do not solve curved refractive light paths.
-Actual water triangle crossings carry path membership; FFT height initializes
-camera-inside state when the first hit is an unrelated object. The full-resolution
-height query can differ slightly from the mesh near the surface. The finite XZ
-boundary is clipped, but nested glass/air cavities need a general medium stack.
-The camera leg is composed once, including no-bounce pixels; atmospheric aerial
-perspective is excluded from submerged camera-to-surface segments. Secondary
-segments and cache training apply extinction before endpoint light. Scattering
-integration stops at 16 optical depths in the clearest channel; background
-extinction uses the full segment. Two RGB-mixture distance samples, each with
-sun and sky shadow connections, add work per water segment. Cost is unmeasured.
+The solid-object SSS walk remains excluded. This is single scattering between
+object interactions, not unrestricted multiple scattering: after the one event,
+additional scattering is extinction rather than another bounce. Object bounces
+restart the allowance. There is no additive green layer or ad hoc energy boost.
+The RGB free-flight estimator uses sigma_t=sigma_a+sigma_s; its event density is
+mean(sigma_t*Tr), with weight sigma_s*Tr/pdf. The probability of reaching geometry
+is mean(Tr), with weight Tr/pdf. An absorption-only medium attenuates deterministically.
+HG phase sampling cancels phase value/PDF. Surface Fresnel and the 70% reflection
+proposal remain separate from volume sampling.
 
+Volume rays now reach actual objects, emitters and wave interfaces. They have no
+volume NEE, so small bright sources can have high variance. The previous planar
+sun/sky connections are gone. Surface-light shadow connections still use the
+existing approximate local height-plane water interval. Camera initialization
+uses the FFT height field, with actual triangle-side correction for a directly
+visible water interface. Nested glass/air cavities still need a general medium
+stack. Finite XZ extent is clipped. Runtime, noise and denoiser quality are unmeasured.
 Shading normals represent fine-wave orientation, not displaced silhouette or
 self-occlusion below the mesh resolution. Convergence at subpixel ripple scales
 is not guaranteed at low sample counts. The direct-only highlight lobe is an

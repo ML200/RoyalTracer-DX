@@ -1,14 +1,16 @@
 # Ocean evaluation status
 
 Latest feedback revision: **not built or visually tested**, at the user's explicit
-request. The volume revision replaces the diffuse green layer with path-length
-RGB extinction and sun/sky single scattering, including underwater camera views.
-The accepted 0.14 direct-highlight width and sharp continuation remain unchanged.
-`OceanVolumeReference.ps1` passed 170 scalar checks: Fresnel/proposal independence,
-Beer-Lambert segment composition, distance sampling and RGB estimator integration,
-and HG normalization. GPU regression checks were updated but not run. Build,
-visual acceptance, variance and GPU cost remain for the user to evaluate.
-
+request. The costly two-sample sun/sky volume integral is replaced by one stochastic
+path-scattering event between object bounces. Camera classification is reused;
+camera-origin water rays use the path loop. A phase sample follows real geometry
+and interfaces, with no volume shadow rays or height solves. Surface reflection,
+highlight width, Fresnel/proposal separation and material coefficients are unchanged.
+`OceanVolumeReference.ps1` passed 89 scalar checks and four source contracts for
+RGB free-flight event and endpoint energy, absorption-only/spent-event limits,
+HG moments, Fresnel independence, event reset and camera/volume wiring. GPU tests
+were updated but not run. Build, speed, noise and denoiser acceptance belong to the user.
+Earlier 170-check integration results describe the removed volume estimator.
 Previous direct-only revision: whitespace/diff check passed. Production highlight
 width/hemisphere helpers passed 1,011 scalar JS checks. Nine source contracts
 checked in-place NEE ownership, sun/emitter-hit suppression, the mesh-NEE-disabled
@@ -56,7 +58,7 @@ untracked; no complete original-before-edit capture/source baseline exists.
 | T15 origin rebase | Earlier phase arithmetic check passed. Latest motion fix removes duplicate rebase; runtime rebase validation belongs to user. |
 | T16 moments, T17 covariance | Earlier production raw moment/mip test passed. Full tilted/high-deformation covariance stress suite not run. |
 | T18 representation radiance, T19 anisotropy | Authored roughness zero; full-resolution normals restored. Wider direct highlights are evaluated by NEE alone; scene/sky continuation stays sharp. This direct/indirect split is intentionally approximate. Updated GPU regressions and visual acceptance remain unexecuted. |
-| T20 Fresnel, T21 absorption | Water-only 70% reflection proposal floor with matching PDFs; physical Fresnel unchanged. Path-length extinction and sun/sky single scattering replace the body layer. 170 scalar reference checks passed; GPU tests are authored but unrun. Multiple scattering, focused caustics and a nested-medium stack remain unsupported. |
+| T20 Fresnel, T21 absorption | Water-only 70% reflection proposal floor with matching PDFs; physical Fresnel unchanged. RGB free-flight sampling and one HG path event per object bounce replace the body layer and the intermediate sun/sky integral. 89 scalar checks and four source contracts passed; GPU tests are authored but unrun. Multiple scattering, focused caustics and a nested-medium stack remain unsupported. |
 | T22 foam timestep, T23 transport/history, T24 coverage filtering | Superseded by explicit user request to remove foam. Foam generation/shading and obsolete helper tests removed; legacy simulation entry only emits deformation diagnostics. |
 | T25 temporal data | Water has a dedicated surface-only guide path and skips background/mirror probes; source review only. Deformation-vector and specular reconstruction visual acceptance pending user. |
 | T26 legacy API | Public Ocean API retained. New radius/phase controls added. No dynamic buoyancy/wake/shoreline API was found in the existing callers. Runtime compatibility not exhaustively tested. |
@@ -64,6 +66,20 @@ untracked; no complete original-before-edit capture/source baseline exists.
 | T28 non-water regression | Earlier material/SHARC, pipeline and precision suites passed. New material decoding and GGX proposal branches are water-only; solid SSS unchanged. Current source not rerun. |
 | T29 performance | Budget not specified. Latest 1024-square simulation costs unmeasured; legacy SSS disabled by default. Earlier timing is not current-performance validation. |
 
+## Pipeline creation regression
+
+The user reported DXGI_ERROR_DRIVER_INTERNAL_ERROR (0x887A0020) while loading the
+pipeline, before rendering; DRED has no breadcrumb nodes. No runtime GPU hang or
+faulting source line is established by that report. The new training retrace loop
+carried and replaced an opaque HitObject; this is the leading source-level suspect,
+not a confirmed driver diagnosis. Both path loops now snapshot trace results into
+ordinary IDs, barycentrics and distance immediately. Reordering uses integer hints
+at completed endpoints, so no HitObject survives a retrace or reorder boundary.
+Traversal flags, alpha handling, scattering weights and material behavior are retained.
+Pipeline logs now bracket compute PSO creation and ray-tracing state-object creation.
+The workaround is source-verified only: 89 scalar checks and five source contracts
+pass. No build, shader compilation or runtime test was performed. User rebuild must
+confirm whether state-object creation succeeds; this is not yet a verified crash fix.
 ## Historical measurements, not current acceptance
 
 Before the user reserved visual testing, the mixed fixture rendered 725 frames on

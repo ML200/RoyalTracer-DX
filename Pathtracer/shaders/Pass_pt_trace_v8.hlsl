@@ -19,7 +19,9 @@ void Pass_pt_trace_v8()
     const uint pixelIdx = MapPixelID(imgSize, pixel);
     const uint s = PT_SAMPLE_INDEX;
 
-    if (load_flagsWord(g_sample_current, pixelIdx) & SD_FLAG_NOBOUNCE)
+    const uint cameraFlags = load_flagsWord(g_sample_current,pixelIdx);
+    const bool cameraWater = (cameraFlags & SD_FLAG_CAMERA_WATER) != 0u;
+    if ((cameraFlags & SD_FLAG_NOBOUNCE) != 0u && !cameraWater)
     {
         DvStoreInfo(pixelIdx, 0u);
         return;
@@ -64,13 +66,15 @@ void Pass_pt_trace_v8()
     // invalid; the checked trace answers it with a miss, and the primary shading rejects the
     // record itself.
     uint inFlags = PvInputFlags(ps, false, false, false);
-    uint cameraSeed = initRandomData(pixel, uint2(8,4), time, 1u);
-    float3 cameraOrigin, cameraDirection;
-    InitCameraRayDoF(pixel,imgSize,cameraSeed,cameraOrigin,cameraDirection);
-    const uint primaryMat = load_matID(g_sample_current,pixelIdx);
-    const bool cameraWater = LoadIsOceanMaterial(primaryMat) ?
-        (load_flagsWord(g_sample_current,pixelIdx) & SD_FLAG_BACKFACE) != 0u : OceanPointInside(cameraOrigin);
-    if (cameraWater) inFlags |= PV_IN_WATER_MEDIUM;
+    bool cameraRecordPending = !cameraWater;
+    if (cameraWater) {
+        uint cameraSeed = initRandomData(pixel,uint2(8,4),time,1u);
+        InitCameraRayDoF(pixel,imgSize,cameraSeed,ray.Origin,rayDir);
+        ray.Direction = rayDir; ray.TMin = 0.00001f; ray.TMax = RAY_TMAX_PLANET;
+        pos = ray.Origin; pathDist = 0.0f;
+        inFlags |= PV_IN_WATER_MEDIUM;
+        if (LITE_ENABLED && s == 0u) LiteMarkEmpty(pixelIdx);
+    }
     float3 prevN = float3(0.0f, 0.0f, 1.0f);   // shading normal of the vertex the ray left
 
     [loop]
@@ -78,37 +82,49 @@ void Pass_pt_trace_v8()
     {
         // ---- trace, reorder, shade ----
         const uint depth = PtPsDepth(ps);
-        dx::HitObject hitObj = TraceRayChecked(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF, ray);
-        dx::MaybeReorderThread(hitObj);
-        // The primary segment is composed once in the final pass, also covering
-        // camera misses and directly visible emitters that bypass this path loop.
-        if (depth > 1u && (inFlags & PV_IN_WATER_MEDIUM) != 0u) {
+        const OceanPathHit hit = OceanTracePathHit(ray);
+        if ((inFlags & PV_IN_WATER_MEDIUM) != 0u) {
             uint sVolume = RcBounceSeed(pathSeed, depth, 0x57415452u);
-            float3 waterT, waterL;
-            OceanIntegrateVolume(ray.Origin, rayDir, hitObj.IsHit() ? hitObj.GetRayTCurrent() : ray.TMax,
-                sVolume, waterT, waterL);
-            if (pending) relL += throughput*waterL; else total += throughput*waterL;
-            if (depth >= 2u && (ps & PT_PS_LITE_VERTEX) != 0u) {
-                liteL += liteSuffix*waterL;
-                liteSuffix *= waterT;
-            }
-            throughput *= waterT;
+            const OceanFlight flight = OceanSampleWaterSegment(ray.Origin,rayDir,
+                hit.distance,
+                (inFlags & PV_IN_WATER_SCATTERED) != 0u,sVolume);
+            throughput *= flight.weight;
+            if ((ps & PT_PS_LITE_VERTEX) != 0u) liteSuffix *= flight.weight;
             // A deferred emitter replay has no slot for segment attenuation.
             // Resolve this endpoint in place using the now-attenuated throughput.
             immediate = false;
             inFlags &= ~PV_IN_IMMEDIATE;
+            if (!any(throughput > 0.0f)) break;
+            if (flight.scattered) {
+                // Replace the endpoint with the volume vertex, then trace its
+                // phase-sampled continuation. Only object/surface bounces consume
+                // the surface-bounce budget; the scattered flag bounds this loop.
+                pos = ray.Origin+rayDir*flight.distance;
+                pathDist += flight.distance;
+                rayDir = OceanSampleScatterDirection(rayDir,sVolume);
+                ray.Origin = pos; ray.Direction = rayDir;
+                ray.TMin = 0.00001f; ray.TMax = RAY_TMAX_PLANET;
+                cameraRecordPending = false;
+                ps |= PT_PS_MIS_NONE;
+                inFlags = (inFlags | PV_IN_WATER_SCATTERED | PV_IN_MIS_NONE) & ~PV_IN_WATER_DIRECT;
+                // There is no NEE partner at a volume vertex. Preserve emission
+                // and sky reached by this new path, and don't apply surface MIS.
+                prev_pdf = 1.0f;
+                continue;
+            }
         }
+        // Only a completed surface/miss endpoint reaches the reorder. The volume
+        // continuation above carries ordinary data, never a live HitObject.
+        dx::MaybeReorderThread(hit.hit ? (hit.instance & 0xffu) : 0x100u,9u);
         PtVertexIO io;
         io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist;
         io.dirPk = 0u; io.nPk = 0u; io.color = 0.0f; io.auxPk = 0u; io.nee = 0.0f; io.neeLite = 0.0f;
-        if (depth == 1u)
+        if (cameraRecordPending)
             PtShadePrimary(io, rayDir, pixel, pixelIdx);
-        else if (hitObj.IsHit())
+        else if (hit.hit)
         {
-            BuiltInTriangleIntersectionAttributes attr;
-            hitObj.GetAttributes(attr);
-            PtShadeHit(io, hitObj.GetInstanceID(), hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex(),
-                attr.barycentrics, hitObj.GetRayTCurrent(), rayDir, pos, prevN, pixel, pixelIdx);
+            PtShadeHit(io,hit.instance,hit.geometry,hit.primitive,
+                hit.barycentrics,hit.distance,rayDir,pos,prevN,pixel,pixelIdx);
         }
         else
             PtShadeMiss(io, ray.Origin, rayDir);
@@ -117,8 +133,9 @@ void Pass_pt_trace_v8()
             if (LITE_ENABLED && s == 0u && (io.flags & PV_PRIMARY_LITE) == 0u) LiteMarkEmpty(pixelIdx);
             ps = PtPsWith(ps, PT_PS_LITE_VERTEX, (io.flags & PV_PRIMARY_LITE) != 0u);
         }
-        else if (hitObj.IsHit())
-            pos = ray.Origin + rayDir * hitObj.GetRayTCurrent();
+        if (!cameraRecordPending && hit.hit)
+            pos = ray.Origin + rayDir * hit.distance;
+        cameraRecordPending = false;
 
         // ---- apply the vertex result ----
         const uint result = io.flags & PV_RESULT_MASK;
@@ -249,6 +266,7 @@ void Pass_pt_trace_v8()
         inFlags = PvInputFlags(ps, pending, immediate, nextDepth >= maxBounces);
         inFlags |= (io.flags & PV_WATER_DIRECT) != 0u ? PV_IN_WATER_DIRECT : 0u;
         inFlags |= (io.flags & PV_WATER_MEDIUM) != 0u ? PV_IN_WATER_MEDIUM : 0u;
+        inFlags |= (io.flags & PV_WATER_SCATTERED) != 0u ? PV_IN_WATER_SCATTERED : 0u;
     }
 
     PtAddRadiance(pixel, total);

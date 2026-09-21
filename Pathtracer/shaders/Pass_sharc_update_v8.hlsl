@@ -148,10 +148,8 @@ void Pass_sharc_update_v8()
     float pathSpread = 0.0f;
     float pathDist   = length(sd.x1 - InitOrigin());   // one training path stands for a tile of pixels
     bool waterDirectSegment = false;
-    uint cameraSeed = initRandomData(samplePixel, uint2(8,4), time, 1u);
-    float3 cameraOrigin, cameraDirection;
-    InitCameraRayDoF(samplePixel,imgSize,cameraSeed,cameraOrigin,cameraDirection);
-    bool waterMedium = LoadIsOceanMaterial(sd.matID) ? ctx.backface : OceanPointInside(cameraOrigin);
+    bool waterMedium = (sd.flags & SD_FLAG_CAMERA_WATER) != 0u;
+    bool waterScatterUsed = false;
     g_regularizeRoughness = 0.0f;
 
     [loop]
@@ -383,8 +381,11 @@ void Pass_sharc_update_v8()
             LoadKd_w(ctx.matID) < 1.0f - EPSILON;
         waterDirectSegment = OceanDirectLightingOwnsRay(waterDirect, dot(dir, ctx.hitNormal)) ||
             (waterDirectSegment && passThrough && LoadIsThinGlass(ctx.matID));
+        const bool incomingWater = waterMedium;
         if (LoadIsOceanMaterial(ctx.matID) && !LoadIsThinGlass(ctx.matID))
             waterMedium = ctx.backface ? dot(dir,ctx.hitNormal) >= 0.0f : dot(dir,ctx.hitNormal) < 0.0f;
+        waterScatterUsed = OceanScatterUsedAfterSurface(waterScatterUsed,incomingWater,waterMedium,
+            LoadIsOceanMaterial(ctx.matID),passThrough && LoadIsThinGlass(ctx.matID));
         if (passThrough) { }
         else if (performNEE)
         {
@@ -431,22 +432,41 @@ void Pass_sharc_update_v8()
         rayB.TMax      = RAY_TMAX_PLANET;
         if (!IsRayDescValid(rayB))
             break;
-        dx::HitObject hitObj = TraceRayChecked(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF, rayB);
+        OceanPathHit hit = OceanTracePathHit(rayB);
         const uint traceSuffixHint = training.suffixLuma < 0.25f ? 1u : 0u;
 
-        rayDir = UnpackNormal(rayDirPk);
-        const bool missed = !hitObj.IsHit();
+        bool volumeRedirected = false;
+        bool waterAbsorbed = false;
         if (waterMedium) {
             uint sVolume = RcBounceSeed(pathSeed, depth, 0x57415452u);
-            float3 waterT, waterL;
-            OceanIntegrateVolume(rayOrigin,rayDir,missed ? rayB.TMax : hitObj.GetRayTCurrent(),sVolume,waterT,waterL);
-            SharcTrainingRadiance(training, waterL);
-            SharcTrainingScatter(training, waterT);
-            GuideRootsAddSource(GuideLane(), PtPsRoots(ps), waterL);
-            GuideRootsScale(GuideLane(), PtPsRoots(ps), waterT);
-            throughput *= waterT;
-            training.suffixLuma *= Luma(waterT);
+            // At most one new event, then extinction to its actual endpoint.
+            [loop] for (uint leg=0u; leg<2u; ++leg) {
+                const OceanFlight flight = OceanSampleWaterSegment(rayB.Origin,rayB.Direction,
+                    hit.distance,waterScatterUsed,sVolume);
+                SharcTrainingScatter(training,flight.weight);
+                GuideRootsScale(GuideLane(),PtPsRoots(ps),flight.weight);
+                throughput *= flight.weight;
+                training.suffixLuma *= Luma(flight.weight);
+                if (!any(flight.weight > 0.0f)) { waterAbsorbed = true; break; }
+                if (!flight.scattered) break;
+                const float3 scatterPos = rayB.Origin+rayB.Direction*flight.distance;
+                if (guideRoot < GUIDE_ROOTS) GuideRootAim(GuideLane(),guideRoot,true,scatterPos,rayDir);
+                pathDist += flight.distance;
+                rayDir = OceanSampleScatterDirection(rayB.Direction,sVolume);
+                rayDirPk = PackNormal(rayDir);
+                rayB.Origin = scatterPos; rayB.Direction = rayDir;
+                rayB.TMin = 0.00001f; rayB.TMax = RAY_TMAX_PLANET;
+                waterScatterUsed = true;
+                volumeRedirected = true;
+                waterDirectSegment = false;
+                ps |= PT_PS_MIS_NONE;
+                prev_pdf = 1.0f;
+                hit = OceanTracePathHit(rayB);
+            }
         }
+        if (waterAbsorbed) break;
+        rayDir = UnpackNormal(rayDirPk);
+        const bool missed = !hit.hit;
 
         bool    terminate = missed;
         float3  terminalL = 0.0f;
@@ -456,7 +476,8 @@ void Pass_sharc_update_v8()
         HitInfo hinfo_n   = (HitInfo)0;
         if (missed)
         {
-            const bool underground = WorldPosIsUnderground(ctx.hitPos + sceneOriginWorld);
+            SetSkyObserver((OCEAN_ENABLED ? rayB.Origin : InitOrigin()) + sceneOriginWorld);
+            const bool underground = WorldPosIsUnderground(rayB.Origin + sceneOriginWorld);
             const float  sunSAPdf   = underground || waterDirectSegment ? 0.0f : GetSunPdf(rayDir);
             const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
             const float  sunMisBsdf = (sunSAPdf > 0.0f)
@@ -468,17 +489,12 @@ void Pass_sharc_update_v8()
         }
         else
         {
-            hitT_n   = hitObj.GetRayTCurrent();
-            instID_n = hitObj.GetInstanceID();
-            primID_n = FlatPrimID(instID_n, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
+            hitT_n   = hit.distance;
+            instID_n = hit.instance;
+            primID_n = FlatPrimID(instID_n,hit.geometry,hit.primitive);
             matID_n  = GetMatIDFast(instID_n, primID_n);
 
-            float2 bary_n;
-            {
-                BuiltInTriangleIntersectionAttributes attrB;
-                hitObj.GetAttributes(attrB);
-                bary_n = attrB.barycentrics;
-            }
+            const float2 bary_n = hit.barycentrics;
             {
                 const float spreadHere = (ps & PT_PS_SPREAD) != 0u
                     ? hitT_n * sqrt(min(16.0f, rcp(max(prev_pdf, 1e-6f)))) : 0.0f;
@@ -548,7 +564,7 @@ void Pass_sharc_update_v8()
         }
 
         if (terminate) SharcTrainingRadiance(training, terminalL);
-        if (guideRoot < GUIDE_ROOTS)
+        if (guideRoot < GUIDE_ROOTS && !volumeRedirected)
             GuideRootAim(GuideLane(), guideRoot, !missed, hitPos_n, rayDir);
         if (terminate) break;
 
@@ -558,7 +574,7 @@ void Pass_sharc_update_v8()
 
         const uint hitNormalPk = PackNormal(ctx.hitNormal);
         const uint geoNormalPk = PackNormal(geometricNormal);
-        dx::MaybeReorderThread(hitObj, (hint << 1u) | traceSuffixHint, 8u);
+        dx::MaybeReorderThread((hint << 1u) | traceSuffixHint, 8u);
         ctx.hitNormal   = UnpackNormal(hitNormalPk);
         geometricNormal = UnpackNormal(geoNormalPk);
         {

@@ -33,6 +33,7 @@ struct PtVertexIO {
 #define PV_IN_LAST          (1u << 27u)  // bounce limit: emission only
 #define PV_IN_WATER_DIRECT  (1u << 28u)  // water NEE already owns direct-light radiance on this segment
 #define PV_IN_WATER_MEDIUM  (1u << 29u)
+#define PV_IN_WATER_SCATTERED (1u << 30u)
 
 // Result flags (hit/miss shaders -> raygen).
 #define PV_RESULT_MASK      7u
@@ -56,6 +57,7 @@ struct PtVertexIO {
 #define PV_NEE              (1u << 17u)  // nee/neeLite carry the light sample of this in-place vertex
 #define PV_WATER_DIRECT     (1u << 18u)
 #define PV_WATER_MEDIUM     (1u << 19u)
+#define PV_WATER_SCATTERED  (1u << 20u)
 
 uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
 {
@@ -442,6 +444,9 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     if (LoadIsOceanMaterial(ctx.matID) && !LoadIsThinGlass(ctx.matID))
         waterMedium = ctx.backface ? dot(dir,n) >= 0.0f : dot(dir,n) < 0.0f;
     if (waterMedium) res |= PV_WATER_MEDIUM;
+    if (OceanScatterUsedAfterSurface((inFlags & PV_IN_WATER_SCATTERED) != 0u,
+        (inFlags & PV_IN_WATER_MEDIUM) != 0u, waterMedium, LoadIsOceanMaterial(ctx.matID),
+        LoadIsThinGlass(ctx.matID) && dot(dir,n) < 0.0f)) res |= PV_WATER_SCATTERED;
     if (!alive) res |= PV_TERMINATE;
     io.flags   = res;
     io.pdf     = pdfOut;
@@ -597,7 +602,9 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
 void PtShadeMiss(inout PtVertexIO io, float3 rayOrigin, float3 rayDir)
 {
     const bool underground = WorldPosIsUnderground(rayOrigin + sceneOriginWorld);
-    SetSkyObserver(InitOrigin() + sceneOriginWorld);
+    // A camera below sea level can be underground to the atmosphere model even
+    // after its path exits water. Query the sky from the escaped ray's origin.
+    SetSkyObserver((OCEAN_ENABLED ? rayOrigin : InitOrigin()) + sceneOriginWorld);
     const bool waterDirect = (io.flags & PV_IN_WATER_DIRECT) != 0u;
     const float  sunSAPdf   = underground || waterDirect ? 0.0f : GetSunPdf(rayDir);
     const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);

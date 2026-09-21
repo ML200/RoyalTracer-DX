@@ -1009,7 +1009,7 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(
                     i == waterMat ? "Relative RGB scattering coefficients in the water volume.\n"
-                                    "Sun and sky light scatter along the underwater ray; absorption determines the depth color." :
+                                    "One volume event redirects the path; absorption determines the depth color." :
                     "Single-scattering albedo (the inside colour).\nCarried by the random walk's albedo product.");
             changed |=
                 ImGui::SliderFloat(i == waterMat ? "Scattering mean free path (m)" : "Radius", &mats.sssRadius[i],

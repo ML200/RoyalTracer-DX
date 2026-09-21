@@ -412,7 +412,9 @@ void Renderer::CreateRaytracingPipeline() {
             desc.pRootSignature = m_computeSignature.Get();
             desc.CS = {cs->GetBufferPointer(), cs->GetBufferSize()};
             ComPtr<ID3D12PipelineState> pso;
+            LOG(L"[Pipeline] Creating compute PSO: " << p.file);
             ThrowIfFailed(m_ctx.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
+            LOG(L"[Pipeline] Compute PSO ready: " << p.file);
             m_csPSOs.push_back(pso);
             p.psoIdx = nextCs++;
             continue;
@@ -459,7 +461,9 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.SetMaxRecursionDepth(1);
     pipeline.SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS);
 
+    LOG(L"[Pipeline] Creating ray-tracing state object (" << rayGenNames.size() << L" raygen exports)");
     m_rtStateObject = pipeline.Generate();
+    LOG(L"[Pipeline] Ray-tracing state object ready");
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 
     // With a trace recursion depth of one the driver's default pipeline stack is exactly the

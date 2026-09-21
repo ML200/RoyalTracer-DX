@@ -88,8 +88,21 @@ float OceanRegressionError()
     error = max(error, length(OceanMediumTransmittance(extinction, 3.0f) *
         OceanMediumTransmittance(extinction, 7.0f) - OceanMediumTransmittance(extinction, 10.0f)));
     error = max(error, abs(OceanPhase(0.3f, 0.0f) - 1.0f/(4.0f*PI)));
-    error = max(error, abs(OceanSampleDistance(0.0f, 10.0f, 0.3f) - 3.0f));
-    error = max(error, abs(OceanDistancePdf(0.0f, 10.0f, 3.0f) - 0.1f));
+    const OceanFlight noEvent = OceanFreeFlight(0.1f.xxx,0.2f.xxx,2.0f,false,float2(0.1f,0.99f));
+    const OceanFlight eventFlight = OceanFreeFlight(0.1f.xxx,0.2f.xxx,2.0f,false,float2(0.1f,0.1f));
+    if (noEvent.scattered || !eventFlight.scattered) return 1.0f;
+    error = max(error,length(noEvent.weight-1.0f));
+    error = max(error,length(eventFlight.weight-(2.0f/3.0f)));
+    const OceanFlight spent = OceanFreeFlight(0.1f.xxx,0.2f.xxx,2.0f,true,float2(0.1f,0.1f));
+    if (spent.scattered) return 1.0f;
+    error = max(error,length(spent.weight-exp(-0.6f)));
+    const OceanFlight clear = OceanFreeFlight(0.0f,0.0f,1000.0f,false,float2(0.5f,0.1f));
+    if (clear.scattered) return 1.0f;
+    error = max(error,length(clear.weight-1.0f));
+    if (!OceanScatterUsedAfterSurface(true,true,true,true,false) ||
+        OceanScatterUsedAfterSurface(true,true,true,false,false) ||
+        OceanScatterUsedAfterSurface(true,false,true,true,false) ||
+        OceanScatterUsedAfterSurface(true,true,false,true,false)) return 1.0f;
     const float qReflection = OceanReflectionProbability(f0, 1.0f-f0);
     error = max(error, abs(qReflection*(f0/qReflection) - f0));
     error = max(error, abs((1.0f-qReflection)*((1.0f-f0)/(1.0f-qReflection)) - (1.0f-f0)));

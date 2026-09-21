@@ -1,5 +1,5 @@
 #include "Includes_v8.hlsli"
-#include "OceanVolume.hlsli"
+
 
 
 #define DLSS_PT_INPUT_LUMA_CAP 64.0f
@@ -360,26 +360,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float3 accumulation = (output_primary + output_indirect) * atmosphereTr + atmosphereL;
 
-    // Apply camera-to-first-hit water transport once to every primary path,
-    // including sky/emitter pixels. Recreate the camera's exact jitter/DoF ray.
-    uint waterSeed = initRandomData(DTid.xy, uint2(8,4), time, 1u);
-    float3 waterOrigin, waterDir;
-    InitCameraRayDoF(DTid.xy, uint2(IMG_W,IMG_H), waterSeed, waterOrigin, waterDir);
-    const uint waterPixel = MapPixelID(uint2(IMG_W,IMG_H), DTid.xy);
-    const uint waterInst = load_instID(g_sample_current, waterPixel);
-    bool cameraWater = OceanPointInside(waterOrigin);
-    if (waterInst != 0xffffffffu && LoadIsOceanMaterial(load_matID(g_sample_current,waterPixel)))
-        cameraWater = (load_flagsWord(g_sample_current,waterPixel) & SD_FLAG_BACKFACE) != 0u;
-    if (cameraWater && OceanMediumEnabled()) {
-        const float distanceM = waterInst == 0xffffffffu ? RAY_TMAX_PLANET :
-            length(load_x1(g_sample_current,waterPixel)-waterOrigin);
-        float3 waterT, waterL;
-        OceanIntegrateVolume(waterOrigin,waterDir,distanceM,waterSeed,waterT,waterL);
-        // Atmospheric aerial perspective belongs to air, not the submerged camera leg.
-        const float3 incident = waterInst == 0xffffffffu ? accumulation : output_primary+output_indirect;
-        accumulation = incident*waterT+waterL;
-    }
-
+    // Underwater camera transport is now part of the stochastic path itself.
+    // Its background and direct emitters have already been weighted there.
+    const uint waterPixel = MapPixelID(uint2(IMG_W,IMG_H),DTid.xy);
+    if ((load_flagsWord(g_sample_current,waterPixel) & SD_FLAG_CAMERA_WATER) != 0u)
+        accumulation = output_primary+output_indirect;
     if (SHADING_DEBUG_SLICES) {
     gScratchPing[uint3(DTid.xy, 1)] = float4(accumulation, 0);
     }

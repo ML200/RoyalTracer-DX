@@ -4,6 +4,7 @@ static const uint SD_FLAG_EMITTER  = 1u;
 static const uint SD_FLAG_BACKFACE = 2u;
 
 static const uint SD_FLAG_NOBOUNCE = 4u;
+static const uint SD_FLAG_CAMERA_WATER = 8u;
 
 uint pixelBaseAddr_SD(uint pixelIdx)
 {

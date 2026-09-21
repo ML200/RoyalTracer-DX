@@ -3,7 +3,7 @@
 // Trace the primary ray and resolve the primary surface. The sample record and the primary extras
 // are written as soon as the material is known, so nothing of the material survives the mirror
 // probe below it. Returns false when the pixel needs no path: a miss, or a mesh light seen directly.
-inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 rayDir)
+inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 rayDir, bool cameraWater)
 {
     RayDesc ray;
     ray.Origin    = rayOrigin;
@@ -52,7 +52,7 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
         RefetchMaterial(matID, hinfo, hitLocalKd, hitLocalPr, hitLocalPm);
         psrCandidate = !hinfo.isOcean && (dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) == 0u &&
-            PsrCandidateMaterial(matID, hitLocalPr) && !OceanPointInside(rayOrigin);
+            PsrCandidateMaterial(matID, hitLocalPr) && !cameraWater;
 
         store_instID    (g_sample_current, pixelIdx, instID);
         store_flags     (g_sample_current, pixelIdx, isEmitter, hinfo.backface);
@@ -129,6 +129,18 @@ void Pass_camera_v8()
 
     SetSkyObserver(InitOrigin() + sceneOriginWorld);
 
-    if (!TraceCameraRay(pixel, pixelIdx, rayOrigin, rayDir))
+    bool cameraWater = OceanPointInside(rayOrigin);
+    if (!TraceCameraRay(pixel, pixelIdx, rayOrigin, rayDir, cameraWater))
         store_flagsWord(g_sample_current, pixelIdx, load_flagsWord(g_sample_current, pixelIdx) | SD_FLAG_NOBOUNCE);
+    // At a directly visible water interface the actual triangle side is more
+    // precise than the unfiltered height field used for initialization.
+    if (OceanMediumEnabled() && load_instID(g_sample_current,pixelIdx) != 0xffffffffu &&
+        LoadIsOceanMaterial(load_matID(g_sample_current,pixelIdx)))
+        cameraWater = load_backface(g_sample_current,pixelIdx);
+    if (cameraWater) {
+        store_flagsWord(g_sample_current,pixelIdx,load_flagsWord(g_sample_current,pixelIdx) | SD_FLAG_CAMERA_WATER);
+        // Underwater beauty starts at the camera in the path pass, including direct
+        // emitters and misses. Keep the camera record for surface guides only.
+        gScratchPing[uint3(pixel,1)] = 0.0f;
+    }
 }
