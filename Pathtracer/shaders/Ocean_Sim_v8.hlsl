@@ -228,7 +228,13 @@ float OceanConditioningGain() {
     RWTexture2DArray<float4> bounds = ResourceDescriptorHeap[OCEAN_UAV_MOMENT_MIPS + OCEAN_MIP_LEVELS - 1];
     float sum = 0.0f;
     [unroll] for (uint c=0;c<OCEAN_CASCADES;++c) sum += bounds[uint3(0,0,c)].w;
-    return min(1.0f, 0.85f / max(sum, 1e-8f));
+    // The share of the no-fold threshold this field may spend. The kilometre-scale sea state
+    // multiplies the horizontal displacement after this point, so the host has already divided
+    // the budget by the roughest patch's gain - a patch that gets the full boost still cannot
+    // fold the surface into itself.
+    StructuredBuffer<OceanParamsGPU> params = ResourceDescriptorHeap[OCEAN_SRV_PARAMS];
+    const float budget = max(params[0].deformationBudget, 1e-3f);
+    return min(1.0f, budget / max(sum, 1e-8f));
 }
 
 // One spatially uniform gain preserves phase and continuity; no per-vertex fold clipping.

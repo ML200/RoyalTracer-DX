@@ -130,6 +130,7 @@ cbuffer CameraParams : register(b0)
     float atmos_aerialLightSteps;
     float atmos_multiScatterFactor;
     float atmos_earthShadowSoftness;
+    float atmos_haloDistanceKm;
     float planetCenterX;
     float planetCenterY;
     float planetCenterZ;
@@ -171,6 +172,7 @@ cbuffer CameraParams : register(b0)
 #define ATMOS_AERIAL_LIGHT_STEPS      ((int)atmos_aerialLightSteps)
 #define ATMOS_MULTI_SCATTER_FACTOR    atmos_multiScatterFactor
 #define ATMOS_EARTH_SHADOW_SOFTNESS   atmos_earthShadowSoftness
+#define ATMOS_HALO_DISTANCE_KM        atmos_haloDistanceKm
 #define SKY_GROUND_Y                  skyGroundY
 
 inline void SphereToEquiangularFaceUV(float3 dir, out int face, out float2 uv)

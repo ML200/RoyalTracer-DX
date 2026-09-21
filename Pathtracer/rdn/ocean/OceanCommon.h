@@ -46,6 +46,16 @@ struct Params {
     // sea; the wind speed carries part of this on its own (see WindChop).
     float turbulence = 1.0f;
 
+    // Kilometre-scale variation in sea state. A real ocean is not one sea everywhere: currents
+    // shear the surface, wind arrives in gusts and lulls, and the result is patches of steeper,
+    // more broken water drifting between calmer lanes. A tiling fBm of the gain the whole wave
+    // field is multiplied by reproduces that. 0 gives the uniform sea; 0.4 means the roughest
+    // patches carry 40% more wave than the mean and the calmest 40% less.
+    float turbulenceVariation = 0.35f;
+    // Tiling period of that field in metres. The octaves inside it run from this down to a
+    // sixteenth of it, so the patches themselves are a few hundred metres to a few kilometres.
+    float turbulencePeriod = 9000.0f;
+
     // Second-order Stokes crest sharpening, as a multiple of the physical bound harmonic: 0 gives
     // the symmetric Gaussian sea a linear spectrum produces, 1 the real wave's narrow crest and
     // long shallow trough, and higher values push each band towards its steepness limit. Unlike
@@ -122,7 +132,7 @@ struct Params {
 inline void ValidateParams(const Params& p) {
     const float values[] = {p.windSpeed,p.fetch,p.windDirectionDeg,p.swell,p.windAlign,p.significantHeight,
         p.peakPeriod,p.swellHeight,p.swellPeriod,p.swellDirectionDeg,p.swellSpreadDeg,p.fixedTimeStep,
-        p.bodyWeight,p.turbulence,p.crestSharpening,p.choppiness,p.amplitudeScale,p.shortWaveAmplitude,p.chlorophyll,p.turbidity,p.foamCoverage,p.foamDecay,
+        p.bodyWeight,p.turbulence,p.turbulenceVariation,p.turbulencePeriod,p.crestSharpening,p.choppiness,p.amplitudeScale,p.shortWaveAmplitude,p.chlorophyll,p.turbidity,p.foamCoverage,p.foamDecay,
         p.foamAlbedo,p.subsurfaceStrength,p.subsurfaceRadiusScale,p.subsurfacePhaseG,p.extent,p.minTileSize,p.lodFactor,p.nearKeepRadius,
         p.filterScale,p.sunLobeRoughness,p.seaLevelY,p.minClearance};
     for (float v : values) if (!std::isfinite(v)) throw std::invalid_argument("Ocean parameters must be finite");
@@ -130,6 +140,7 @@ inline void ValidateParams(const Params& p) {
         p.swellHeight < 0 || p.swellPeriod <= 0 || p.swellSpreadDeg < 2 || p.swellSpreadDeg > 90 ||
         p.peakPeriod == 0 || p.fixedTimeStep < 0 || p.fixedTimeStep > 0.1f ||
         p.turbulence < 0 || p.turbulence > 3 || p.crestSharpening < 0 || p.crestSharpening > 8 ||
+        p.turbulenceVariation < 0 || p.turbulenceVariation > 0.9f || p.turbulencePeriod < 64 ||
         p.choppiness < 0 || p.amplitudeScale < 0 || p.shortWaveAmplitude < 0 || p.shortWaveAmplitude > 3 || p.chlorophyll < 0 || p.turbidity < 0 ||
         p.foamCoverage < 0 || p.foamDecay <= 0 || p.foamDecay > 1 || p.foamAlbedo < 0 || p.foamAlbedo > 1 ||
         p.bodyWeight < 0 || p.bodyWeight > 1 || p.subsurfaceStrength < 0 ||
@@ -179,6 +190,13 @@ inline double EffectiveChoppiness(const Params& p) {
     return (double)p.choppiness * ChopGain(p);
 }
 
+// Largest gain the kilometre-scale sea-state field reaches. Everything that has to hold over the
+// whole surface - the crest sharpening's monotonic range, the composite deformation budget - is
+// solved against the roughest patch rather than against the mean sea.
+inline double TurbulenceMaxGain(const Params& p) {
+    return 1.0 + std::clamp((double)p.turbulenceVariation, 0.0, 0.9);
+}
+
 // Largest skew coefficient a band may carry, as a steepness a*sigma. The warp turns around at
 // -1/(2a), so this holds that point past four standard deviations of the band's own elevation:
 // beyond it the deepest troughs would come back up as a second crest.
@@ -189,7 +207,10 @@ constexpr double kMaxSkewSteepness = 0.12;
 // steepness limit and clamp there, which is exactly the band whose crests break in a real sea.
 inline double CrestSkew(const Params& p, double kBar, double sigma) {
     const double requested = std::max(0.0, (double)p.crestSharpening) * ChopGain(p) * kBar;
-    const double limit = sigma > 1e-6 ? kMaxSkewSteepness / sigma : 0.0;
+    // The kilometre-scale field raises this band's elevation inside a rough patch, so the
+    // monotonic bound is solved against the roughest patch rather than against the mean sea.
+    const double peak = sigma * TurbulenceMaxGain(p);
+    const double limit = peak > 1e-6 ? kMaxSkewSteepness / peak : 0.0;
     return std::min(requested, limit);
 }
 

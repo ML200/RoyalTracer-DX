@@ -361,6 +361,23 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
                           "from folding into itself. A no-fold gain well below 1 means the chop is already\n"
                           "saturated and more choppiness buys nothing - reach for crest sharpening instead.");
 
+    respec |= ImGui::SliderFloat("Patch variation", &p.turbulenceVariation, 0.0f, 0.9f, "%.2f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Kilometre-scale variation in sea state. A real ocean is not one sea everywhere:\n"
+                          "currents shear the surface and the wind arrives in gusts and lulls, leaving patches\n"
+                          "of steeper, more broken water drifting between calmer lanes. 0 is the uniform sea;\n"
+                          "0.4 means the roughest patches carry 40%% more wave than the mean and the calmest\n"
+                          "40%% less. Because the crest warp is quadratic, a rough patch is more peaked as well\n"
+                          "as taller.");
+    float patchKm = p.turbulencePeriod / 1000.0f;
+    if (ImGui::SliderFloat("Patch period (km)", &patchKm, 0.5f, 40.0f, "%.1f",
+                           ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+        p.turbulencePeriod = patchKm * 1000.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Tiling period of that field. The octaves inside it run from half this down to a\n"
+                          "thirty-second, so the patches themselves are a few hundred metres to a few km.");
+
     if (ImGui::CollapsingHeader("Turbulence detail")) {
         respec |= ImGui::SliderFloat("Crest displacement", &p.choppiness, 0.0f, 2.0f, "%.2f",
                                      ImGuiSliderFlags_AlwaysClamp);
@@ -1664,6 +1681,16 @@ void Editor::DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats,
             s.atmosAerialLightSteps = (float)aerialLight;
         ImGui::SliderFloat("Scattering scale", &s.atmosMultiScatterFactor, 0.5f, 3.0f, "%.2f");
         ImGui::SliderFloat("Shadow softness", &s.atmosEarthShadowSoftness, 0.0f, 0.05f, "%.4f");
+        ImGui::SliderFloat("Halo depth (km)", &s.atmosHaloDistanceKm, 0.0f, 20.0f, "%.2f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Distance over which the halo around the sun fades in. That halo is the forward\n"
+                              "lobe of the aerosol phase function, which knows only which way a ray points and\n"
+                              "not how much air is in front of the surface it ends on - so without this it\n"
+                              "brightens a wall a few metres away as much as the sky behind it.\n"
+                              "The lobe is faded towards its isotropic average over this distance, which moves\n"
+                              "the in-scatter around rather than removing it: near surfaces get plain haze,\n"
+                              "distant ones get the halo, and the sky is untouched either way.\n"
+                              "0 restores the undamped lobe.");
     }
     ImGui::PopItemWidth();
     ImGui::End();

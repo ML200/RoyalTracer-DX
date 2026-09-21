@@ -254,6 +254,12 @@ struct SunSettings {
     float atmosMultiScatterFactor = 1.0f;
 
     float atmosEarthShadowSoftness = 0.005f;
+
+    // Distance over which the solar aureole fades in, km. The halo around the sun is the forward
+    // lobe of the Mie phase function, and it belongs to the depth of atmosphere a ray actually
+    // crosses rather than to the direction it points: without this a wall a few metres away picks
+    // up the same halo as the sky behind it. 0 restores the undamped lobe.
+    float atmosHaloDistanceKm = 1.0f;
 };
 
 struct GpuPassTiming {

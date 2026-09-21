@@ -297,6 +297,24 @@ inline float PhaseMieTwoLobe(float cosTheta)
     return lerp(p1, p2, ATMOS_MIE_LOBE2_WEIGHT);
 }
 
+// The halo around the sun is the forward lobe of that phase function, and a phase function knows
+// only which way the ray points - not how much atmosphere is in front of the surface it ends on.
+// Left alone it puts the same aureole on a wall a few metres away as on the sky behind it.
+//
+// Fading the lobe towards its isotropic average over the first kilometres ties the halo to path
+// length, the way the rest of the aerial perspective already is. Both phase functions integrate
+// to one over the sphere, so this redistributes the Mie in-scatter rather than removing it: a
+// near surface gets the plain haze, and anything far enough to have real aerial perspective gets
+// the full halo. The sky keeps it in full, its path being tens of kilometres either way.
+static const float ATMOS_MIE_PHASE_ISOTROPIC = 1.0f / (4.0f * PI);
+
+inline float AureoleDepthFade(float pathLengthKm)
+{
+    if (ATMOS_HALO_DISTANCE_KM <= 0.0f)
+        return 1.0f;
+    return 1.0f - exp(-max(0.0f, pathLengthKm) / ATMOS_HALO_DISTANCE_KM);
+}
+
 inline bool RaySphereIntersect(float3 ro, float3 rd, float radius, out float t0, out float t1)
 {
     float b = dot(ro, rd);
@@ -504,7 +522,8 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
 
     float cosTheta = dot(V, L);
     float phR = PhaseRayleigh(cosTheta);
-    float phM = PhaseMieTwoLobe(cosTheta);
+    // Tie the aureole to the atmosphere this ray actually crosses; see AureoleDepthFade.
+    float phM = lerp(ATMOS_MIE_PHASE_ISOTROPIC, PhaseMieTwoLobe(cosTheta), AureoleDepthFade(totalDist));
 
     float3 totalInScatter = float3(0, 0, 0);
     float3 throughput     = float3(1, 1, 1);
@@ -607,7 +626,8 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
 
     float cosTheta = dot(V, L);
     float phR = PhaseRayleigh(cosTheta);
-    float phM = PhaseMieTwoLobe(cosTheta);
+    // Same depth fade as IntegrateScattering, so the two agree on where the halo begins.
+    float phM = lerp(ATMOS_MIE_PHASE_ISOTROPIC, PhaseMieTwoLobe(cosTheta), AureoleDepthFade(totalDist));
 
     float3 totalInScatter = float3(0, 0, 0);
     float3 throughput     = float3(1, 1, 1);

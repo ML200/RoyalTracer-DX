@@ -16,17 +16,30 @@ float2 OceanCascadeUV(float2 q, OceanParamsGPU P, uint c) {
 float OceanCascadeMip(float widthM, float L) {
     return clamp(log2(max(widthM * OCEAN_FFT_SIZE / L, 1.0f)), 0.0f, OCEAN_MIP_LEVELS - 1.0f);
 }
+// Kilometre-scale sea state at this position: the gain the whole wave field is multiplied by,
+// with its world-space gradient in yz. A real ocean has patches of steeper, more broken water
+// drifting between calmer lanes; this is that field, baked once and tiled.
+float3 OceanTurbulence(float2 q, OceanParamsGPU P) {
+    if (P.turbulenceStrength <= 0.0f)
+        return float3(1.0f, 0.0f, 0.0f);
+    Texture2D<float4> field = ResourceDescriptorHeap[OCEAN_SRV_TURBULENCE];
+    const float2 absoluteQ = q + P.curveOrigin;
+    return field.SampleLevel(g_sampler, absoluteQ / P.turbulencePeriod, 0.0f).xyz;
+}
+
 float3 OceanDisplacementFrom(float2 q, float widthM, uint descriptor) {
     const OceanParamsGPU P = OceanParams();
     Texture2DArray<float4> disp = ResourceDescriptorHeap[descriptor];
+    const float gain = OceanTurbulence(q, P).x;
     float3 d = 0.0f;
     // Each band is sharpened on its own elevation, so the small chop peaks like the swell does
-    // rather than riding along as a symmetric ripple.
+    // rather than riding along as a symmetric ripple. The sea-state gain multiplies the band
+    // first, so a rough patch is both taller and - the warp being quadratic - more peaked.
     [loop] for (uint c = 0; c < OCEAN_CASCADES; ++c) {
         const float3 s = disp.SampleLevel(g_sampler, float3(OceanCascadeUV(q, P, c), c),
-                                          OceanCascadeMip(widthM, P.cascadeLength[c])).xyz * P.waveHeightScale;
+                                          OceanCascadeMip(widthM, P.cascadeLength[c])).xyz * P.waveHeightScale * gain;
         d.xz += s.xz;
-        d.y += OceanSkewHeight(s.y, P.crestSkew[c], P.cascadeVariance[c]);
+        d.y += OceanSkewHeight(s.y, P.crestSkew[c], P.cascadeVariance[c] * gain * gain);
     }
     return d;
 }
@@ -39,6 +52,12 @@ void OceanDerivatives(float2 q, float widthM, out float2 gradient, out float3 st
     Texture2DArray<float4> disp = ResourceDescriptorHeap[OCEAN_SRV_DISP];
     gradient = 0.0f;
     stretch = float3(1, 1, 0);
+    // The sea-state gain varies across the surface, so the product rule contributes wherever it
+    // does. Leaving those terms out would tilt the shading normal away from the geometry along
+    // every patch boundary.
+    const float3 turbulence = OceanTurbulence(q, P);
+    const float gain = turbulence.x;
+    const float2 dGain = turbulence.yz;
     [loop] for (uint c = 0; c < OCEAN_CASCADES; ++c) {
         const float3 uv = float3(OceanCascadeUV(q, P, c), c);
         const float mip = OceanCascadeMip(widthM, P.cascadeLength[c]);
@@ -46,8 +65,12 @@ void OceanDerivatives(float2 q, float widthM, out float2 gradient, out float3 st
         const float4 h = disp.SampleLevel(g_sampler, uv, mip) * P.waveHeightScale;
         // Matches the height warp in OceanDisplacementFrom, so the shading normal keeps agreeing
         // with the geometry the tessellator wrote.
-        gradient += d.xy * OceanSkewSlope(h.y, P.crestSkew[c]);
-        stretch += float3(d.zw, h.w);
+        const float skew = P.crestSkew[c];
+        const float slope = OceanSkewSlope(h.y * gain, skew);
+        gradient += slope * gain * d.xy + (slope * h.y - 2.0f * skew * gain * P.cascadeVariance[c]) * dGain;
+        // Horizontal displacement is scaled by the same field, so its strain picks up the gain's
+        // own gradient against the displacement it is scaling.
+        stretch += float3(gain * d.z + h.x * dGain.x, gain * d.w + h.z * dGain.y, gain * h.w + h.x * dGain.y);
     }
 }
 float3 OceanNormal(float2 q, float widthM, float2 curveGradient) {

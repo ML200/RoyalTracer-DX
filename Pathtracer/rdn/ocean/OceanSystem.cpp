@@ -37,6 +37,31 @@ void GaussianPair(uint32_t h, double& g0, double& g1) {
     g1 = r * std::sin(theta);
 }
 
+// Periodic value noise on an L x L lattice over the unit square, with its analytic derivative.
+// Quintic fade, so the field is C2 and its gradient has no lattice-aligned creases.
+void PeriodicValueNoise(double x, double z, uint32_t L, uint32_t seed, double& value, double& ddx, double& ddz) {
+    const double sx = x * L, sz = z * L;
+    const int32_t ix = (int32_t)std::floor(sx), iz = (int32_t)std::floor(sz);
+    const double fx = sx - ix, fz = sz - iz;
+    auto wrap = [&](int32_t i) { return (uint32_t)(((i % (int32_t)L) + (int32_t)L) % (int32_t)L); };
+    auto lattice = [&](int32_t i, int32_t j) {
+        return (double)(HashCoord((int32_t)wrap(i), (int32_t)wrap(j), L, seed) & 0xFFFFFFu) / (double)0xFFFFFFu * 2.0 -
+               1.0;
+    };
+    const double v00 = lattice(ix, iz), v10 = lattice(ix + 1, iz);
+    const double v01 = lattice(ix, iz + 1), v11 = lattice(ix + 1, iz + 1);
+
+    auto fade = [](double t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); };
+    auto dfade = [](double t) { return 30.0 * t * t * (t * (t - 2.0) + 1.0); };
+    const double ux = fade(fx), uz = fade(fz);
+
+    const double a = v00 + (v10 - v00) * ux;
+    const double b = v01 + (v11 - v01) * ux;
+    value = a + (b - a) * uz;
+    ddx = ((v10 - v00) + ((v11 - v01) - (v10 - v00)) * uz) * dfade(fx) * L;
+    ddz = (b - a) * dfade(fz) * L;
+}
+
 ComPtr<ID3D12Resource> CreateTexArray(ID3D12Device* dev, DXGI_FORMAT fmt, uint32_t mips, const wchar_t* name,
                                       bool unorderedAccess = true) {
     D3D12_RESOURCE_DESC d = {};
@@ -74,9 +99,14 @@ void OceanSystem::Configure(const Params& p) {
                         p.significantHeight != m_params.significantHeight || p.peakPeriod != m_params.peakPeriod ||
                         p.swellHeight != m_params.swellHeight || p.swellPeriod != m_params.swellPeriod ||
                         p.swellDirectionDeg != m_params.swellDirectionDeg || p.swellSpreadDeg != m_params.swellSpreadDeg;
+    // The sea-state field is independent of the spectrum, so it rebuilds on its own controls only.
+    const bool refield = !m_initialised || p.turbulenceVariation != m_params.turbulenceVariation ||
+                         p.turbulencePeriod != m_params.turbulencePeriod || p.seed != m_params.seed;
     m_params = p;
     if (respec)
         m_bakePending = true;
+    if (refield)
+        m_turbulenceBakePending = true;
 }
 
 OceanSystem::Reservation OceanSystem::GetReservation() const {
@@ -131,6 +161,23 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
     m_previousDisp = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, OCEAN_MIP_LEVELS, L"OceanPreviousDisplacement");
     m_foam[0] = CreateTexArray(device, DXGI_FORMAT_R32G32_FLOAT, 1, L"OceanFoamA");
     m_foam[1] = CreateTexArray(device, DXGI_FORMAT_R32G32_FLOAT, 1, L"OceanFoamB");
+
+    {
+        // Kilometre-scale sea-state field: one small tiling texture, sampled once per surface
+        // evaluation, carrying its own gradient so the warped derivatives stay exact.
+        D3D12_RESOURCE_DESC d = {};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = OCEAN_TURBULENCE_SIZE;
+        d.Height = OCEAN_TURBULENCE_SIZE;
+        d.DepthOrArraySize = 1;
+        d.MipLevels = 1;
+        d.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        d.SampleDesc.Count = 1;
+        const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
+        ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COMMON,
+                                                      nullptr, IID_PPV_ARGS(&m_turbulence)));
+        m_turbulence->SetName(L"OceanTurbulenceField");
+    }
 
     {
         // Two packed complex fields per slice, two slices per cascade.
@@ -367,6 +414,15 @@ void OceanSystem::CreateDescriptors(ID3D12Device* device, ID3D12DescriptorHeap* 
     texSrv(m_previousDisp.Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_PREV_DISP);
     texSrv(m_h0.Get(), 1, OCEAN_SRV_H0);
     texSrv(m_wave.Get(), 1, OCEAN_SRV_WAVE);
+    {
+        // The sea-state field is a plain 2D texture, not one slice per cascade.
+        D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
+        s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        s.Format = m_turbulence->GetDesc().Format;
+        s.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        s.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(m_turbulence.Get(), &s, at(OCEAN_SRV_TURBULENCE));
+    }
     structuredSrv(m_paramsBuffer.Get(), 1, sizeof(OceanParamsGPU), OCEAN_SRV_PARAMS);
     structuredSrv(m_tilesBuffer.Get(), OCEAN_MAX_TILES, sizeof(OceanTileGPU), OCEAN_SRV_TILES);
 
@@ -416,6 +472,103 @@ void OceanSystem::CreateDescriptors(ID3D12Device* device, ID3D12DescriptorHeap* 
         u.Buffer.StructureByteStride = sizeof(BTriVertex);
         device->CreateUnorderedAccessView(m_globalVertex, nullptr, &u, at(OCEAN_UAV_VERTS));
     }
+}
+
+// A real ocean is not one sea everywhere. Currents shear the surface, the wind arrives in gusts
+// and lulls, and the result is patches of steeper, more broken water drifting between calmer
+// lanes. This bakes that as a tiling fBm of the gain the whole wave field is multiplied by, with
+// the gradient alongside it so the warped surface derivatives stay exact.
+void OceanSystem::BakeTurbulence() {
+    constexpr uint32_t S = OCEAN_TURBULENCE_SIZE;
+    constexpr int kOctaves = 5;
+
+    m_turbulenceBakePending = false;
+    m_turbulenceDirty = true;
+    m_turbulenceData.assign((size_t)S * S, XMFLOAT4{1.0f, 0.0f, 0.0f, 0.0f});
+
+    const double variation = std::clamp((double)m_params.turbulenceVariation, 0.0, 0.9);
+    if (variation <= 0.0)
+        return; // the flat field above is the uniform sea
+
+    const double period = std::max(64.0, (double)m_params.turbulencePeriod);
+
+    // Octave o lays 2^(o+1) cells across the period, so the patches run from half the period
+    // down to a thirty-second of it - kilometres to a few hundred metres at the default.
+    std::vector<double> raw((size_t)S * S * 3);
+    double lo = 1e30, hi = -1e30, mean = 0.0;
+    for (uint32_t j = 0; j < S; ++j) {
+        for (uint32_t i = 0; i < S; ++i) {
+            const double u = ((double)i + 0.5) / S, v = ((double)j + 0.5) / S;
+            double sum = 0.0, ddu = 0.0, ddv = 0.0, amplitude = 1.0, total = 0.0;
+            for (int o = 0; o < kOctaves; ++o) {
+                double n, nu, nv;
+                PeriodicValueNoise(u, v, 2u << o, m_params.seed + (uint32_t)o * 7919u, n, nu, nv);
+                sum += amplitude * n;
+                ddu += amplitude * nu;
+                ddv += amplitude * nv;
+                total += amplitude;
+                amplitude *= 0.5;
+            }
+            const size_t idx = ((size_t)j * S + i) * 3;
+            raw[idx] = sum / total;
+            raw[idx + 1] = ddu / total;
+            raw[idx + 2] = ddv / total;
+            lo = std::min(lo, raw[idx]);
+            hi = std::max(hi, raw[idx]);
+            mean += raw[idx];
+        }
+    }
+    mean /= (double)S * S;
+
+    // An fBm rarely reaches its theoretical extremes, so the realised spread is what gets mapped
+    // onto the requested variation; otherwise the patches come out far weaker than the setting.
+    // Centring on the mean rather than the midrange keeps the average gain at exactly one, so
+    // the field redistributes the sea state it was given instead of quietly rescaling it.
+    const double spread = std::max(1e-6, std::max(hi - mean, mean - lo));
+    const double gradientScale = variation / spread / period; // per metre, including the remap
+    for (size_t t = 0; t < (size_t)S * S; ++t) {
+        m_turbulenceData[t] = XMFLOAT4{(float)(1.0 + variation * (raw[t * 3] - mean) / spread),
+                                       (float)(raw[t * 3 + 1] * gradientScale),
+                                       (float)(raw[t * 3 + 2] * gradientScale), 0.0f};
+    }
+}
+
+void OceanSystem::UploadTurbulence(ID3D12GraphicsCommandList* copyList) {
+    constexpr uint32_t S = OCEAN_TURBULENCE_SIZE;
+    const uint64_t rowBytes = (uint64_t)S * sizeof(XMFLOAT4);
+    const uint64_t rowPitch = planet::align_up(rowBytes, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+    const uint64_t needed = rowPitch * S;
+
+    if (!m_turbulenceUpload) {
+        m_turbulenceUpload = nv_helpers_dx12::CreateBuffer(m_device, needed, D3D12_RESOURCE_FLAG_NONE,
+                                                           D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                           nv_helpers_dx12::kUploadHeapProps);
+        m_turbulenceUpload->SetName(L"OceanTurbulenceUpload");
+    }
+
+    uint8_t* base = nullptr;
+    const CD3DX12_RANGE none(0, 0);
+    ThrowIfFailed(m_turbulenceUpload->Map(0, &none, (void**)&base));
+    for (uint32_t row = 0; row < S; ++row)
+        std::memcpy(base + (uint64_t)row * rowPitch, m_turbulenceData.data() + (size_t)row * S, rowBytes);
+    m_turbulenceUpload->Unmap(0, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource = m_turbulence.Get();
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLoc.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource = m_turbulenceUpload.Get();
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLoc.PlacedFootprint.Offset = 0;
+    srcLoc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    srcLoc.PlacedFootprint.Footprint.Width = S;
+    srcLoc.PlacedFootprint.Footprint.Height = S;
+    srcLoc.PlacedFootprint.Footprint.Depth = 1;
+    srcLoc.PlacedFootprint.Footprint.RowPitch = (UINT)rowPitch;
+    copyList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+    m_turbulenceDirty = false;
 }
 
 void OceanSystem::Bake() {
@@ -583,6 +736,8 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
 
     if (m_bakePending)
         Bake();
+    if (m_turbulenceBakePending)
+        BakeTurbulence();
 
     // Fold a double-precision epoch into the complex amplitudes. Reducing time alone would
     // jump phase because ocean frequencies are not integer multiples of a common period.
@@ -691,6 +846,13 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
 
     // Crest sharpening is solved from the baked per-cascade statistics rather than folded into the
     // spectrum, so it can be retuned live without paying for a re-bake.
+    P.turbulencePeriod = std::max(64.0f, m_params.turbulencePeriod);
+    P.turbulenceStrength = std::clamp(m_params.turbulenceVariation, 0.0f, 0.9f) > 0.0f ? 1.0f : 0.0f;
+    P.turbulenceMaxGain = (float)TurbulenceMaxGain(m_params);
+    // The rough patches multiply the horizontal displacement too, so the share of the no-fold
+    // threshold the conditioning pass may spend comes down by the same factor.
+    P.deformationBudget = 0.85f / P.turbulenceMaxGain;
+
     m_stats.crestSteepness = 0.0;
     for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
         const double sigma = std::sqrt(std::max(0.0, m_cascadeVariance[c]));
@@ -749,6 +911,8 @@ void OceanSystem::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12Gra
     }
     if (m_h0Dirty)
         UploadBaked(copyList);
+    if (m_turbulenceDirty)
+        UploadTurbulence(copyList);
 
     Timestamp(computeList, 0);
     RecordSimulation(computeList);

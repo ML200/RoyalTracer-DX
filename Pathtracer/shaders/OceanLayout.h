@@ -103,7 +103,14 @@
 #define OCEAN_SRV_PREV_DISP (OCEAN_UAV_STATS + 3u)
 #define OCEAN_UAV_MOMENT_MIPS (OCEAN_UAV_STATS + 4u)
 #define OCEAN_UAV_SURFACE_MIPS (OCEAN_UAV_MOMENT_MIPS + OCEAN_MIP_LEVELS)
-#define OCEAN_HEAP_COUNT ((OCEAN_UAV_SURFACE_MIPS + OCEAN_MIP_LEVELS) - OCEAN_HEAP_BASE)
+
+// Kilometre-scale sea-state field: a tiling fBm of the gain the wave field is multiplied by,
+// with its own analytic gradient alongside it so the surface derivatives stay exact.
+// (gain, d(gain)/dx, d(gain)/dz, unused), Texture2D<float4>, bilinear, wrapping.
+#define OCEAN_SRV_TURBULENCE (OCEAN_UAV_SURFACE_MIPS + OCEAN_MIP_LEVELS)
+#define OCEAN_TURBULENCE_SIZE 512
+
+#define OCEAN_HEAP_COUNT ((OCEAN_SRV_TURBULENCE + 1u) - OCEAN_HEAP_BASE)
 
 // ---------------------------------------------------------------------------------------------
 // Shared records
@@ -154,6 +161,16 @@ struct OceanParamsGPU {
     // mean where it was. Solved on the host so the trough side never turns back up.
     OCEAN_FLOAT4 crestSkew;
     OCEAN_FLOAT4 cascadeVariance;
+
+    // Kilometre-scale sea-state field. The texture tiles over turbulencePeriod metres and its
+    // gain is centred on one; turbulenceStrength fades the whole thing out at zero.
+    float turbulencePeriod;
+    float turbulenceStrength;
+    // Largest gain the field can reach. The composite deformation bound is divided by it, so a
+    // patch that gets the full boost still cannot fold the surface into itself.
+    float turbulenceMaxGain;
+    // Fraction of the no-fold threshold the conditioning pass may spend, after that division.
+    float deformationBudget;
 
     // The floating origin moves in kilometre steps that are not multiples of the cascade periods,
     // so each cascade carries its own pre-wrapped origin. Folding the shift in on the host keeps

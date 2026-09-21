@@ -84,7 +84,9 @@ class OceanSystem : public planet::IExternalStream {
     uint32_t VertexSpan() const { return m_vertexBase + OCEAN_MAX_TILES * OCEAN_TILE_VERTS; }
 
     void Bake();
+    void BakeTurbulence();
     void UploadBaked(ID3D12GraphicsCommandList* copyList);
+    void UploadTurbulence(ID3D12GraphicsCommandList* copyList);
     void RecordSimulation(ID3D12GraphicsCommandList4* cl);
     void RecordTessellation(ID3D12GraphicsCommandList4* cl);
     void RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl);
@@ -123,6 +125,8 @@ class OceanSystem : public planet::IExternalStream {
     ComPtr<ID3D12Resource> m_previousDisp;
     ComPtr<ID3D12Resource> m_foam[2];
     ComPtr<ID3D12Resource> m_bakeUpload;
+    ComPtr<ID3D12Resource> m_turbulence;
+    ComPtr<ID3D12Resource> m_turbulenceUpload;
 
     ComPtr<ID3D12Resource> m_paramsBuffer;
     ComPtr<ID3D12Resource> m_tilesBuffer;
@@ -171,6 +175,11 @@ class OceanSystem : public planet::IExternalStream {
     // Baked spectrum, CPU side. The same samples produce the textures and the slope variances.
     std::vector<XMFLOAT4> m_h0Data;
     std::vector<XMFLOAT4> m_waveData;
+    // Kilometre-scale sea-state field, (gain, d/dx, d/dz). Independent of the spectrum, so it is
+    // rebuilt only when its own controls move rather than on every re-bake.
+    std::vector<XMFLOAT4> m_turbulenceData;
+    bool m_turbulenceBakePending = true;
+    bool m_turbulenceDirty = true;
     OceanParamsGPU m_gpuParams{};
     std::vector<OceanTileGPU> m_gpuTiles;
     std::vector<uint8_t> m_blasBuilt; // per slot: has a valid structure that may be refitted
