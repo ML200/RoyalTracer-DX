@@ -11,6 +11,14 @@ inline bool LoadIsOceanMaterial(uint matID)
     return matID == ocean[0].materialBase;
 }
 
+// Lobe width the sun sampler and NEE widen the water surface to; see OceanHighlightRoughness.
+inline float LoadOceanSunLobeRoughness()
+{
+    [branch] if (!OCEAN_ENABLED) return 0.0f;
+    StructuredBuffer<OceanParamsGPU> ocean = ResourceDescriptorHeap[OCEAN_SRV_PARAMS];
+    return ocean[0].sunLobeRoughness;
+}
+
 // Volume controls never change the surface opacity or its Fresnel energy split.
 inline float3 LoadKd_rgb(uint matID)
 {

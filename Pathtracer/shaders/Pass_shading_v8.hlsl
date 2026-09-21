@@ -416,6 +416,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
     DlssGuides g;
     float3 input;
 
+    // Which instance the primary ray landed on. Both the guide writer and the responsivity mask
+    // below need it, so it is resolved once here.
+    const uint primaryInst = load_instID(g_sample_current, pixelIdx);
+
     bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
     {
@@ -466,7 +470,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // A deforming water interface is not a rigid mirror. Keep its own depth, normal and
         // deformation motion in both reconstruction channels instead of replacing them with
         // the static sky/ship behind a specular probe. Other materials keep their PSR path.
-        const uint primaryInst = load_instID(g_sample_current, pixelIdx);
         if (IS_OCEAN_INSTANCE(primaryInst))
             WriteOceanGuides(DTid.xy, pixelIdx, dims, camPosWorld, g);
         else if ((dbg_dlssLayer & DLSS_GUIDE_OPT_NO_PSR) != 0u)
@@ -505,6 +508,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
     g_dlssSpecMVec[DTid.xy]       = g.specMv;
     g_dlssSpecHitDist[DTid.xy]    = g.specHitDist;
     g_dlssBiasHint[DTid.xy]       = isEmitterSurface ? 1.0f : psrBias;
+    // Water carries its own reconstruction responsivity: its sun glitter is a different set of
+    // crests every frame, so the history length that resolves a static surface smears the track
+    // into streaks instead. Everything else rides a roughness ramp - a rough surface's shading is
+    // nearly the same from one frame to the next and accumulates freely, while a smooth one
+    // carries a sharp reflection that slides across it as the camera moves.
+    g_dlssResponsivity[DTid.xy]   = IS_OCEAN_INSTANCE(primaryInst)
+                                        ? dlssWaterResponsivity
+                                        : lerp(dlssResponsivityMirror, dlssResponsivityRough,
+                                               saturate(g.roughness));
     g_dlssTransparency[DTid.xy]   = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
     {

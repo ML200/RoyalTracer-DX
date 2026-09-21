@@ -40,6 +40,19 @@ struct Params {
     float bodyWeight = 0.0f; // optional diffuse surface contribution; clear water uses transmission + SSS
     uint32_t debugMode = 0; // 0 beauty, 1 normal, 2 compression, 3 covariance, 4 roughness, 5 foam/freshness, 6 mip
 
+    // How hard the wind whips the surface, on top of the height it already sets. Scales both the
+    // horizontal displacement that sharpens crests and the gain on the short wind waves, so 0
+    // leaves smooth rounded swell and higher values peak the small detail. 1 is the calibrated
+    // sea; the wind speed carries part of this on its own (see WindChop).
+    float turbulence = 1.0f;
+
+    // Second-order Stokes crest sharpening, as a multiple of the physical bound harmonic: 0 gives
+    // the symmetric Gaussian sea a linear spectrum produces, 1 the real wave's narrow crest and
+    // long shallow trough, and higher values push each band towards its steepness limit. Unlike
+    // choppiness this costs nothing against the no-fold bound, so it is what actually buys a sharp
+    // crest once the horizontal displacement has saturated.
+    float crestSharpening = 1.0f;
+
     // Requested horizontal displacement gain, limited by the per-frame composite deformation bound.
     float choppiness = 1.0f;
     // Overall wave height multiplier; 1 is the physical JONSWAP height.
@@ -86,6 +99,13 @@ struct Params {
     // shimmers, lower it if the near surface looks over-smoothed.
     float filterScale = 1.0f;
 
+    // Roughness floor the sun sampler and next-event estimation widen the water surface to, and
+    // nothing else: continuation rays, environment reflections and the reconstruction guides keep
+    // the authored roughness and the full-resolution wave normal. Clear water is authored
+    // mirror-flat, which leaves direct lighting a delta lobe whose glitter resolves as isolated
+    // fireflies rather than as a sun track, so this trades highlight sharpness against that noise.
+    float sunLobeRoughness = 0.04f;
+
     // Mean sea level. The waves swing symmetrically about it, so a level of zero puts every trough
     // below the origin.
     float seaLevelY = 0.0f;
@@ -102,17 +122,19 @@ struct Params {
 inline void ValidateParams(const Params& p) {
     const float values[] = {p.windSpeed,p.fetch,p.windDirectionDeg,p.swell,p.windAlign,p.significantHeight,
         p.peakPeriod,p.swellHeight,p.swellPeriod,p.swellDirectionDeg,p.swellSpreadDeg,p.fixedTimeStep,
-        p.bodyWeight,p.choppiness,p.amplitudeScale,p.shortWaveAmplitude,p.chlorophyll,p.turbidity,p.foamCoverage,p.foamDecay,
+        p.bodyWeight,p.turbulence,p.crestSharpening,p.choppiness,p.amplitudeScale,p.shortWaveAmplitude,p.chlorophyll,p.turbidity,p.foamCoverage,p.foamDecay,
         p.foamAlbedo,p.subsurfaceStrength,p.subsurfaceRadiusScale,p.subsurfacePhaseG,p.extent,p.minTileSize,p.lodFactor,p.nearKeepRadius,
-        p.filterScale,p.seaLevelY,p.minClearance};
+        p.filterScale,p.sunLobeRoughness,p.seaLevelY,p.minClearance};
     for (float v : values) if (!std::isfinite(v)) throw std::invalid_argument("Ocean parameters must be finite");
     if (p.windSpeed < 0 || p.fetch <= 0 || p.windAlign < 0 || p.swell < 0 || p.swell > 1 ||
         p.swellHeight < 0 || p.swellPeriod <= 0 || p.swellSpreadDeg < 2 || p.swellSpreadDeg > 90 ||
         p.peakPeriod == 0 || p.fixedTimeStep < 0 || p.fixedTimeStep > 0.1f ||
+        p.turbulence < 0 || p.turbulence > 3 || p.crestSharpening < 0 || p.crestSharpening > 8 ||
         p.choppiness < 0 || p.amplitudeScale < 0 || p.shortWaveAmplitude < 0 || p.shortWaveAmplitude > 3 || p.chlorophyll < 0 || p.turbidity < 0 ||
         p.foamCoverage < 0 || p.foamDecay <= 0 || p.foamDecay > 1 || p.foamAlbedo < 0 || p.foamAlbedo > 1 ||
         p.bodyWeight < 0 || p.bodyWeight > 1 || p.subsurfaceStrength < 0 ||
         p.subsurfaceRadiusScale <= 0 || std::abs(p.subsurfacePhaseG) >= 1 ||
+        p.sunLobeRoughness < 0 || p.sunLobeRoughness > 1 ||
         p.extent < 64 || p.minTileSize < 1 || p.lodFactor <= 0 || p.nearKeepRadius < 0 || p.filterScale <= 0 || p.debugMode > 6)
         throw std::invalid_argument("Ocean parameter outside its supported range");
 }
@@ -134,12 +156,51 @@ inline double CascadeNyquist(int c) {
     return 3.141592653589793 * OCEAN_FFT_SIZE / CascadeLengths()[(size_t)c];
 }
 
+// Wind speed the whipped look is calibrated at: the default sea state, Beaufort 6.
+constexpr double kReferenceWind = 11.0;
+
+// Chop the wind carries on its own. A breeze leaves rounded swell however long it has been
+// blowing, while a gale shears every crest it raises, so the whipped look has to track wind speed
+// and not only wave height. Written as a deviation from the reference wind so that it is exactly
+// one there, leaving the calibrated sea untouched.
+inline double WindChop(const Params& p) {
+    const double t = ((double)p.windSpeed - kReferenceWind) / kReferenceWind;
+    return std::clamp(1.0 + 0.55 * t, 0.45, 1.5);
+}
+
+// Combined whipping gain: the user's turbulence on top of what the wind already supplies.
+inline double ChopGain(const Params& p) {
+    return std::max(0.0, (double)p.turbulence) * WindChop(p);
+}
+
+// Horizontal displacement gain the simulation actually asks for. The GPU still bounds the
+// composite deformation each frame, so this is a request rather than a guarantee.
+inline double EffectiveChoppiness(const Params& p) {
+    return (double)p.choppiness * ChopGain(p);
+}
+
+// Largest skew coefficient a band may carry, as a steepness a*sigma. The warp turns around at
+// -1/(2a), so this holds that point past four standard deviations of the band's own elevation:
+// beyond it the deepest troughs would come back up as a second crest.
+constexpr double kMaxSkewSteepness = 0.12;
+
+// Second-order Stokes coefficient for a band of mean wavenumber kBar and elevation standard
+// deviation sigma. A physical bound harmonic has a = k; the short cascades are already near their
+// steepness limit and clamp there, which is exactly the band whose crests break in a real sea.
+inline double CrestSkew(const Params& p, double kBar, double sigma) {
+    const double requested = std::max(0.0, (double)p.crestSharpening) * ChopGain(p) * kBar;
+    const double limit = sigma > 1e-6 ? kMaxSkewSteepness / sigma : 0.0;
+    return std::min(requested, limit);
+}
+
 inline double ShortWaveAmplitude(const Params& p, double k) {
     constexpr double kStart = 6.283185307179586 / 8.0;
     constexpr double kFull = 6.283185307179586 / 2.0;
     double t = std::clamp((k - kStart) / (kFull - kStart), 0.0, 1.0);
     t = t * t * (3.0 - 2.0 * t);
-    return 1.0 + (double(p.shortWaveAmplitude) - 1.0) * t;
+    // The gain is squared into a power below, so it must not be allowed to swing negative -
+    // that would turn a suppressed band back into a boosted one.
+    return std::max(0.0, 1.0 + (double(p.shortWaveAmplitude) - 1.0) * ChopGain(p) * t);
 }
 
 // The range over which a cascade actually carries energy. The low end is held a few modes above
@@ -364,7 +425,7 @@ inline double PredictSignificantWaveHeight(const Params& p) {
 // troughs beyond that.
 inline double PredictWaveDepth(const Params& p) {
     const double sigma = std::sqrt(std::max(0.0, PredictElevationVariance(p)));
-    return 4.5 * sigma * (1.0 + 0.3 * (double)p.choppiness);
+    return 4.5 * sigma * (1.0 + 0.3 * EffectiveChoppiness(p));
 }
 
 // Mean sea level the ocean will actually use.

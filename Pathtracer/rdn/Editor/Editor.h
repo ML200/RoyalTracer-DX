@@ -7,6 +7,7 @@
 #include "../PostProcess/DLSSManager.h"
 #include "../PostProcess/DLSSNRManager.h"
 #include "../planet/stream_orchestrator.h"
+#include "../ocean/OceanSystem.h"
 #include "../minecraft/voxel_streamer.h"
 #include "../minecraft/mc_world.h"
 #include "../../engine/Camera/FlyCamController.h"
@@ -24,7 +25,7 @@ class Editor {
     void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSystem& passes, DLSSManager& dlss,
               DLSSNRManager& dlssNR, DLSSGSettings& dlssG, IntegratorSettings& integrator, float fps,
               const FrameStats& stats, const planet::StreamOrchestrator::Stats& planetStats,
-              mc::VoxelStreamer* voxels = nullptr);
+              mc::VoxelStreamer* voxels = nullptr, ocean::OceanSystem* ocean = nullptr);
     void Render(ID3D12GraphicsCommandList* cmdList);
     void RenderPlatformWindows();
 
@@ -48,9 +49,11 @@ class Editor {
                               const mc::StreamerStats* minecraft);
 
     void DrawMinecraftPanel(mc::VoxelStreamer& voxels);
+    void DrawWaterPanel(ocean::OceanSystem& ocean, Scene& scene);
 
     bool m_visible = true;
     bool m_showMinecraft = false;
+    bool m_showWater = false;
     bool m_showScene = false;
     bool m_showCamera = false;
     bool m_showPipeline = false;
@@ -67,6 +70,11 @@ class Editor {
 
     int m_cachedMatModel = -1;
     std::vector<UINT> m_cachedUniqueMats;
+
+    // Staged sea state. Wind, turbulence and swell re-bake four 1024^2 cascades on the CPU, so a
+    // drag edits this copy and only reaches the ocean once the widget is released.
+    ocean::Params m_waterParams;
+    bool m_waterRespecPending = false;
 
     char m_matFilter[128] = {0};
 

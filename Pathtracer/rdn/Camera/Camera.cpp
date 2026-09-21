@@ -25,7 +25,7 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
     uint32_t matCount = 6;
-    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8 + sizeof(SunSettings) + sizeof(float) * 8;
+    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8 + sizeof(SunSettings) + sizeof(float) * 11;
     m_bufferSize = (m_bufferSize + 255) & ~255;
 
     m_buffer = nv_helpers_dx12::CreateBuffer(device, m_bufferSize, D3D12_RESOURCE_FLAG_NONE,
@@ -132,9 +132,11 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     sunSettings.dofFocusDistance = focusDistance;
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra), &sunSettings, sizeof(SunSettings));
 
-    const float planetTail[8] = {planetCenter.x, planetCenter.y, planetCenter.z,
-                                 planetRadius,   skyGroundY,     terrainHeightFrequency,
-                                 (float)oceanInstanceBase,       oceanEnabled ? 1.0f : 0.0f};
+    const float planetTail[11] = {planetCenter.x,           planetCenter.y, planetCenter.z,
+                                  planetRadius,             skyGroundY,     terrainHeightFrequency,
+                                  (float)oceanInstanceBase, oceanEnabled ? 1.0f : 0.0f,
+                                  dlssResponsivityRough,    dlssResponsivityMirror,
+                                  dlssWaterResponsivity};
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra) + sizeof(SunSettings), planetTail, sizeof(planetTail));
     m_buffer->Unmap(0, nullptr);
 

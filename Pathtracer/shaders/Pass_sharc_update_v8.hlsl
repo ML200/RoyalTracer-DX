@@ -186,7 +186,7 @@ void Pass_sharc_update_v8()
         const bool scatterLive = !enterSSS;
 
         const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
-        const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr) : ctx.hitLocalPr;
+        const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness()) : ctx.hitLocalPr;
         const bool performNEE = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
 

@@ -79,7 +79,7 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed,
     direct = 0.0f;
     liteDirect = 0.0f;
     const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
-    const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr) : ctx.hitLocalPr;
+    const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness()) : ctx.hitLocalPr;
     const bool useLearnedLights = LTC_UseSurfaceLearning();
     uint sNee = RcBounceSeed(pathSeed, depth, RC_STREAM_NEE);
     [loop]

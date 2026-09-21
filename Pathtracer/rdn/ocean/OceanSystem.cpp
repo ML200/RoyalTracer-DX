@@ -69,7 +69,7 @@ void OceanSystem::Configure(const Params& p) {
     const bool respec = !m_initialised || p.windSpeed != m_params.windSpeed || p.fetch != m_params.fetch ||
                         p.windDirectionDeg != m_params.windDirectionDeg || p.swell != m_params.swell ||
                         p.windAlign != m_params.windAlign || p.amplitudeScale != m_params.amplitudeScale ||
-                        p.shortWaveAmplitude != m_params.shortWaveAmplitude ||
+                        p.shortWaveAmplitude != m_params.shortWaveAmplitude || p.turbulence != m_params.turbulence ||
                         p.foamCoverage != m_params.foamCoverage || p.seaLevelY != m_params.seaLevelY || p.keepAboveZero != m_params.keepAboveZero || p.minClearance != m_params.minClearance || p.seed != m_params.seed || p.choppiness != m_params.choppiness ||
                         p.significantHeight != m_params.significantHeight || p.peakPeriod != m_params.peakPeriod ||
                         p.swellHeight != m_params.swellHeight || p.swellPeriod != m_params.swellPeriod ||
@@ -427,6 +427,10 @@ void OceanSystem::Bake() {
 
     m_h0Data.assign((size_t)N * N * OCEAN_CASCADES, XMFLOAT4{0, 0, 0, 0});
     m_waveData.assign((size_t)N * N * OCEAN_CASCADES, XMFLOAT4{0, 0, 0, 0});
+    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+        m_cascadeVariance[c] = 0.0;
+        m_cascadeMeanK[c] = 0.0;
+    }
 
     const double windRad = (double)m_params.windDirectionDeg * 0.017453292519943295;
     const double wc = std::cos(windRad), ws = std::sin(windRad);
@@ -435,6 +439,9 @@ void OceanSystem::Bake() {
     double varAlong[OCEAN_CASCADES] = {};
     double varCross[OCEAN_CASCADES] = {};
     double elevationVar = 0.0;
+    // Per-cascade elevation variance and the energy-weighted wavenumber that goes with it. The
+    // crest sharpening is solved per band from these, so it can be retuned without a re-bake.
+    double kEnergy[OCEAN_CASCADES] = {};
 
     // Gaussian amplitudes use half sqrt(PSD * bin area); evolution preserves Hermitian pairs.
     for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
@@ -487,6 +494,8 @@ void OceanSystem::Bake() {
                 // Expected power of this mode, and the slope variance it carries.
                 const double power = 4.0 * A * A;
                 elevationVar += power;
+                m_cascadeVariance[c] += power;
+                kEnergy[c] += power * k;
                 varAlong[c] += kxw * kxw * power;
                 varCross[c] += kzw * kzw * power;
             }
@@ -494,7 +503,7 @@ void OceanSystem::Bake() {
     }
 
     // The GPU bounds the actual bilinear map each frame before geometry or foam consumes it.
-    m_effectiveChoppiness = m_params.choppiness;
+    m_effectiveChoppiness = (float)EffectiveChoppiness(m_params);
     m_phaseEpoch = 0.0;
     m_resetFoam = true;
 
@@ -528,6 +537,7 @@ void OceanSystem::Bake() {
     m_gpuParams.slopeVarTailAlong = (float)tailAlong;
     m_gpuParams.slopeVarTailCross = (float)tailCross;
     for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+        m_cascadeMeanK[c] = m_cascadeVariance[c] > 1e-12 ? kEnergy[c] / m_cascadeVariance[c] : 0.0;
         double kMin, kMax;
         CascadeBand((int)c, kMin, kMax);
         ((float*)&m_gpuParams.cascadeLength)[c] = (float)CascadeLengths()[c];
@@ -664,7 +674,7 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
     // Retain the shared layout, but neither foam nor a roughness floor affects water shading.
     P.foamCoverageScale = 0.0f;
     P.foamRoughness = 0.0f;
-    P.minRoughness = 0.0f;
+    P.sunLobeRoughness = std::clamp(m_params.sunLobeRoughness, 0.0f, 1.0f);
 
     P.upwelling = WaterUpwellingRGB(m_params.chlorophyll, m_params.turbidity);
     P.bodyStrength = m_params.subsurfaceStrength;
@@ -678,6 +688,17 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
     P.bodyWeight = std::clamp(m_params.bodyWeight, 0.0f, 1.0f);
     P.halfExtent = std::max(64.0f, m_params.extent);
     P.debugMode = m_params.debugMode;
+
+    // Crest sharpening is solved from the baked per-cascade statistics rather than folded into the
+    // spectrum, so it can be retuned live without paying for a re-bake.
+    m_stats.crestSteepness = 0.0;
+    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+        const double sigma = std::sqrt(std::max(0.0, m_cascadeVariance[c]));
+        const double skew = CrestSkew(m_params, m_cascadeMeanK[c], sigma);
+        ((float*)&P.crestSkew)[c] = (float)skew;
+        ((float*)&P.cascadeVariance)[c] = (float)m_cascadeVariance[c];
+        m_stats.crestSteepness = std::max(m_stats.crestSteepness, skew * sigma);
+    }
 
     // Cascades tile in absolute world space; folding the floating origin in per cascade keeps the
     // waves pinned to the world while the shader's coordinates stay small.

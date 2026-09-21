@@ -9,6 +9,48 @@ void SetInitialPanelPosition(ImVec2 offset) {
     const ImVec2 origin = ImGui::GetMainViewport()->Pos;
     ImGui::SetNextWindowPos(ImVec2(origin.x + offset.x, origin.y + offset.y), ImGuiCond_FirstUseEver);
 }
+
+// Beaufort force from the 10 m wind, so the speed slider reads as a sea state rather than as a
+// bare number. Upper bound of each force, m/s.
+int BeaufortForce(float windSpeed) {
+    static const float kUpper[] = {0.5f, 1.5f, 3.3f, 5.5f, 7.9f, 10.7f, 13.8f, 17.1f, 20.7f, 24.4f, 28.4f, 32.6f};
+    for (int i = 0; i < (int)(sizeof(kUpper) / sizeof(kUpper[0])); ++i)
+        if (windSpeed < kUpper[i])
+            return i;
+    return 12;
+}
+
+const char* BeaufortName(int force) {
+    static const char* kNames[] = {"calm",      "light air",       "light breeze", "gentle breeze",
+                                   "moderate breeze", "fresh breeze", "strong breeze", "near gale",
+                                   "gale",      "strong gale",     "storm",        "violent storm",
+                                   "hurricane"};
+    return kNames[std::clamp(force, 0, 12)];
+}
+
+// The ocean owns one block of material slots: a whitecap-coverage ramp crossed with the anisotropy
+// and direction axes the shader picks from. An edit that reached only the first slot would change
+// one level out of four thousand, so every edit is broadcast across the block exactly as the
+// generated path writes it, leaving the per-slot anisotropy axes alone.
+void BroadcastWaterMaterial(Scene& scene, UINT base) {
+    auto& m = scene.materials;
+    if ((size_t)base + OCEAN_MATERIAL_COUNT > m.size() || m.sssEnable.size() < m.size())
+        return;
+    const XMFLOAT4 kd = m.Kd[base];
+    const float weight = m.sssWeight[base];
+    const uint8_t enable = m.sssEnable[base];
+    for (UINT i = 1; i < OCEAN_MATERIAL_COUNT; ++i) {
+        const float coverage = float(i % OCEAN_MATERIAL_LEVELS) / float(OCEAN_MATERIAL_LEVELS - 1);
+        m.Kd[base + i] = XMFLOAT4{kd.x, kd.y, kd.z, kd.w + (1.0f - kd.w) * coverage};
+        m.Ni[base + i] = m.Ni[base];
+        m.Tf[base + i] = m.Tf[base];
+        m.sssAlbedo[base + i] = m.sssAlbedo[base];
+        m.sssRadius[base + i] = m.sssRadius[base];
+        m.sssPhaseG[base + i] = m.sssPhaseG[base];
+        m.sssWeight[base + i] = weight * (1.0f - coverage);
+        m.sssEnable[base + i] = coverage < 1.0f ? enable : uint8_t(0u);
+    }
+}
 }
 
 void Editor::Init(HWND hwnd, ID3D12Device* device, UINT numFramesInFlight, ID3D12DescriptorHeap* srvHeap,
@@ -39,7 +81,7 @@ void Editor::Shutdown() {
 void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSystem& passes, DLSSManager& dlss,
                   DLSSNRManager& dlssNR, DLSSGSettings& dlssG, IntegratorSettings& restir, float fps,
                   const FrameStats& stats, const planet::StreamOrchestrator::Stats& planetStats,
-                  mc::VoxelStreamer* voxels) {
+                  mc::VoxelStreamer* voxels, ocean::OceanSystem* ocean) {
     // Keep history advancing while panels are hidden.
     if (!m_performanceHistory.paused) {
         m_performanceHistory.push(stats);
@@ -80,6 +122,8 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
         if (ImGui::BeginMenu("Experimental")) {
             if (voxels)
                 ImGui::MenuItem("Minecraft", nullptr, &m_showMinecraft);
+            if (ocean && ocean->Enabled())
+                ImGui::MenuItem("Water", nullptr, &m_showWater);
             ImGui::MenuItem("DLSS 5 Neural Rendering", nullptr, &m_showDLSSNR);
             ImGui::EndMenu();
         }
@@ -123,6 +167,8 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
                              m_performanceFrame.hasMinecraft ? &m_performanceFrame.minecraft : nullptr);
     if (m_showMinecraft && voxels)
         DrawMinecraftPanel(*voxels);
+    if (m_showWater && ocean && ocean->Enabled())
+        DrawWaterPanel(*ocean, scene);
 
     ImGui::Render();
 }
@@ -217,6 +263,288 @@ void Editor::DrawMinecraftPanel(mc::VoxelStreamer& v) {
             (double)cfg.blasBuildPoolBytes / (1024.0 * 1024.0), "MB");
     bar("light records", st.lightRecUsed / 1.0e6, cfg.lightRecordCapacity / 1.0e6, "M");
     bar("light nodes", st.lightNodeUsed / 1.0e6, cfg.lightNodeCapacity / 1.0e6, "M");
+    ImGui::End();
+}
+
+void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
+    SetInitialPanelPosition(ImVec2(420, 60));
+    ImGui::SetNextWindowSize(ImVec2(470, 700), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Water###Ocean", &m_showWater)) {
+        ImGui::End();
+        return;
+    }
+
+    // Anything staged here stays staged until it is committed; outside the staging window the
+    // panel follows the sea state the system actually holds, so a scene or fixture edit shows up.
+    if (!m_waterRespecPending && !ImGui::IsAnyItemActive())
+        m_waterParams = oceanSystem.GetParams();
+
+    ocean::Params& p = m_waterParams;
+    const auto& st = oceanSystem.GetStats();
+    bool cheap = false;  // takes effect on the next frame
+    bool respec = false; // re-bakes the spectrum, so it commits on release
+
+    const int force = BeaufortForce(p.windSpeed);
+    ImGui::Text("Beaufort %d, %s", force, BeaufortName(force));
+    ImGui::TextDisabled("Hs %.2f m | sea level %.2f m | %u tiles, %.2fM tris | bake %.0f ms", st.significantWaveHeight,
+                        st.surfaceY, st.tiles, (double)st.triangles / 1.0e6, st.bakeMs);
+
+    ImGui::SeparatorText("Wind");
+    respec |= ImGui::SliderFloat("Speed (m/s)", &p.windSpeed, 0.0f, 32.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Wind at 10 m. It sets the wave height through the JONSWAP spectrum and, with the\n"
+                          "turbulence below, how hard the crests are whipped over - the same turbulence\n"
+                          "setting reads far calmer in a breeze than in a gale.");
+    respec |=
+        ImGui::SliderFloat("Direction (deg)", &p.windDirectionDeg, 0.0f, 360.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Bearing the wind blows towards, clockwise from +Z.");
+    float fetchKm = p.fetch / 1000.0f;
+    if (ImGui::SliderFloat("Fetch (km)", &fetchKm, 1.0f, 500.0f, "%.0f",
+                           ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+        p.fetch = fetchKm * 1000.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("How far the wind has blown over open water. A short fetch keeps the sea young:\n"
+                          "shorter and steeper for the same wind. 200 km is already nearly fully developed.");
+    respec |= ImGui::SliderFloat("Height scale", &p.amplitudeScale, 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Artistic gain over the whole wave field; 1 is the physical JONSWAP height.");
+
+    bool fixedHeight = p.significantHeight >= 0.0f;
+    if (ImGui::Checkbox("Sea height (m)##fix", &fixedHeight)) {
+        p.significantHeight = fixedHeight ? std::max(0.05f, (float)st.significantWaveHeight) : -1.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Drive the spectrum from a significant wave height instead of from the wind's own\n"
+                          "energy. The wind still sets the direction, the spreading and the shape.");
+    if (fixedHeight) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        respec |= ImGui::SliderFloat("##Hs", &p.significantHeight, 0.0f, 14.0f, "%.2f m",
+                                     ImGuiSliderFlags_AlwaysClamp);
+    }
+    bool fixedPeriod = p.peakPeriod > 0.0f;
+    if (ImGui::Checkbox("Peak period (s)##fix", &fixedPeriod)) {
+        p.peakPeriod = fixedPeriod ? 8.0f : -1.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Period of the energy-carrying waves. Left off, the wind and fetch set it.");
+    if (fixedPeriod) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        respec |= ImGui::SliderFloat("##Tp", &p.peakPeriod, 2.0f, 22.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
+    }
+
+    ImGui::SeparatorText("Turbulence");
+    respec |= ImGui::SliderFloat("Turbulence", &p.turbulence, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How whipped the water is, on top of the height the wind already gives it. It drives\n"
+                          "the horizontal displacement that pulls crests into peaks, the gain on the short wind\n"
+                          "waves and the crest sharpening below, so the small detail runs from rounded swell at\n"
+                          "0 to a hard broken chop at 2. Wind speed carries part of it on its own, so a gale is\n"
+                          "whipped harder than a breeze at the same setting.");
+    cheap |= ImGui::SliderFloat("Crest sharpening", &p.crestSharpening, 0.0f, 8.0f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Second-order Stokes sharpening, as a multiple of the physical bound harmonic. A\n"
+                          "linear spectrum is Gaussian and therefore symmetric - every trough mirrors a crest,\n"
+                          "which is what makes an FFT sea read as rolling rather than as a real one. This pulls\n"
+                          "each band's crests into narrow peaks and leaves long shallow troughs behind them.\n"
+                          "0 is the symmetric sea, 1 the physical wave; past that each band runs up against its\n"
+                          "own steepness limit and stops. It costs nothing against the no-fold bound, so it is\n"
+                          "what buys a sharp crest once the horizontal displacement has saturated.");
+    // The wind's own contribution is invisible in the slider values, so show what the sea gets.
+    ImGui::TextDisabled("in use: crest displacement x%.2f, short-wave gain x%.2f", ocean::EffectiveChoppiness(p),
+                        ocean::ShortWaveAmplitude(p, 6.283185307179586 / 2.0));
+    ImGui::TextDisabled("crest steepness %.3f of %.2f%s | no-fold gain %.3f", st.crestSteepness,
+                        ocean::kMaxSkewSteepness,
+                        st.crestSteepness >= ocean::kMaxSkewSteepness * 0.999 ? " (at the limit)" : "",
+                        st.conditioningGain);
+    ImGui::SetItemTooltip("The sharpest band's skew against the point where its troughs would turn back up, and\n"
+                          "the uniform gain the GPU applies to the horizontal displacement to keep the surface\n"
+                          "from folding into itself. A no-fold gain well below 1 means the chop is already\n"
+                          "saturated and more choppiness buys nothing - reach for crest sharpening instead.");
+
+    if (ImGui::CollapsingHeader("Turbulence detail")) {
+        respec |= ImGui::SliderFloat("Crest displacement", &p.choppiness, 0.0f, 2.0f, "%.2f",
+                                     ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Base horizontal displacement gain, before turbulence and wind scale it. The GPU\n"
+                              "still bounds the composite deformation each frame, so this is a request.");
+        respec |= ImGui::SliderFloat("Short-wave amplitude", &p.shortWaveAmplitude, 0.0f, 3.0f, "%.2f",
+                                     ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Base gain on wind waves shorter than 8 m, reaching full gain below 2 m. The long\n"
+                              "wind sea and the independent swell are left alone.");
+    }
+
+    ImGui::SeparatorText("Swell");
+    respec |= ImGui::SliderFloat("Swell height (m)", &p.swellHeight, 0.0f, 8.0f, "%.2f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Independent long waves arriving from a distant storm, on their own bearing.");
+    respec |= ImGui::SliderFloat("Swell period (s)", &p.swellPeriod, 2.0f, 25.0f, "%.1f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    respec |= ImGui::SliderFloat("Swell direction (deg)", &p.swellDirectionDeg, 0.0f, 360.0f, "%.0f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    respec |= ImGui::SliderFloat("Swell spread (deg)", &p.swellSpreadDeg, 2.0f, 90.0f, "%.0f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Angular width of the swell. Narrow spread gives long parallel crests.");
+    respec |= ImGui::SliderFloat("Wind-sea narrowing", &p.swell, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Narrows the wind sea itself towards long-crested swell. Pushed up it turns the\n"
+                          "surface into parallel corrugations, so the default stays low.");
+    respec |= ImGui::SliderFloat("Downwind alignment", &p.windAlign, 0.0f, 4.0f, "%.2f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Suppresses waves travelling into the wind; higher values make the crests more\n"
+                          "parallel to each other.");
+
+    ImGui::SeparatorText("Water body");
+    cheap |= ImGui::SliderFloat("Chlorophyll (mg/m^3)", &p.chlorophyll, 0.001f, 10.0f, "%.3f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Morel's Case-1 water. 0.03 is clear open ocean and reads deep indigo; 1-10 is\n"
+                          "coastal green. Drives the absorption and scattering below.");
+    cheap |= ImGui::SliderFloat("Turbidity", &p.turbidity, 0.0f, 10.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Extra scattering for sediment-laden water, over the Case-1 model.");
+    cheap |= ImGui::SliderFloat("Scattering strength", &p.subsurfaceStrength, 0.0f, 1.0f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    cheap |= ImGui::SliderFloat("Mean free path scale", &p.subsurfaceRadiusScale, 0.01f, 10.0f, "%.3f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    cheap |= ImGui::SliderFloat("Forward scattering", &p.subsurfacePhaseG, -0.95f, 0.95f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    cheap |= ImGui::SliderFloat("Surface body weight", &p.bodyWeight, 0.0f, 1.0f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Optional diffuse contribution at the surface. Clear water needs none: the colour\n"
+                          "comes from transmission into the volume.");
+
+    // Material adjustments, moved here from the material inspector: the ocean's slots are
+    // generated from the optics above, and hand edits take the whole block over.
+    const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
+                             ? (int)scene.oceanMatIndex
+                             : -1;
+    if (waterMat >= 0 && ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto& mats = scene.materials;
+        const int i = waterMat;
+        bool matChanged = false;
+
+        if (scene.oceanMaterialEdited) {
+            ImGui::TextDisabled("Edited by hand; the optics above no longer regenerate it.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Revert")) {
+                const Material generated = ocean::OceanSystem::MakeMaterial(p);
+                mats.Kd[i] = generated.Kd;
+                mats.Ni[i] = generated.Ni;
+                mats.Tf[i] = generated.Tf;
+                mats.sssAlbedo[i] = generated.sssAlbedo;
+                mats.sssRadius[i] = generated.sssRadius;
+                mats.sssPhaseG[i] = generated.sssPhaseG;
+                mats.sssWeight[i] = generated.sssWeight;
+                mats.sssEnable[i] = generated.sssEnable;
+                BroadcastWaterMaterial(scene, (UINT)i);
+                scene.oceanMaterialEdited = false;
+                scene.MarkMaterialsDirty();
+            }
+        } else {
+            ImGui::TextDisabled("Generated from the optics above; any edit here takes it over.");
+        }
+
+        matChanged |= ImGui::DragFloat3("Absorption (1/m)", &mats.Tf[i].x, 0.001f, 0.0f, 100.0f, "%.4f");
+        ImGui::SetItemTooltip("Red, green and blue absorption per metre.\n"
+                              "0 = no absorption; higher values absorb that channel faster.");
+        matChanged |= ImGui::DragFloat("IOR", &mats.Ni[i], 0.001f, 1.0f, 2.0f, "%.3f");
+        ImGui::SetItemTooltip("1.333 is sea water at visible wavelengths.");
+
+        bool en = mats.sssEnable[i] != 0u;
+        if (ImGui::Checkbox("Water volume scattering", &en)) {
+            mats.sssEnable[i] = en ? 1u : 0u;
+            matChanged = true;
+        }
+        matChanged |= ImGui::ColorEdit3("Scattering color", &mats.sssAlbedo[i].x, ImGuiColorEditFlags_Float);
+        ImGui::SetItemTooltip("Relative RGB scattering coefficients in the water volume.\n"
+                              "One volume event redirects the path; absorption determines the depth color.");
+        matChanged |= ImGui::SliderFloat("Scattering mean free path (m)", &mats.sssRadius[i], 0.0005f, 1000.0f,
+                                         "%.4f", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Mean free path in metres for the strongest color channel. Larger values mean\n"
+                              "clearer water; thickness comes from the traced geometry.");
+        matChanged |= ImGui::SliderFloat("Scattering forward g", &mats.sssPhaseG[i], -0.95f, 0.95f, "%.2f",
+                                         ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Higher values concentrate volume scattering in the forward direction.");
+        matChanged |= ImGui::SliderFloat("Scattering density", &mats.sssWeight[i], 0.0f, 1.0f, "%.2f",
+                                         ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Scales the scattering coefficient, independently of absorption.\n"
+                              "0 = absorption only; higher values increase underwater haze.\n"
+                              "Surface Fresnel reflectance is unchanged.");
+
+        if (matChanged) {
+            scene.oceanMaterialEdited = true;
+            BroadcastWaterMaterial(scene, (UINT)i);
+            scene.MarkMaterialsDirty();
+        }
+    }
+
+    ImGui::SeparatorText("Detail");
+    cheap |= ImGui::SliderFloat("Tile size / distance", &p.lodFactor, 0.05f, 2.0f, "%.3f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Tile edge as a fraction of the distance to the camera. Lower is finer and costs\n"
+                          "proportionally more acceleration-structure builds.");
+    cheap |= ImGui::SliderFloat("Smallest tile (m)", &p.minTileSize, 1.0f, 64.0f, "%.0f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    cheap |= ImGui::SliderFloat("Near keep radius (m)", &p.nearKeepRadius, 0.0f, 4000.0f, "%.0f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Tiles nearer than this survive the frustum cull, so reflections and shadows of\n"
+                          "nearby waves stay correct.");
+    cheap |= ImGui::SliderFloat("Ray footprint", &p.filterScale, 0.1f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Scales the footprint that splits wave detail between geometry and the BRDF. Raise\n"
+                          "it if the horizon shimmers, lower it if the near surface looks over-smoothed.");
+    cheap |= ImGui::SliderFloat("Sun highlight roughness", &p.sunLobeRoughness, 0.0f, 0.5f, "%.3f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Lobe width the sun sampler and next-event estimation widen the water to, and nothing\n"
+                          "else - continuation rays, environment reflections and the reconstruction guides keep\n"
+                          "the authored roughness and the full-resolution wave normal.\n"
+                          "Clear water is mirror-flat, which leaves direct lighting a delta lobe: the glitter\n"
+                          "track then arrives as isolated fireflies instead of a sun path. Lower is a sharper,\n"
+                          "sparklier highlight and more noise; higher is a softer, calmer one. 0 hands the sun\n"
+                          "sampler the true delta lobe.");
+    float extentKm = p.extent / 1000.0f;
+    if (ImGui::SliderFloat("Extent (km)", &extentKm, 1.0f, 200.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp)) {
+        p.extent = extentKm * 1000.0f;
+        cheap = true;
+    }
+    ImGui::SetItemTooltip("Half-width of the simulated ocean; the quadtree root spans twice this.");
+    cheap |= ImGui::Checkbox("Earth curvature", &p.curvature);
+    ImGui::SetItemTooltip("Without it the horizon sits at infinity and distant ships never drop below it.");
+
+    ImGui::SeparatorText("Simulation");
+    cheap |= ImGui::Checkbox("Pause", &p.paused);
+    int seed = (int)p.seed;
+    if (ImGui::SliderInt("Seed", &seed, 0, 9999, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        p.seed = (uint32_t)std::max(0, seed);
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Picks a different realisation of the same sea state.");
+    static const char* kDebugModes[] = {"Beauty",    "Normals",   "Compression",  "Covariance",
+                                        "Roughness", "Foam", "Mip level"};
+    int debug = (int)std::min<uint32_t>(p.debugMode, 6u);
+    if (ImGui::Combo("Debug view", &debug, kDebugModes, IM_ARRAYSIZE(kDebugModes))) {
+        p.debugMode = (uint32_t)std::clamp(debug, 0, 6);
+        cheap = true;
+    }
+
+    if (ImGui::CollapsingHeader("Statistics")) {
+        ImGui::Text("tiles %u of %u leaves, %u dropped", st.tiles, st.leaves, st.dropped);
+        ImGui::Text("builds %u, refits %u | %.2fM triangles", st.builds, st.refits, (double)st.triangles / 1.0e6);
+        ImGui::Text("BLAS %.1f MB | resources %.1f MB", (double)st.blasBytes / (1024.0 * 1024.0),
+                    (double)st.resourceBytes / (1024.0 * 1024.0));
+        ImGui::Text("slope variance: spectrum %.4f, Cox-Munk %.4f", st.slopeVarSpectrum, st.slopeVarCoxMunk);
+        ImGui::SetItemTooltip("The synthesised spectrum is calibrated against the measured Cox & Munk totals;\n"
+                              "the gap is the energy above the finest cascade's Nyquist limit.");
+        ImGui::Text("conditioning gain %.3f | bake %.0f ms", st.conditioningGain, st.bakeMs);
+    }
+
+    // Respectral changes re-bake four 1024^2 cascades on the CPU, so they are staged while a
+    // widget is held and committed once it is let go. The cheap ones land the same frame.
+    if (m_waterRespecPending || respec) {
+        m_waterRespecPending = true;
+        if (!ImGui::IsAnyItemActive()) {
+            oceanSystem.Configure(p);
+            m_waterRespecPending = false;
+        }
+    } else if (cheap) {
+        oceanSystem.Configure(p);
+    }
+
     ImGui::End();
 }
 
@@ -441,10 +769,30 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
             for (auto& p : dlss.rrPresets)
                 p = (sl::DLSSDPreset)values[preset];
         }
-        ImGui::SliderFloat("Temporal response", &dlss.rrResponsivity, -1.0f, 1.0f, "%.3f",
+        ImGui::SliderFloat("Temporal response (rough)", &dlss.rrResponsivityRough, -1.0f, 1.0f, "%.3f",
                            ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemDeactivatedAfterEdit())
             dlss.ForceReset();
+        ImGui::SetItemTooltip("How readily reconstruction drops accumulated history: -1 accumulates the longest,\n"
+                              "+1 is the most responsive. The mask is written per pixel, and an ordinary surface\n"
+                              "interpolates between this value at roughness 1 and the mirror one at roughness 0.\n"
+                              "Rough shading barely changes between frames, so it accumulates freely.");
+        ImGui::SliderFloat("Temporal response (mirror)", &dlss.rrResponsivityMirror, -1.0f, 1.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            dlss.ForceReset();
+        ImGui::SetItemTooltip("The other end of that ramp, at roughness 0: a sharp reflection slides across a\n"
+                              "smooth surface as the camera moves, so it cannot lean on history as hard.");
+        ImGui::SliderFloat("Temporal response (water)", &dlss.rrWaterResponsivity, -1.0f, 1.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            dlss.ForceReset();
+        ImGui::SetItemTooltip("Flat value for pixels whose primary ray landed on the ocean, off the ramp above. A\n"
+                              "moving sea presents a different set of crests every frame, so the history length\n"
+                              "that resolves a static surface blends its sun glitter into streaks and\n"
+                              "misestimates it; water wants the responsive end while the scene keeps\n"
+                              "accumulating. All three at 0 leaves the mask unbound and reconstruction uses its\n"
+                              "own default.");
         ImGui::SliderFloat("Camera jitter", &camera.jitterScale, 0.0f, 1.0f, "%.3f");
         if (ImGui::IsItemDeactivatedAfterEdit())
             dlss.ForceReset();
@@ -835,11 +1183,13 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         }
     }
 
+    // The ocean's block of materials is generated, not authored: it is edited from the water panel
+    // (Experimental > Water), which broadcasts every change across the block. Listing 4096
+    // near-identical slots here would only get in the way.
     const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
         ? (int)scene.oceanMatIndex : -1;
-    // Internal water variants are reserved for diagnostics, not independent user materials.
-    if (waterMat >= 0 && m_selectedMat > waterMat && m_selectedMat < waterMat + OCEAN_MATERIAL_COUNT)
-        m_selectedMat = waterMat;
+    if (waterMat >= 0 && m_selectedMat >= waterMat && m_selectedMat < waterMat + OCEAN_MATERIAL_COUNT)
+        m_selectedMat = -1;
     int matchCount = 0;
     auto drawMaterial = [&](int i) {
         const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
@@ -868,8 +1218,6 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         if (ImGui::Selectable(label, m_selectedMat == i))
             m_selectedMat = i;
     };
-    if (waterMat >= 0)
-        drawMaterial(waterMat);
     for (int i = 0; i < (int)scene.materials.size(); ++i) {
         if (waterMat >= 0 && i >= waterMat && i < waterMat + OCEAN_MATERIAL_COUNT)
             continue;
@@ -910,8 +1258,7 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
                 ImGui::SetTooltip("Index of Refraction\n1.0 = air, 1.33 = water, 1.5 = glass");
         }
 
-        // Procedural ocean tiles are not registered as mesh emitters or alpha-tested geometry.
-        if (i != waterMat && ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
             XMFLOAT3& Ke = mats.Ke[i];
             bool emEdit = ImGui::ColorEdit3("Emission", &Ke.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (emEdit) {
@@ -961,18 +1308,11 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         if (ImGui::CollapsingHeader("Transmission")) {
             if (i >= (int)mats.thinGlass.size())
                 mats.thinGlass.resize(i + 1, 0u);
-            if (i == waterMat && mats.thinGlass[i] == 0u) {
-                changed |= ImGui::DragFloat3("Absorption (1/m)", &mats.Tf[i].x, 0.001f, 0.0f, 100.0f, "%.4f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Red, green and blue absorption per metre.\n"
-                                      "0 = no absorption; higher values absorb that channel faster.");
-            } else {
-                changed |= ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x,
-                                             ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Volume absorption color (solid glass)\n"
-                                      "Thin glass: flat per-surface transmission tint\nWhite = no absorption");
-            }
+            changed |= ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x,
+                                         ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Volume absorption color (solid glass)\n"
+                                  "Thin glass: flat per-surface transmission tint\nWhite = no absorption");
 
             bool thin = mats.thinGlass[i] != 0u;
             if (ImGui::Checkbox("Thin glass (Fresnel only)", &thin)) {
@@ -1001,39 +1341,30 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
                 mats.sssWeight.resize(i + 1, 1.0f);
 
             bool en = mats.sssEnable[i] != 0u;
-            if (ImGui::Checkbox(i == waterMat ? "Water volume scattering" : "Enable SSS", &en)) {
+            if (ImGui::Checkbox("Enable SSS", &en)) {
                 mats.sssEnable[i] = en ? 1u : 0u;
                 changed = true;
             }
-            changed |= ImGui::ColorEdit3(i == waterMat ? "Scattering color" : "SSS Color", &mats.sssAlbedo[i].x, ImGuiColorEditFlags_Float);
+            changed |= ImGui::ColorEdit3("SSS Color", &mats.sssAlbedo[i].x, ImGuiColorEditFlags_Float);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(
-                    i == waterMat ? "Relative RGB scattering coefficients in the water volume.\n"
-                                    "One volume event redirects the path; absorption determines the depth color." :
                     "Single-scattering albedo (the inside colour).\nCarried by the random walk's albedo product.");
-            changed |=
-                ImGui::SliderFloat(i == waterMat ? "Scattering mean free path (m)" : "Radius", &mats.sssRadius[i],
-                    0.0005f, i == waterMat ? 1000.0f : 50.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
+            changed |= ImGui::SliderFloat("Radius", &mats.sssRadius[i], 0.0005f, 50.0f, "%.4f",
+                                          ImGuiSliderFlags_Logarithmic);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(
-                    i == waterMat ? "Scattering mean free path in metres for the strongest color channel.\n"
-                                    "Larger values mean clearer water; thickness comes from the traced geometry." :
                     "Scatter distance / mean free path (world units), log scale.\nsigma_t = 1/radius. Small = "
                     "dense/opaque, large = translucent.\nUseful range is relative to the object's thickness.");
-            changed |= ImGui::SliderFloat(i == waterMat ? "Forward scattering" : "Phase g", &mats.sssPhaseG[i], -0.95f, 0.95f);
+            changed |= ImGui::SliderFloat("Phase g", &mats.sssPhaseG[i], -0.95f, 0.95f);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip(i == waterMat ? "Higher values concentrate volume scattering in the forward direction." :
-                    "Henyey-Greenstein anisotropy.\n0 = isotropic, >0 forward, <0 backward scattering.");
-            changed |= ImGui::SliderFloat(i == waterMat ? "Scattering density" : "Entry weight", &mats.sssWeight[i], 0.0f, 1.0f);
+                ImGui::SetTooltip("Henyey-Greenstein anisotropy.\n0 = isotropic, >0 forward, <0 backward scattering.");
+            changed |= ImGui::SliderFloat("Entry weight", &mats.sssWeight[i], 0.0f, 1.0f);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip(i == waterMat ? "Scales the scattering coefficient, independently of absorption.\n"
-                                    "0 = absorption only; higher values increase underwater haze.\n"
-                                    "Surface Fresnel reflectance is unchanged." :
-                                  "Probability scale for entering the medium vs reflecting.\np_enter = weight * "
+                ImGui::SetTooltip("Probability scale for entering the medium vs reflecting.\np_enter = weight * "
                                   "Fresnel-transmittance. 0 = pure reflection, 1 = mostly subsurface.");
         }
 
-        if (i != waterMat && ImGui::CollapsingHeader("Alpha Test")) {
+        if (ImGui::CollapsingHeader("Alpha Test")) {
             changed |= ImGui::SliderFloat("Threshold", &mats.alphaThreshold[i], 0.0f, 1.0f);
 
             if (i >= mats.invertAlpha.size())
@@ -1058,11 +1389,8 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             ImGui::Text("  RMA:    %s", mats.rmaTexID[i] >= 0 ? std::to_string(mats.rmaTexID[i]).c_str() : "none");
         }
 
-        if (changed) {
-            if (i == waterMat)
-                scene.oceanMaterialEdited = true;
+        if (changed)
             scene.MarkMaterialsDirty(emissionChanged);
-        }
     } else {
         ImGui::TextDisabled("Select a material.");
     }

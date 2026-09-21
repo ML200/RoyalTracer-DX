@@ -138,6 +138,14 @@ cbuffer CameraParams : register(b0)
     float terrainHeightFrequency;
     float oceanInstanceBase;
     float oceanEnabled;
+    // Reconstruction responsivity written per pixel into the denoiser's mask: -1 accumulates the
+    // longest, +1 drops history fastest. Ordinary surfaces interpolate between the two ends by
+    // roughness - a rough surface's shading barely moves between frames, a smooth one carries a
+    // sharp reflection that slides across it. Water gets its own because its sun glitter moves
+    // every frame and history that suits a static surface smears it into streaks.
+    float dlssResponsivityRough;  // at roughness 1
+    float dlssResponsivityMirror; // at roughness 0
+    float dlssWaterResponsivity;
 }
 
 // Instance-property records from this index up belong to the ocean.
@@ -297,3 +305,4 @@ RWTexture2D<float4> g_dlssTransparency   : register(u20);
 RWTexture2D<float4> g_dlssColorPreTrans  : register(u21);
 RWTexture2D<float4> g_dlssInput          : register(u22);
 RWTexture2D<float>  g_dlssBiasHint       : register(u23);
+RWTexture2D<float>  g_dlssResponsivity   : register(u26);

@@ -313,6 +313,10 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 13, 11, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // The reconstruction responsivity mask follows the guides in the heap but not in register
+    // space: u24 already belongs to the auto-exposure buffer.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 26, 0, VOLATILE,
+                               D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 19, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
@@ -826,6 +830,7 @@ void Renderer::CreateShaderResourceHeap() {
     dlssUAV(m_dlss.ColorBeforeTrans(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.Input(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.BiasHint(), DXGI_FORMAT_R8_UNORM);
+    dlssUAV(m_dlss.ResponsivityMask(), DXGI_FORMAT_R16_FLOAT);
 
     nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
     nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);

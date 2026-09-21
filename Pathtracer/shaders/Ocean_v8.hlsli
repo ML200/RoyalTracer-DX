@@ -20,10 +20,15 @@ float3 OceanDisplacementFrom(float2 q, float widthM, uint descriptor) {
     const OceanParamsGPU P = OceanParams();
     Texture2DArray<float4> disp = ResourceDescriptorHeap[descriptor];
     float3 d = 0.0f;
-    [loop] for (uint c = 0; c < OCEAN_CASCADES; ++c)
-        d += disp.SampleLevel(g_sampler, float3(OceanCascadeUV(q, P, c), c),
-                              OceanCascadeMip(widthM, P.cascadeLength[c])).xyz;
-    return d * P.waveHeightScale;
+    // Each band is sharpened on its own elevation, so the small chop peaks like the swell does
+    // rather than riding along as a symmetric ripple.
+    [loop] for (uint c = 0; c < OCEAN_CASCADES; ++c) {
+        const float3 s = disp.SampleLevel(g_sampler, float3(OceanCascadeUV(q, P, c), c),
+                                          OceanCascadeMip(widthM, P.cascadeLength[c])).xyz * P.waveHeightScale;
+        d.xz += s.xz;
+        d.y += OceanSkewHeight(s.y, P.crestSkew[c], P.cascadeVariance[c]);
+    }
+    return d;
 }
 float3 OceanDisplacement(float2 q, float widthM) {
     return OceanDisplacementFrom(q, widthM, OCEAN_SRV_DISP);
@@ -38,8 +43,11 @@ void OceanDerivatives(float2 q, float widthM, out float2 gradient, out float3 st
         const float3 uv = float3(OceanCascadeUV(q, P, c), c);
         const float mip = OceanCascadeMip(widthM, P.cascadeLength[c]);
         const float4 d = deriv.SampleLevel(g_sampler, uv, mip) * P.waveHeightScale;
-        gradient += d.xy;
-        stretch += float3(d.zw, disp.SampleLevel(g_sampler, uv, mip).w * P.waveHeightScale);
+        const float4 h = disp.SampleLevel(g_sampler, uv, mip) * P.waveHeightScale;
+        // Matches the height warp in OceanDisplacementFrom, so the shading normal keeps agreeing
+        // with the geometry the tessellator wrote.
+        gradient += d.xy * OceanSkewSlope(h.y, P.crestSkew[c]);
+        stretch += float3(d.zw, h.w);
     }
 }
 float3 OceanNormal(float2 q, float widthM, float2 curveGradient) {

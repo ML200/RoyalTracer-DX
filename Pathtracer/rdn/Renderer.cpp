@@ -444,7 +444,7 @@ void Renderer::UpdateRenderer(float dt) {
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam, m_passes, m_dlss, m_dlssNR, m_dlssG,
                   m_integratorSettings, m_fps, m_frameStats, m_planet.stats(),
-                  m_voxels.enabled() ? &m_voxels : nullptr);
+                  m_voxels.enabled() ? &m_voxels : nullptr, &m_ocean);
     // Transport changes invalidate accumulated reconstruction and learning history.
     if (m_ocean.Enabled() && m_scene.oceanInstanceSlots && !m_scene.oceanMaterialEdited) {
         const Material water = ocean::OceanSystem::MakeMaterial(m_ocean.GetParams());
@@ -539,6 +539,11 @@ void Renderer::UpdateRenderer(float dt) {
 
     SwapSampleBuffers();
 
+    // The shading pass writes the responsivity mask, so its three anchors travel with the rest of
+    // the per-frame camera constants.
+    m_camera.dlssResponsivityRough = std::clamp(m_dlss.rrResponsivityRough, -1.0f, 1.0f);
+    m_camera.dlssResponsivityMirror = std::clamp(m_dlss.rrResponsivityMirror, -1.0f, 1.0f);
+    m_camera.dlssWaterResponsivity = std::clamp(m_dlss.rrWaterResponsivity, -1.0f, 1.0f);
     m_camera.UploadGPUBuffer(m_aspectRatio);
 
     if (m_camera.ConsumeResetPending()) {
@@ -905,7 +910,7 @@ void Renderer::RebuildDLSSDescriptors() {
         handle.ptr += inc;
     };
 
-    // Must match order in CreateShaderResourceHeap (slots 39-51)
+    // Must match order in CreateShaderResourceHeap (slots 33-46)
     dlssUAV(m_dlss.Depth(), DXGI_FORMAT_R32_FLOAT);
     dlssUAV(m_dlss.MVec(), DXGI_FORMAT_R16G16_FLOAT);
     dlssUAV(m_dlss.Normals(), DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -919,6 +924,7 @@ void Renderer::RebuildDLSSDescriptors() {
     dlssUAV(m_dlss.ColorBeforeTrans(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.Input(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.BiasHint(), DXGI_FORMAT_R8_UNORM);
+    dlssUAV(m_dlss.ResponsivityMask(), DXGI_FORMAT_R16_FLOAT);
 }
 
 void Renderer::OnResize(UINT newWidth, UINT newHeight) {

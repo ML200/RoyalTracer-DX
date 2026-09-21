@@ -74,6 +74,14 @@ class Camera {
     uint32_t oceanInstanceBase = 0xFFFFFFFFu;
     bool oceanEnabled = false;
 
+    // Per-pixel reconstruction responsivity the shading pass writes into the denoiser's mask: how
+    // readily it drops accumulated history. Ordinary surfaces interpolate between the two ends by
+    // roughness; water takes its own value, because its sun glitter moves every frame and history
+    // that suits a static surface smears it. All three mirrored from DLSSManager.
+    float dlssResponsivityRough = -1.0f;
+    float dlssResponsivityMirror = -0.5f;
+    float dlssWaterResponsivity = 1.0f;
+
   private:
     ComPtr<ID3D12Resource> m_buffer;
     ComPtr<ID3D12DescriptorHeap> m_constHeap;

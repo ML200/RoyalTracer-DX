@@ -43,6 +43,7 @@ class DLSSManager {
     ID3D12Resource* Transparency() const { return m_transparency.Get(); }
     ID3D12Resource* ColorBeforeTrans() const { return m_colorBeforeTrans.Get(); }
     ID3D12Resource* BiasHint() const { return m_biasHint.Get(); }
+    ID3D12Resource* ResponsivityMask() const { return m_responsivityMask.Get(); }
 
     sl::DLSSMode mode = sl::DLSSMode::eDLAA;
 
@@ -61,7 +62,15 @@ class DLSSManager {
 
     bool rrLinkPresets = true;
 
-    float rrResponsivity = -1.0f;
+    // How readily reconstruction drops accumulated history: -1 accumulates longest, +1 is most
+    // responsive. Written per pixel by the shading pass rather than applied uniformly. A rough
+    // surface's shading barely moves between frames and is happy accumulating; a smooth one
+    // carries a sharp reflection that slides across it, so it is ramped part of the way back.
+    // Moving water sits at the far end of its own: its sun glitter is a different set of crests
+    // every frame, and the history length that resolves a static surface smears it.
+    float rrResponsivityRough = -1.0f;  // at roughness 1
+    float rrResponsivityMirror = -0.5f; // at roughness 0
+    float rrWaterResponsivity = 1.0f;
 
     float sharpness = 0.5f;
 
@@ -117,7 +126,6 @@ class DLSSManager {
     ComPtr<ID3D12Resource> m_transparency, m_colorBeforeTrans;
     ComPtr<ID3D12Resource> m_biasHint;
     ComPtr<ID3D12Resource> m_responsivityMask;
-    ComPtr<ID3D12DescriptorHeap> m_responsivityGpuHeap, m_responsivityCpuHeap;
 
     UINT m_displayWidth = 0, m_displayHeight = 0;
     UINT m_renderWidth = 0, m_renderHeight = 0;

@@ -71,6 +71,10 @@ class OceanSystem : public planet::IExternalStream {
         double whitecapCoverage = 0.0;
         double whitecapMeasured = 0.0;
         double surfaceY = 0.0;
+        // Steepest crest sharpening any cascade carries, as a*sigma. Saturated at
+        // ocean::kMaxSkewSteepness the band is as peaked as it can get without its troughs
+        // turning back up.
+        double crestSteepness = 0.0;
     };
     const Stats& GetStats() const { return m_stats; }
 
@@ -158,6 +162,11 @@ class OceanSystem : public planet::IExternalStream {
     // Mean sea level actually used, and how far the deepest trough reaches below it.
     double m_surfaceY = 0.0;
     double m_waveDepth = 0.0;
+
+    // Elevation variance each cascade carries and its energy-weighted wavenumber. The crest
+    // sharpening is solved from these every frame, so it needs no re-bake of its own.
+    double m_cascadeVariance[OCEAN_CASCADES] = {};
+    double m_cascadeMeanK[OCEAN_CASCADES] = {};
 
     // Baked spectrum, CPU side. The same samples produce the textures and the slope variances.
     std::vector<XMFLOAT4> m_h0Data;

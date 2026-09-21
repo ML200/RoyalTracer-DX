@@ -85,23 +85,8 @@ void DLSSManager::CreateInputTextures(ID3D12Device* device) {
     createRenderTex(m_colorBeforeTrans, DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_ColorPreTrans");
     createRenderTex(m_biasHint, DXGI_FORMAT_R8_UNORM, L"DLSS_BiasHint");
 
+    // The shading pass writes this alongside the other guides, through the renderer's own heap.
     createRenderTex(m_responsivityMask, DXGI_FORMAT_R16_FLOAT, L"DLSS_ResponsivityMask");
-    if (!m_responsivityGpuHeap) {
-        D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heapDesc.NumDescriptors = 1;
-        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        ThrowIfFailed(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_responsivityGpuHeap)));
-        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        ThrowIfFailed(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_responsivityCpuHeap)));
-    }
-    D3D12_UNORDERED_ACCESS_VIEW_DESC maskUav = {};
-    maskUav.Format = DXGI_FORMAT_R16_FLOAT;
-    maskUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    device->CreateUnorderedAccessView(m_responsivityMask.Get(), nullptr, &maskUav,
-                                      m_responsivityGpuHeap->GetCPUDescriptorHandleForHeapStart());
-    device->CreateUnorderedAccessView(m_responsivityMask.Get(), nullptr, &maskUav,
-                                      m_responsivityCpuHeap->GetCPUDescriptorHandleForHeapStart());
 
     createDisplayTex(m_output, DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Output");
 
@@ -153,8 +138,7 @@ void DLSSManager::Evaluate(ID3D12GraphicsCommandList* cmdList, ID3D12Device* dev
     m_lastEvaluationSucceeded = false;
     m_lastEvaluationReset = true;
     if (!cmdList || !m_output || !m_depth || !m_mvec || !m_normals || !m_diffuseAlbedo || !m_specAlbedo ||
-        !m_roughness || !m_specHitDist || !m_biasHint || !m_responsivityMask || !m_responsivityGpuHeap ||
-        !m_responsivityCpuHeap)
+        !m_roughness || !m_specHitDist || !m_biasHint || !m_responsivityMask)
         return;
 
     if (std::memcmp(m_activePresets, rrPresets, sizeof(rrPresets)) != 0) {
@@ -167,20 +151,11 @@ void DLSSManager::Evaluate(ID3D12GraphicsCommandList* cmdList, ID3D12Device* dev
     constexpr D3D12_RESOURCE_STATES stateSRV =
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    // DLSS consumes guides as SRVs and returns them to UAV state afterward.
-    const float responsivity = std::clamp(rrResponsivity, -1.0f, 1.0f);
-    const bool useResponsivityMask = responsivity != 0.0f;
-    if (useResponsivityMask) {
-        const float clearColor[4] = {responsivity, 0.0f, 0.0f, 0.0f};
-
-        ID3D12DescriptorHeap* heaps[] = {m_responsivityGpuHeap.Get()};
-        cmdList->SetDescriptorHeaps(1, heaps);
-        cmdList->ClearUnorderedAccessViewFloat(m_responsivityGpuHeap->GetGPUDescriptorHandleForHeapStart(),
-                                               m_responsivityCpuHeap->GetCPUDescriptorHandleForHeapStart(),
-                                               m_responsivityMask.Get(), clearColor, 0, nullptr);
-        auto ready = CD3DX12_RESOURCE_BARRIER::UAV(m_responsivityMask.Get());
-        cmdList->ResourceBarrier(1, &ready);
-    }
+    // DLSS consumes guides as SRVs and returns them to UAV state afterward. The mask itself is
+    // filled per pixel by the shading pass, alongside the other guides; zero on both ends means
+    // nothing wants an override, so the mask is left unbound and reconstruction uses its default.
+    const bool useResponsivityMask =
+        rrResponsivityRough != 0.0f || rrResponsivityMirror != 0.0f || rrWaterResponsivity != 0.0f;
 
     ID3D12Resource* dlssInputs[] = {m_depth.Get(),
                                     m_mvec.Get(),

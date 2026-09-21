@@ -149,6 +149,12 @@ struct OceanParamsGPU {
     OCEAN_FLOAT4 slopeVarAlong; // along-wind slope variance carried by each cascade
     OCEAN_FLOAT4 slopeVarCross; // cross-wind slope variance carried by each cascade
 
+    // Second-order Stokes crest sharpening, per cascade: the coefficient of the bound harmonic
+    // that rides in phase with the crest, and the band's elevation variance that keeps the warp's
+    // mean where it was. Solved on the host so the trough side never turns back up.
+    OCEAN_FLOAT4 crestSkew;
+    OCEAN_FLOAT4 cascadeVariance;
+
     // The floating origin moves in kilometre steps that are not multiples of the cascade periods,
     // so each cascade carries its own pre-wrapped origin. Folding the shift in on the host keeps
     // the shader's texture coordinates small and the waves pinned to absolute world space.
@@ -181,7 +187,9 @@ struct OceanParamsGPU {
     // Above 1 the surface filters harder (smoother, safer); below 1 it keeps more geometry detail.
     float filterScale;
     float foamRoughness;
-    float minRoughness; // legacy field; zero, not used by beauty shading
+    // Roughness floor the sun sampler and NEE widen the water surface to, and nothing else.
+    // Trades highlight sharpness against the noise of the glitter track; see OceanOptics.hlsli.
+    float sunLobeRoughness;
     float waveHeightScale;
 
     float invRadius;

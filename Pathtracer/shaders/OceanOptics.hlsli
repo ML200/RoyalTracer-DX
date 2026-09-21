@@ -2,8 +2,13 @@
 
 // Artistic direct-light filter only. Continuation, environment reflection and DLSS
 // guides retain the authored roughness and full-resolution wave normal.
-float OceanHighlightRoughness(float authoredRoughness) {
-    return max(authoredRoughness, 0.14f);
+//
+// A clear sea is authored mirror-flat, which leaves the sun sampler and NEE a delta lobe: the
+// glitter track then resolves as isolated fireflies that no amount of sampling clears up. The
+// floor is the lobe width direct lighting alone works with, so it trades highlight sharpness
+// against how noisy the sun track is. It is supplied by the caller, from the ocean parameters.
+float OceanHighlightRoughness(float authoredRoughness, float lobeRoughness) {
+    return max(authoredRoughness, lobeRoughness);
 }
 bool OceanDirectLightingOwnsRay(bool directLighting, float outgoingCosine) {
     return directLighting && outgoingCosine > 0.0f;
