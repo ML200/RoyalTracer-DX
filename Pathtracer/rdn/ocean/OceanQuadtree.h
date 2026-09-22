@@ -34,7 +34,9 @@ inline uint64_t TileKey(uint8_t level, uint32_t ix, uint32_t iy) {
 class Quadtree {
   public:
     // Chooses the visible leaves for this camera and assigns each a persistent slot.
-    void Select(const Params& p, const planet::CameraView& cam, uint32_t maxTiles);
+    // `coverage`, when given, decides which tiles become geometry at all; see ocean::ICoverage.
+    void Select(const Params& p, const planet::CameraView& cam, uint32_t maxTiles,
+                const ICoverage* coverage = nullptr);
 
     const std::vector<TileDesc>& Tiles() const { return m_tiles; }
     uint32_t SelectedLeafCount() const { return m_leafCount; }
@@ -95,7 +97,8 @@ inline uint32_t Quadtree::AcquireSlot(uint64_t key, uint32_t maxTiles, bool& isN
     return UINT32_MAX;
 }
 
-inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uint32_t maxTiles) {
+inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uint32_t maxTiles,
+                             const ICoverage* coverage) {
     m_set.clear();
     m_leaves.clear();
     m_tiles.clear();
@@ -122,7 +125,13 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
 
     // Keep the complete finite ocean in the ray-visible scene, including behind the camera.
     // Quality selection may coarsen geometry; visibility is never restricted to primary rays.
-    auto isVisible = [](double, double, double, double) { return true; };
+    // A coverage test is the one thing that does remove a tile: where the world holds no water,
+    // the sea has nothing to stand for and every ray would pay to traverse it regardless.
+    // Coverage has already pruned the empty regions during the descent; this is the safety net
+    // for a tile that reached the emission list some other way, such as through 2:1 balancing.
+    auto isVisible = [&](double x, double z, double s, double) {
+        return coverage == nullptr || coverage->Test(x, z, s) != Coverage::None;
+    };
 
     // Apply the same LOD rule around the full finite square, independent of view direction.
     struct Node {
@@ -137,6 +146,11 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
     // cost nothing visually, because those waves are already carried by the BRDF rather than by
     // geometry.
     double lodFactor = std::max(0.02, (double)p.lodFactor);
+    // Edge a partially covered tile is split down to. Small enough that a tile's box no longer
+    // reaches across the scene, large enough that a coastline does not cost hundreds of them. It
+    // coarsens alongside the level of detail when the budget is tight, so the two back off
+    // together rather than this one fighting the budget on its own.
+    double coverageSplit = std::max((double)minTile * 2.0, 256.0);
     uint32_t visibleCount = 0;
     for (int attempt = 0;; ++attempt) {
         m_set.clear();
@@ -150,8 +164,18 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
             nodeMin(n.level, n.ix, n.iy, x, z, s);
             const double dist = detail::TileDistance(x, z, s, cam.position_world, seaLevel);
 
+            // Where the world has no water at all, the whole subtree goes: no geometry, no
+            // instance, and nothing for a ray crossing that ground to step into.
+            const Coverage cov = coverage ? coverage->Test(x, z, s) : Coverage::Full;
+            if (cov == Coverage::None)
+                continue;
+
             const bool canSplit = (n.level < maxLevel) && (s > minTile * 1.5);
-            if (canSplit && s > lodFactor * std::max(dist, 1.0)) {
+            // A tile straddling a shoreline is split past what distance alone would ask for,
+            // until it is small enough that its bounding box hugs the water instead of reaching
+            // across the land beside it. Distance may still split it further.
+            const bool splitForCoverage = cov == Coverage::Partial && s > coverageSplit;
+            if (canSplit && (splitForCoverage || s > lodFactor * std::max(dist, 1.0))) {
                 stack.push_back({(uint8_t)(n.level + 1), n.ix * 2u + 0u, n.iy * 2u + 0u});
                 stack.push_back({(uint8_t)(n.level + 1), n.ix * 2u + 1u, n.iy * 2u + 0u});
                 stack.push_back({(uint8_t)(n.level + 1), n.ix * 2u + 0u, n.iy * 2u + 1u});
@@ -174,6 +198,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
         if (visibleCount <= (maxTiles * 3u) / 4u || attempt >= 24)
             break;
         lodFactor *= 1.4;
+        coverageSplit *= 1.4;
     }
 
     // Returns the selected leaf covering a cell, which is that cell or one of its ancestors.
@@ -233,7 +258,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
     if (m_set.size() > maxTiles) {
         Params coarser = p;
         coarser.lodFactor = (float)(lodFactor * 1.4);
-        Select(coarser, cam, maxTiles);
+        Select(coarser, cam, maxTiles, coverage);
         return;
     }
     m_leafCount = (uint32_t)m_set.size();

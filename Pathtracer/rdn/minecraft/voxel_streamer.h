@@ -14,6 +14,7 @@
 #include "voxel_mesher.h"
 #include "../Common.h"
 #include "../planet/stream_orchestrator.h"
+#include "../ocean/OceanCommon.h"
 #include "../Lighting/LightTreeRefit.h"
 
 struct DeviceContext;
@@ -131,6 +132,35 @@ public:
     void set_placement(const Placement& p) { m_placement = p; }
     const Placement& placement() const { return m_placement; }
 
+    // Drop the world's water from the mesh and let the renderer's wave surface stand in for it.
+    // Changing this rebuilds every resident chunk, so it is a setting rather than a per-frame one.
+    void set_hide_water(bool hide);
+    bool hide_water() const { return m_hideWater; }
+
+    // Which parts of the world hold water, at section-column resolution, so the wave surface is
+    // built only there. One bit per column, set when any section of it has a water block in its
+    // palette - a handful of comparisons per section rather than a scan of the world's blocks.
+    //
+    // Past the loaded columns the answer is None: the world is what the sea stands for here, and
+    // letting it run on would put a tile the size of the map back into the scene, which is the
+    // thing this exists to prevent.
+    class WaterCoverage final : public ocean::ICoverage {
+      public:
+        void build(const World& world, const Placement& place);
+        ocean::Coverage Test(double minX, double minZ, double size) const override;
+        uint32_t columns_with_water() const { return m_withWater; }
+        uint32_t columns_total() const { return m_w * m_h; }
+
+      private:
+        std::vector<uint64_t> m_bits;
+        Placement m_place;
+        int32_t  m_minCx = 0, m_minCz = 0;
+        uint32_t m_w = 0, m_h = 0;
+        uint32_t m_withWater = 0;
+    };
+    const WaterCoverage& water_coverage() const { return m_waterCoverage; }
+    WaterCoverage& water_coverage_mut() { return m_waterCoverage; }
+
     void bind_geometry(ID3D12Resource* vertexGlobal, ID3D12Resource* indexGlobal, uint32_t combinedVertexCount,
                        uint32_t vertexBaseElems, uint32_t indexBaseElems,
                        ID3D12Resource* materialIds, uint32_t matIdBaseElems,
@@ -157,7 +187,7 @@ public:
     uint32_t instance_capacity() const override { return m_cfg.maxInstances; }
     void record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) override;
     void append_instances(planet::TlasBuilder& tlas, InstanceProperties* props, const planet::DVec3& sceneOrigin,
-                          uint32_t hitGroup, bool& forceRebuild) override;
+                          uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) override;
     // Keeps staging and BLAS resources alive until both fences retire.
     void on_submitted(uint64_t copyFence, uint64_t computeFence) override;
 
@@ -367,6 +397,9 @@ private:
     bool                   m_renderListChanged = true;
     double                 m_cam[3] = { 0, 0, 0 };
     Placement              m_placement;
+    WaterCoverage          m_waterCoverage;
+    bool                   m_hideWater = false;
+    void remesh_chunk(Chunk& c);
     DirectX::XMMATRIX placement_matrix(float tx, float ty, float tz) const;
     double                 m_cutCam[3] = { 1e30, 1e30, 1e30 };
     float                  m_cutLodFactor = -1.0f;

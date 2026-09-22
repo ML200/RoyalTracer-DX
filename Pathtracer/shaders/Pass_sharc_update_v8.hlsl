@@ -186,7 +186,6 @@ void Pass_sharc_update_v8()
         const bool scatterLive = !enterSSS;
 
         const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
-        const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness()) : ctx.hitLocalPr;
         const bool performNEE = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
 
@@ -208,9 +207,15 @@ void Pass_sharc_update_v8()
                 float  trainingReward = 0.0f;
                 bool   sampled = false;
 
+                // Only the sun is worth widening the water's lobe for; see PtInlineNee.
+                const bool sunTech = tech == 1u;
+                const half neePr = (waterDirect && sunTech)
+                    ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness())
+                    : ctx.hitLocalPr;
+
                 if (tech == 0u)
                 {
-                    if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) == 0u)
+                    if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) == 0u && !waterDirect)
                     {
                         const LT_Sample treeSample = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee, useLearnedLights);
                         trainingToken = treeSample.learningToken;

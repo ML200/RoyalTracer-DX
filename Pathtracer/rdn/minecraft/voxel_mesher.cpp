@@ -31,6 +31,8 @@ bool ChunkMesher::renderable(Voxel v, int level, const BlockInfo*& info) const {
     const BlockId id = voxel_id(v);
     if (id == AIR_ID) return false;
     info = &m_reg.info(id);
+    // The renderer's own wave surface stands in for the world's water, so none of it is meshed.
+    if (m_hideWater && info->water) return false;
     if (level == 0) return info->isCube;
     if ((v & VOX_ANY) == 0) return false;
     float side;
@@ -42,6 +44,10 @@ bool ChunkMesher::occludes(Voxel neighbour, Voxel self, int level, bool selfCull
     const BlockId nid = voxel_id(neighbour);
     if (nid == AIR_ID) return false;
     const BlockInfo& ni = m_reg.info(nid);
+    // Water that is not in the mesh cannot hide anything behind it either. A coarse voxel of
+    // solid water would otherwise still cull the sea floor's faces against itself and leave the
+    // bed open onto nothing once the water was gone.
+    if (m_hideWater && ni.water) return false;
     const bool same = nid == voxel_id(self) || (ni.water && m_reg.info(voxel_id(self)).water);
     if (level == 0) {
         if (ni.fullOpaque) return true;
@@ -366,6 +372,7 @@ void ChunkMesher::model_quads(const MeshParams& p, ChunkMesh& out) {
 // Builds a chunk mesh from a padded neighbor window.
 void ChunkMesher::mesh(const NodeKey& key, const MeshParams& params, ChunkMesh& out) {
     out.clear();
+    m_hideWater = params.hideWater;
     m_opaqueLit.clear(); m_opaque.clear(); m_alphaLit.clear(); m_alpha.clear();
     if (++m_gen == 0u) { std::fill(m_cornerGen.begin(), m_cornerGen.end(), 0u); m_gen = 1u; }
     const int level = key.level;

@@ -113,12 +113,12 @@ OceanSystem::Reservation OceanSystem::GetReservation() const {
     Reservation r;
     if (!m_params.enabled)
         return r;
-    r.vertexElems = OCEAN_MAX_TILES * OCEAN_TILE_VERTS;
-    r.indexElems = OCEAN_MAX_TILES * OCEAN_TILE_INDICES;
+    r.vertexElems = TileBudget() * OCEAN_TILE_VERTS;
+    r.indexElems = TileBudget() * OCEAN_TILE_INDICES;
     // Every ocean triangle shares one material, so one tile's worth of identifiers is enough for
     // all of them.
     r.matIDElems = OCEAN_TILE_TRIS;
-    r.instanceSlots = OCEAN_MAX_TILES;
+    r.instanceSlots = TileBudget();
     return r;
 }
 
@@ -201,7 +201,7 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
                                                    D3D12_RESOURCE_STATE_COMMON, nv_helpers_dx12::kDefaultHeapProps);
     m_paramsBuffer->SetName(L"OceanParams");
     m_tilesBuffer =
-        nv_helpers_dx12::CreateBuffer(device, sizeof(OceanTileGPU) * OCEAN_MAX_TILES, D3D12_RESOURCE_FLAG_NONE,
+        nv_helpers_dx12::CreateBuffer(device, sizeof(OceanTileGPU) * TileBudget(), D3D12_RESOURCE_FLAG_NONE,
                                       D3D12_RESOURCE_STATE_COMMON, nv_helpers_dx12::kDefaultHeapProps);
     m_tilesBuffer->SetName(L"OceanTiles");
 
@@ -220,7 +220,7 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
             nv_helpers_dx12::CreateBuffer(device, sizeof(OceanParamsGPU), D3D12_RESOURCE_FLAG_NONE,
                                           D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
         m_tilesUpload[i] =
-            nv_helpers_dx12::CreateBuffer(device, sizeof(OceanTileGPU) * OCEAN_MAX_TILES, D3D12_RESOURCE_FLAG_NONE,
+            nv_helpers_dx12::CreateBuffer(device, sizeof(OceanTileGPU) * TileBudget(), D3D12_RESOURCE_FLAG_NONE,
                                           D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
     }
 
@@ -262,7 +262,7 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
         m_blasUpdateScratchSize = planet::align_up(std::max<uint64_t>(info.UpdateScratchDataSizeInBytes, 256),
                                                    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
 
-        m_blasBuffer = planet::create_buffer(device, m_blasSlotSize * OCEAN_MAX_TILES,
+        m_blasBuffer = planet::create_buffer(device, m_blasSlotSize * TileBudget(),
                                              D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                              D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
                                              planet::HEAP_DEFAULT);
@@ -272,14 +272,15 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
                                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS, planet::HEAP_DEFAULT);
         m_blasScratch->SetName(L"OceanBlasScratch");
 
-        m_stats.blasBytes = m_blasSlotSize * OCEAN_MAX_TILES;
-        LOG(L"[ocean] tiles=" << OCEAN_MAX_TILES << L" tris/tile=" << OCEAN_TILE_TRIS << L" blas="
+        m_stats.blasBytes = m_blasSlotSize * TileBudget();
+        LOG(L"[ocean] tiles=" << TileBudget() << L" of " << OCEAN_MAX_TILES << L" tris/tile=" << OCEAN_TILE_TRIS << L" blas="
                               << (m_blasSlotSize >> 10) << L" KiB each, pool " << (m_stats.blasBytes >> 20)
                               << L" MiB; scratch " << (m_blasScratchSize >> 10) << L" KiB x " << kScratchSlots
                               << L" = " << ((m_blasScratchSize * kScratchSlots) >> 20) << L" MiB");
     }
 
-    m_blasBuilt.assign(OCEAN_MAX_TILES, 0);
+    m_blasBuilt.assign(TileBudget(), 0);
+    m_blasRebuiltAt.assign(TileBudget(), -kBlasRebuildSeconds);
 
     // Root signature: root constants plus direct heap indexing, so no descriptor tables are needed
     // for any of the ocean's own resources.
@@ -324,9 +325,11 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
     makePso(L"Ocean_Sim_v8.hlsl", L"OceanMip", m_psoMip);
     makePso(L"Ocean_Tiles_v8.hlsl", L"OceanTiles", m_psoTiles);
 
-    if (const char* path = std::getenv("RT_OCEAN_PERF_CSV")) {
-        m_profile.open(path);
-        m_profile << "frame,fft_ms,assemble_ms,foam_ms,mips_ms,mesh_ms,blas_ms,total_ms,tiles,triangles,allocated_bytes\n";
+    // Always timed, not only when a capture is asked for: this work sits on the streaming compute
+    // queue that the graphics queue waits on, so it never appears in a per-pass profile of the
+    // render passes and there is otherwise nothing to attribute the wait to. Fourteen timestamps
+    // and a small readback buffer.
+    {
         D3D12_QUERY_HEAP_DESC q{};
         q.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
         q.Count = FRAME_COUNT * 7;
@@ -334,6 +337,10 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
         m_timestampReadback = planet::create_buffer(device, FRAME_COUNT * 7 * sizeof(uint64_t),
             D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, planet::HEAP_READBACK);
         ThrowIfFailed(ctx->PlanetComputeQueue()->GetTimestampFrequency(&m_timestampFrequency));
+    }
+    if (const char* path = std::getenv("RT_OCEAN_PERF_CSV")) {
+        m_profile.open(path);
+        m_profile << "frame,fft_ms,assemble_ms,foam_ms,mips_ms,mesh_ms,blas_ms,total_ms,tiles,triangles,allocated_bytes\n";
     }
     // Actual committed allocation sizes; global geometry's ocean reservation is added separately.
     ID3D12Resource* resources[] = {m_h0.Get(),m_wave.Get(),m_fft.Get(),m_disp.Get(),m_deriv.Get(),
@@ -424,16 +431,16 @@ void OceanSystem::CreateDescriptors(ID3D12Device* device, ID3D12DescriptorHeap* 
         device->CreateShaderResourceView(m_turbulence.Get(), &s, at(OCEAN_SRV_TURBULENCE));
     }
     structuredSrv(m_paramsBuffer.Get(), 1, sizeof(OceanParamsGPU), OCEAN_SRV_PARAMS);
-    structuredSrv(m_tilesBuffer.Get(), OCEAN_MAX_TILES, sizeof(OceanTileGPU), OCEAN_SRV_TILES);
+    structuredSrv(m_tilesBuffer.Get(), TileBudget(), sizeof(OceanTileGPU), OCEAN_SRV_TILES);
 
-    const uint32_t vertexCount = m_vertexBase + OCEAN_MAX_TILES * OCEAN_TILE_VERTS;
+    const uint32_t vertexCount = VertexSpan();
     structuredSrv(m_globalVertex, vertexCount, sizeof(BTriVertex), OCEAN_SRV_VERTS);
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
         s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         s.Format = DXGI_FORMAT_R32_UINT;
         s.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        s.Buffer.NumElements = m_indexBase + OCEAN_MAX_TILES * OCEAN_TILE_INDICES;
+        s.Buffer.NumElements = m_indexBase + TileBudget() * OCEAN_TILE_INDICES;
         device->CreateShaderResourceView(m_globalIndex, &s, at(OCEAN_SRV_INDICES));
     }
 
@@ -765,11 +772,17 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
                 const CD3DX12_RANGE range(slot*7*sizeof(uint64_t),(slot+1)*7*sizeof(uint64_t));
                 ThrowIfFailed(m_timestampReadback->Map(0,&range,(void**)&ticks));
                 ticks += slot*7;
-                m_profile << m_profileFrame++;
-                for (uint32_t i=1;i<7;++i) m_profile << ',' << double(ticks[i]-ticks[i-1])*1000.0/m_timestampFrequency;
-                m_profile << ',' << double(ticks[6]-ticks[0])*1000.0/m_timestampFrequency << ','
-                    << m_stats.tiles << ',' << m_stats.triangles << ',' << m_stats.resourceBytes << '\n';
-                m_profile.flush();
+                const double toMs = 1000.0 / (double)std::max<uint64_t>(m_timestampFrequency, 1);
+                for (uint32_t i=1;i<7;++i)
+                    m_stats.gpuStageMs[i-1] = (float)(double(ticks[i]-ticks[i-1]) * toMs);
+                m_stats.gpuTotalMs = (float)(double(ticks[6]-ticks[0]) * toMs);
+                if (m_profile.is_open()) {
+                    m_profile << m_profileFrame++;
+                    for (uint32_t i=0;i<6;++i) m_profile << ',' << m_stats.gpuStageMs[i];
+                    m_profile << ',' << m_stats.gpuTotalMs << ','
+                        << m_stats.tiles << ',' << m_stats.triangles << ',' << m_stats.resourceBytes << '\n';
+                    m_profile.flush();
+                }
                 const CD3DX12_RANGE none(0,0); m_timestampReadback->Unmap(0,&none);
             }
             const XMFLOAT4* src = nullptr;
@@ -786,7 +799,7 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
 
     Params selectParams = m_params;
     selectParams.seaLevelY = (float)m_surfaceY;
-    m_quadtree.Select(selectParams, cam, OCEAN_MAX_TILES);
+    m_quadtree.Select(selectParams, cam, TileBudget(), m_coverage);
 
     const auto& tiles = m_quadtree.Tiles();
     m_gpuTiles.clear();
@@ -878,7 +891,7 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
 }
 
 uint32_t OceanSystem::instance_capacity() const {
-    return m_params.enabled ? OCEAN_MAX_TILES : 0u;
+    return m_params.enabled ? TileBudget() : 0u;
 }
 
 void OceanSystem::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) {
@@ -1180,10 +1193,18 @@ void OceanSystem::RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl) {
         d.DestAccelerationStructureData = m_blasBuffer->GetGPUVirtualAddress() + (uint64_t)t.slot * m_blasSlotSize;
 
         // A tile that held the same square of ocean last frame keeps its topology: only the
-        // vertices moved, so a refit is valid and costs a fraction of a build. Every slot is
-        // rebuilt periodically anyway, because refitting indefinitely lets the tree quality decay
-        // as the waves travel through it.
-        const bool stale = ((m_frameCounter + t.slot) % 8u) == 0u;
+        // vertices moved, so a refit is valid and costs a fraction of a build. Refitting for ever
+        // lets the tree the structure was built around decay as the waves travel through it, so a
+        // rebuild has to come round - but only occasionally, because the vertices stay inside a
+        // bounded envelope and a heightfield degrades slowly.
+        //
+        // This was every eighth frame, which is seven rebuilds a second at sixty and thirty at
+        // two hundred and forty: the faster the machine, the more it spent on the same waves.
+        // Timing it makes the cost the same at any frame rate, and the per-slot phase spreads the
+        // rebuilds across the interval instead of letting them all fall due on one frame.
+        const double age = m_time - m_blasRebuiltAt[t.slot];
+        const double due = kBlasRebuildSeconds * (0.75 + 0.5 * (double)(t.slot % 64u) / 64.0);
+        const bool stale = age >= due;
         const bool canUpdate = m_blasBuilt[t.slot] != 0 && !m_quadtree.SlotIsNew(t.slot) && !stale;
         if (canUpdate) {
             d.Inputs.Flags = (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)(
@@ -1191,6 +1212,7 @@ void OceanSystem::RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl) {
             d.SourceAccelerationStructureData = d.DestAccelerationStructureData;
             ++m_stats.refits;
         } else {
+            m_blasRebuiltAt[t.slot] = m_time;
             ++m_stats.builds;
         }
 
@@ -1215,7 +1237,7 @@ void OceanSystem::RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl) {
 }
 
 void OceanSystem::append_instances(planet::TlasBuilder& tlas, InstanceProperties* props,
-                                   const planet::DVec3& sceneOrigin, uint32_t hitGroup, bool& forceRebuild) {
+                                   const planet::DVec3& sceneOrigin, uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) {
     if (!m_initialised || !m_params.enabled || m_gpuTiles.empty())
         return;
 
@@ -1251,9 +1273,13 @@ void OceanSystem::append_instances(planet::TlasBuilder& tlas, InstanceProperties
             p.lightSlot = 0xFFFFFFFFu;
         }
     }
-    // The tiles move with the camera and their vertices move every frame, so the top level is
-    // never reusable.
-    forceRebuild = true;
+    // A tile keeps its instance descriptor for as long as it holds the same square of ocean, and
+    // the builder notices by itself when one of them is reassigned. What it cannot see is that the
+    // vertices inside every tile were rewritten this frame, which leaves the top level describing
+    // bounds that have moved - so it is asked to refit rather than to rebuild. Forcing a rebuild
+    // here would rebuild every other instance in the scene too, which for a streamed world is
+    // thousands of them, every frame, for the sake of a few hundred water tiles.
+    forceRefit = true;
 }
 
 void OceanSystem::on_submitted(uint64_t copyFence, uint64_t computeFence) {

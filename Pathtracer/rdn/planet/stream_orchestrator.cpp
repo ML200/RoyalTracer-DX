@@ -434,14 +434,17 @@ void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t sc
     }
 
     bool externalForce = false;
-    if (m_external) m_external->append_instances(m_tlas, props, m_sceneOrigin, external_hit_group, externalForce);
+    bool externalRefit = false;
+    if (m_external)
+        m_external->append_instances(m_tlas, props, m_sceneOrigin, external_hit_group, externalForce, externalRefit);
     // Ocean tiles share the terrain hit group; per-instance flags select their material classification.
-    if (m_external2) m_external2->append_instances(m_tlas, props, m_sceneOrigin, terrain_hit_group, externalForce);
+    if (m_external2)
+        m_external2->append_instances(m_tlas, props, m_sceneOrigin, terrain_hit_group, externalForce, externalRefit);
 
     if (props) m_instanceProps->Unmap(0, nullptr);
     m_stats.cells_dropped = dropped;
 
-    m_tlas.build(compute_cl, m_cfg.enabled || externalForce);
+    m_tlas.build(compute_cl, m_cfg.enabled || externalForce, externalRefit);
 }
 
 void StreamOrchestrator::end_frame() {

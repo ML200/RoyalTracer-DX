@@ -280,9 +280,16 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
             }
             else if (LoadKd_w(cMatID) < 1.0f - EPSILON)
             {
-
                 const float3 nW = CandidateGeoNormalW(cInstID, cPrimID);
-                tr *= 1.0f - FresnelDielectric(-direction, nW, 1.0f, LoadNi(cMatID)).x;
+                // Which way the connection crosses the interface decides the index ratio, and with
+                // it whether it can cross at all: past the critical angle a ray leaving water is
+                // turned back entirely. Schlick on its own has no such angle, so it used to hand
+                // the sun through a surface that should have reflected all of it - which is where
+                // the isolated bright pixels below the surface came from.
+                const float ior = max(LoadNi(cMatID), 1.0f);
+                const bool leaving = dot(direction, nW) > 0.0f;
+                tr *= 1.0f - FresnelDielectricTIR(-direction, nW, leaving ? ior : 1.0f,
+                                                  leaving ? 1.0f : ior).x;
             }
             else if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
             {

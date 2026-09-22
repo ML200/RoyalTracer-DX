@@ -16,10 +16,15 @@ bool OceanDirectLightingOwnsRay(bool directLighting, float outgoingCosine) {
 
 // Proposal probability only. Both GGX sampling and PDF evaluation call this function;
 // Fresnel/BSDF energy is unchanged. Preserve absent lobes and total internal reflection.
+//
+// Both lobes get half the samples whenever both exist. Following the Fresnel ratio instead
+// starves whichever lobe is weak at that angle, and the weight that corrects for it is what
+// arrives as isolated bright pixels: the transmitted lobe looking straight down into the water,
+// where reflection is a couple of per cent, and the reflected one at grazing angles.
 float OceanReflectionProbability(float reflection, float transmission) {
     if (reflection <= 0.0f) return 0.0f;
     if (transmission <= 0.0f) return 1.0f;
-    return max(0.7f, reflection / (reflection + transmission));
+    return 0.5f;
 }
 
 float3 OceanMediumTransmittance(float3 sigmaT, float distanceM) {

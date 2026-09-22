@@ -45,9 +45,17 @@
 // Geometry
 // ---------------------------------------------------------------------------------------------
 
-// Quads per tile edge. Increasing this adds geometric detail without adding per-tile
-// acceleration-structure builds; 128 has four times the triangles of the previous 64 grid.
-#define OCEAN_TILE_GRID 128
+// Quads per tile edge, and the single number the ocean's per-frame cost turns on. It does not
+// add acceleration-structure *builds* - the tile count does that - but it squares the triangles
+// inside each one, and every resident tile is rebuilt or refitted every frame because its
+// vertices move. At 128 a full budget of tiles is 16.8 million triangles of structure work per
+// frame, which is most of what the ocean costs before a ray is traced; at 64 it is 4.2 million.
+//
+// What that buys is quad size: tile edge / this. At the default eight-metre finest tile, 64 puts
+// quads at 12.5 cm. Waves finer than a couple of quads are carried by the slope variance and the
+// BRDF rather than by geometry, which is what the filter width exists to arrange, so the detail
+// is not lost so much as moved to where it is cheaper.
+#define OCEAN_TILE_GRID 64
 #define OCEAN_TILE_EDGE_VERTS (OCEAN_TILE_GRID + 1)
 #define OCEAN_TILE_VERTS (OCEAN_TILE_EDGE_VERTS * OCEAN_TILE_EDGE_VERTS)
 #define OCEAN_TILE_TRIS (OCEAN_TILE_GRID * OCEAN_TILE_GRID * 2)

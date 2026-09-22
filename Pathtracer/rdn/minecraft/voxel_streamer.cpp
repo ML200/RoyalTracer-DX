@@ -1078,6 +1078,7 @@ void VoxelStreamer::dispatch_jobs() {
         job->packed = k;
         job->version = c.version;
         job->params.flatMaterials = c.key.level >= m_cfg.flatColorLevel;
+        job->params.hideWater = m_hideWater;
         job->wantLights = m_cfg.lights && m_lightsBound && c.key.level <= m_cfg.lightMaxLevel;
         job->stagingSlot = slot;
         c.job = job;
@@ -1438,7 +1439,7 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
 }
 
 void VoxelStreamer::append_instances(planet::TlasBuilder& tlas, InstanceProperties* props, const planet::DVec3& sceneOrigin,
-                                     uint32_t hitGroup, bool& forceRebuild) {
+                                     uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) {
     if (!m_world || !m_vertexGlobal) return;
     const bool originChanged = sceneOrigin.x != m_lastOrigin.x || sceneOrigin.y != m_lastOrigin.y || sceneOrigin.z != m_lastOrigin.z;
     m_lastOrigin = sceneOrigin;
@@ -1631,6 +1632,7 @@ void VoxelStreamer::calibrate_estimates() {
         std::vector<uint32_t> tris(n, 0);
         MeshParams params;
         params.flatMaterials = L >= m_cfg.flatColorLevel;
+        params.hideWater = m_hideWater;
         m_workers->parallel_for((uint32_t)n, [&](uint32_t i) {
             ChunkMesh mesh;
             thread_mesher().mesh(unpack_node(sample[i]), params, mesh);
@@ -1690,6 +1692,33 @@ void VoxelStreamer::warm_up(const double camWorld[3]) {
     m_renderListChanged = true;
 }
 
+// Sends one chunk back to be meshed again, keeping whatever it already has on the GPU until the
+// replacement is ready so nothing blinks out in the meantime.
+void VoxelStreamer::remesh_chunk(Chunk& c) {
+    c.version++;
+    c.retryFrame = 0;
+    switch (c.state) {
+    case State::Uploading:
+    case State::Compacting:
+        c.remeshAfterUpload = true;
+        return;
+    case State::Meshed:
+        if (c.job) {
+            free_gpu(c.job->gpu);
+            if (c.job->stagingSlot >= 0) m_stagingSlots[(size_t)c.job->stagingSlot].inUse = false;
+        }
+        break;
+    case State::Ready:
+    case State::Empty:
+        c.rebuilding = c.gpu.valid();
+        break;
+    default:
+        break;
+    }
+    c.job.reset();
+    c.state = State::Pending;
+}
+
 void VoxelStreamer::set_block(int x, int y, int z, BlockId id) {
     if (!m_world) return;
     std::vector<uint64_t> stale;
@@ -1698,30 +1727,108 @@ void VoxelStreamer::set_block(int x, int y, int z, BlockId id) {
         if (m_world->store().chunk_occupied(unpack_node(k))) m_world->lod_tree_mut().add_occupied(k);
         auto it = m_chunks.find(k);
         if (it == m_chunks.end()) continue;
-        Chunk& c = it->second;
-        c.version++;
-        c.retryFrame = 0;
-        switch (c.state) {
-        case State::Uploading:
-        case State::Compacting:
-            c.remeshAfterUpload = true;
-            continue;
-        case State::Meshed:
-            if (c.job) {
-                free_gpu(c.job->gpu);
-                if (c.job->stagingSlot >= 0) m_stagingSlots[(size_t)c.job->stagingSlot].inUse = false;
-            }
-            break;
-        case State::Ready:
-        case State::Empty:
-            c.rebuilding = c.gpu.valid();
-            break;
-        default:
-            break;
-        }
-        c.job.reset();
-        c.state = State::Pending;
+        remesh_chunk(it->second);
     }
+}
+
+void VoxelStreamer::WaterCoverage::build(const World& world, const Placement& place) {
+    m_place = place;
+    m_bits.clear();
+    m_w = m_h = 0;
+    m_withWater = 0;
+
+    const VoxelStore& store = world.store();
+    const BlockRegistry& reg = world.registry();
+    int minSx, maxSx, minSz, maxSz;
+    if (!store.column_bounds(0, minSx, maxSx, minSz, maxSz))
+        return;
+
+    // Section columns, not chunks: the store is addressed in sections and this is the finest
+    // resolution reachable without touching a single block.
+    m_minCx = minSx;
+    m_minCz = minSz;
+    m_w = (uint32_t)(maxSx - minSx + 1);
+    m_h = (uint32_t)(maxSz - minSz + 1);
+    m_bits.assign(((size_t)m_w * m_h + 63) / 64, 0ull);
+
+    const int minSy = store.min_section_y(0);
+    const int maxSy = store.max_section_y(0);
+    for (int sx = minSx; sx <= maxSx; ++sx) {
+        for (int sz = minSz; sz <= maxSz; ++sz) {
+            bool water = false;
+            for (int sy = minSy; sy <= maxSy && !water; ++sy) {
+                const Section* s = store.section(0, sx, sy, sz);
+                if (!s)
+                    continue;
+                // A palette is a handful of entries, so this never looks at a block.
+                for (Voxel v : s->palette()) {
+                    if (reg.info(voxel_id(v)).water) { water = true; break; }
+                }
+            }
+            if (!water)
+                continue;
+            const size_t index = (size_t)(sz - minSz) * m_w + (size_t)(sx - minSx);
+            m_bits[index >> 6] |= 1ull << (index & 63);
+            ++m_withWater;
+        }
+    }
+}
+
+ocean::Coverage VoxelStreamer::WaterCoverage::Test(double minX, double minZ, double size) const {
+    if (m_bits.empty())
+        return ocean::Coverage::Full; // nothing surveyed: cull nothing
+
+    // The tile is axis aligned in scene space; a scaled or rotated world need not keep it that
+    // way in blocks, so its corners are transformed and the enclosing box is tested.
+    double bx0 = 1e300, bx1 = -1e300, bz0 = 1e300, bz1 = -1e300;
+    for (int corner = 0; corner < 4; ++corner) {
+        const double sceneP[3] = {minX + ((corner & 1) ? size : 0.0), 0.0,
+                                  minZ + ((corner & 2) ? size : 0.0)};
+        double blockP[3];
+        m_place.to_blocks(sceneP, blockP);
+        bx0 = std::min(bx0, blockP[0]); bx1 = std::max(bx1, blockP[0]);
+        bz0 = std::min(bz0, blockP[2]); bz1 = std::max(bz1, blockP[2]);
+    }
+
+    const int64_t cx0 = (int64_t)std::floor(bx0 / SECTION_SIZE);
+    const int64_t cx1 = (int64_t)std::floor(bx1 / SECTION_SIZE);
+    const int64_t cz0 = (int64_t)std::floor(bz0 / SECTION_SIZE);
+    const int64_t cz1 = (int64_t)std::floor(bz1 / SECTION_SIZE);
+
+    // Wholly outside the world: nothing here to stand for.
+    if (cx1 < m_minCx || cz1 < m_minCz || cx0 >= (int64_t)m_minCx + m_w || cz0 >= (int64_t)m_minCz + m_h)
+        return ocean::Coverage::None;
+
+    // Reaching past the edge counts as dry on that side, so the answer is at best Partial and the
+    // tile is split rather than kept whole across the boundary.
+    bool anyOutside = cx0 < m_minCx || cz0 < m_minCz ||
+                      cx1 >= (int64_t)m_minCx + m_w || cz1 >= (int64_t)m_minCz + m_h;
+    const int64_t x0 = std::max<int64_t>(cx0, m_minCx), x1 = std::min<int64_t>(cx1, (int64_t)m_minCx + m_w - 1);
+    const int64_t z0 = std::max<int64_t>(cz0, m_minCz), z1 = std::min<int64_t>(cz1, (int64_t)m_minCz + m_h - 1);
+
+    bool any = false, all = !anyOutside;
+    for (int64_t cz = z0; cz <= z1; ++cz) {
+        for (int64_t cx = x0; cx <= x1; ++cx) {
+            const size_t index = (size_t)(cz - m_minCz) * m_w + (size_t)(cx - m_minCx);
+            if (m_bits[index >> 6] & (1ull << (index & 63))) any = true;
+            else all = false;
+            if (any && !all)
+                return ocean::Coverage::Partial;
+        }
+    }
+    if (!any)
+        return ocean::Coverage::None;
+    return all ? ocean::Coverage::Full : ocean::Coverage::Partial;
+}
+
+void VoxelStreamer::set_hide_water(bool hide) {
+    if (hide == m_hideWater)
+        return;
+    m_hideWater = hide;
+    // Every chunk's contents depend on this, so the whole resident set is rebuilt. They come back
+    // as the streamer works through them, nearest first, rather than all at once.
+    for (auto& entry : m_chunks)
+        remesh_chunk(entry.second);
 }
 
 }

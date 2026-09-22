@@ -21,8 +21,12 @@ struct IExternalStream {
     virtual ~IExternalStream() = default;
     virtual uint32_t instance_capacity() const = 0;
     virtual void record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) = 0;
+    // `forceRebuild` says the top level has to be built from nothing. `forceRefit` is the weaker
+    // claim a source makes when its instances are exactly where they were but the geometry inside
+    // them was rewritten: the top level still has to be brought up to date, and an in-place update
+    // does that for a fraction of the cost of rebuilding every other instance in the scene too.
     virtual void append_instances(TlasBuilder& tlas, InstanceProperties* props, const DVec3& sceneOrigin,
-                                  uint32_t hitGroup, bool& forceRebuild) = 0;
+                                  uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) = 0;
     virtual void on_submitted(uint64_t copyFence, uint64_t computeFence) = 0;
 };
 

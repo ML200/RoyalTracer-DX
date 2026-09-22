@@ -42,7 +42,7 @@ class Editor {
     void DrawDLSSNRPanel(DLSSNRManager& nr);
 
     void DrawDlssInputsPanel(IntegratorSettings& restir, DLSSManager& dlss);
-    void DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir);
+    void DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir, mc::VoxelStreamer* voxels);
     void DrawIntegratorPanel(IntegratorSettings& restir, const FrameStats& stats);
     void DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats, mc::VoxelStreamer* voxels);
     void DrawPerformancePanel(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs, float fps,

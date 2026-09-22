@@ -161,7 +161,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
     if (m_showSun)
         DrawSunPanel(scene, camera, stats, voxels);
     if (m_showMaterials)
-        DrawMaterialInspector(scene, camera, restir);
+        DrawMaterialInspector(scene, camera, restir, voxels);
     if (m_showPerformance)
         DrawPerformancePanel(m_performanceFrame.stream, m_performanceFrame.frame, m_performanceFrame.fps,
                              m_performanceFrame.hasMinecraft ? &m_performanceFrame.minecraft : nullptr);
@@ -288,6 +288,53 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
     ImGui::Text("Beaufort %d, %s", force, BeaufortName(force));
     ImGui::TextDisabled("Hs %.2f m | sea level %.2f m | %u tiles, %.2fM tris | bake %.0f ms", st.significantWaveHeight,
                         st.surfaceY, st.tiles, (double)st.triangles / 1.0e6, st.bakeMs);
+
+    // This work sits on the streaming compute queue the graphics queue waits on, so it never shows
+    // up in a per-pass profile of the render passes - it lands in the frame's GPU wait instead.
+    if (st.gpuTotalMs > 0.0f) {
+        ImGui::Text("GPU %.2f ms per frame, before a ray is traced", st.gpuTotalMs);
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted("Recorded on the streaming compute queue, which the graphics queue waits on\n"
+                                   "before it traces. A profiler that times the render passes cannot see it:\n"
+                                   "it turns up as the gap between the passes and the frame's GPU wait.");
+            ImGui::Separator();
+            for (int i = 0; i < 6; ++i) {
+                char name[32];
+                const wchar_t* w = ocean::OceanSystem::kGpuStageNames[i];
+                size_t n = 0;
+                wcstombs_s(&n, name, sizeof(name), w, _TRUNCATE);
+                ImGui::Text("%-14s %6.2f ms", name, st.gpuStageMs[i]);
+            }
+            ImGui::EndTooltip();
+        }
+        // The two that scale with the tile budget, called out because they are the ones a scene
+        // can do something about. Every resident tile is rebuilt or refitted every frame, its
+        // vertices having moved, so this triangle count is paid in full each time.
+        ImGui::TextDisabled("  tessellation %.2f ms + structures %.2f ms: %.2fM triangles every frame",
+                            st.gpuStageMs[4], st.gpuStageMs[5], (double)st.triangles / 1.0e6);
+        ImGui::SetItemTooltip("Tiles times %u triangles each (OCEAN_TILE_GRID is %u quads per edge).\n"
+                              "Halving the grid quarters this; halving the tile budget halves it.",
+                              (uint32_t)OCEAN_TILE_TRIS, (uint32_t)OCEAN_TILE_GRID);
+        ImGui::TextDisabled("  %u refits + %u rebuilds this frame", st.refits, st.builds);
+        ImGui::SetItemTooltip("A refit keeps the tree the structure was built around and only moves its\n"
+                              "vertices; a rebuild starts again and costs several times as much. A tile is\n"
+                              "rebuilt once its refits have had about a second to drift, spread across the\n"
+                              "interval so they do not all fall due on the same frame.");
+    }
+
+    ImGui::SeparatorText("Placement");
+    respec |= ImGui::DragFloat("Sea level", &p.seaLevelY, 0.25f, -1000.0f, 10000.0f, "%.2f");
+    ImGui::SetItemTooltip("Height the waves swing about, in world units. In a Minecraft world this is where\n"
+                          "the water line is: the top of the surface blocks, once the world's own water is\n"
+                          "replaced from the Materials panel.");
+    respec |= ImGui::Checkbox("Keep troughs above zero", &p.keepAboveZero);
+    ImGui::SetItemTooltip("Lifts the level until the deepest trough clears the ground plane, because the\n"
+                          "atmosphere treats anything below it as underground and renders it black. Turn it\n"
+                          "off when the sea level is set deliberately and already sits well clear.");
+    if (p.keepAboveZero)
+        ImGui::TextDisabled("in use %.2f (lifted to clear a %.2f m trough)", st.surfaceY,
+                            st.surfaceY - p.seaLevelY);
 
     ImGui::SeparatorText("Wind");
     respec |= ImGui::SliderFloat("Speed (m/s)", &p.windSpeed, 0.0f, 32.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
@@ -492,12 +539,23 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
     }
 
     ImGui::SeparatorText("Detail");
+    ImGui::TextDisabled("tile budget %u of %u (restart to change)", p.maxTiles, (uint32_t)OCEAN_MAX_TILES);
+    ImGui::SetItemTooltip("Tiles the surface may keep resident. Every one is an acceleration structure the\n"
+                          "GPU rebuilds or refits each frame and an extra instance in the scene's top level,\n"
+                          "so this is what the ocean costs in both time and memory. It sizes the geometry\n"
+                          "buffers at load, which is why it cannot move now - set it on the scene's sea state.");
     cheap |= ImGui::SliderFloat("Tile size / distance", &p.lodFactor, 0.05f, 2.0f, "%.3f",
                                 ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Tile edge as a fraction of the distance to the camera. Lower is finer and costs\n"
                           "proportionally more acceleration-structure builds.");
-    cheap |= ImGui::SliderFloat("Smallest tile (m)", &p.minTileSize, 1.0f, 64.0f, "%.0f",
+    cheap |= ImGui::SliderFloat("Smallest tile (m)", &p.minTileSize, 1.0f, 256.0f, "%.0f",
                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Every tile carries the same fixed grid, so this is really the size of the quads the\n"
+                          "surface is built from - and the number of tiles it takes to cover the near field,\n"
+                          "which is what traversal pays for. Waves shorter than a couple of quads are carried\n"
+                          "by the BRDF anyway, so there is nothing to gain below that.");
+    ImGui::TextDisabled("%.1f cm quads, %u triangles per tile", p.minTileSize / OCEAN_TILE_GRID * 100.0f,
+                        (uint32_t)OCEAN_TILE_TRIS);
     cheap |= ImGui::SliderFloat("Near keep radius (m)", &p.nearKeepRadius, 0.0f, 4000.0f, "%.0f",
                                 ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Tiles nearer than this survive the frustum cull, so reflections and shadows of\n"
@@ -1139,7 +1197,7 @@ void Editor::DrawDLSSNRPanel(DLSSNRManager& nr) {
     ImGui::End();
 }
 
-void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir) {
+void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir, mc::VoxelStreamer* voxels) {
     SetInitialPanelPosition(ImVec2(740, 30));
     ImGui::SetNextWindowSize(ImVec2(620, 700), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(540, 300), ImVec2(FLT_MAX, FLT_MAX));
@@ -1158,6 +1216,19 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
 
     if (ImGui::CollapsingHeader("Preview overrides"))
         ImGui::Checkbox("Diffuse materials only", &restir.forceDiffuseMats);
+
+    if (voxels && voxels->world()) {
+        bool hideWater = voxels->hide_water();
+        if (ImGui::Checkbox("Replace world water with the wave surface", &hideWater))
+            voxels->set_hide_water(hideWater);
+        ImGui::SetItemTooltip(
+            "Leaves every water block out of the world's mesh, so the renderer's own wave surface\n"
+            "is what a ray meets instead of a stack of flat block tops. Place that surface at the\n"
+            "water line with the sea level in Experimental > Water.\n"
+            "Anything else the world marks as water goes with it, so a waterfall or a cauldron\n"
+            "empties too. Toggling rebuilds every resident chunk, which streams back in over a\n"
+            "few seconds.");
+    }
     ImGui::Separator();
 
     ImGui::SliderFloat("Global Emission", &camera.sunSettings.globalEmissionStrength, 0.0f, 10.0f, "%.2fx");

@@ -158,6 +158,22 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     const uint64_t vbBytes = (uint64_t)combinedVertexCount() * sizeof(BTriVertex);
     const uint64_t ibBytes = (uint64_t)combinedIndexCount() * sizeof(uint32_t);
 
+    // One structured-buffer view spans this whole buffer, and a view's extent is described in 32
+    // bits however large the resource behind it is. Overrunning it does not fail here: the device
+    // is removed a few frames later with DXGI_ERROR_INVALID_CALL and nothing says why. Catch it
+    // where the budgets that caused it can still be named.
+    constexpr uint64_t kMaxViewBytes = 1ull << 32;
+    if (vbBytes >= kMaxViewBytes) {
+        char msg[512];
+        snprintf(msg, sizeof(msg),
+                 "Global vertex buffer needs %.2f GiB, past the 4 GiB a structured-buffer view can address "
+                 "(scene %u + terrain %u + voxels %u + ocean %u vertices). Lower the Minecraft streamer's "
+                 "vertexCapacity.",
+                 (double)vbBytes / (1024.0 * 1024.0 * 1024.0), totalVertexCount, terrainVertexElems,
+                 voxelVertexElems, oceanVertexElems);
+        throw std::runtime_error(msg);
+    }
+
     const uint64_t sceneVbBytes = (uint64_t)totalVertexCount * sizeof(BTriVertex);
     const uint64_t sceneIbBytes = (uint64_t)totalIndexCount * sizeof(uint32_t);
 
@@ -250,7 +266,7 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     if (hasOcean) {
         uint32_t* out = dstIdx + totalIndexCount;
         constexpr uint32_t edge = OCEAN_TILE_EDGE_VERTS;
-        for (uint32_t t = 0; t < OCEAN_MAX_TILES; ++t) {
+        for (uint32_t t = 0; t < oceanInstanceSlots; ++t) {
             const uint32_t base = oceanVertexBase + t * OCEAN_TILE_VERTS;
             for (uint32_t j = 0; j < OCEAN_TILE_GRID; ++j) {
                 for (uint32_t i = 0; i < OCEAN_TILE_GRID; ++i) {

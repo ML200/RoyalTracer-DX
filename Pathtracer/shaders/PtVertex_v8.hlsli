@@ -79,19 +79,27 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed,
     direct = 0.0f;
     liteDirect = 0.0f;
     const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
-    const half neePr = waterDirect ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness()) : ctx.hitLocalPr;
     const bool useLearnedLights = LTC_UseSurfaceLearning();
     uint sNee = RcBounceSeed(pathSeed, depth, RC_STREAM_NEE);
     [loop]
     for (uint tech = 0u; tech < 2u; ++tech)
     {
+        // Only the sun is worth widening the water's lobe for. A light-tree connection almost
+        // never lands inside a lobe that narrow, so the estimator is nearly all variance and pays
+        // a shadow ray for it; BSDF sampling finds those lights on its own and its MIS partner is
+        // already there. Everything else keeps the authored roughness.
+        const bool sunTech = tech == 1u;
+        const half neePr = (waterDirect && sunTech)
+            ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness())
+            : ctx.hitLocalPr;
+
         float3 L = 0.0f, visTarget = 0.0f, visTargetN = 0.0f, radiance = 0.0f;
         float  lightPdf = 0.0f, cosSurf = 0.0f;
         uint2  token = 0u;
         bool   sampled = false;
         if (tech == 0u)
         {
-            if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u) continue;
+            if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u || waterDirect) continue;
             const LT_Sample pick = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee, useLearnedLights);
             token = pick.learningToken;
             const LT_LightSampleResult light = LT_SamplePointOnLightTree(ctx.hitPos, pick, sNee);

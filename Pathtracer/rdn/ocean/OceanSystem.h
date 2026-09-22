@@ -19,6 +19,11 @@ class OceanSystem : public planet::IExternalStream {
     ~OceanSystem() override = default;
 
     void Configure(const Params& p);
+
+    // Where the scene actually has water. Without one the sea covers its whole extent; with one
+    // it is only built where the world holds water, which is what keeps a block world from paying
+    // to traverse a plane through every street. Must outlive the ocean.
+    void SetCoverage(const ICoverage* coverage) { m_coverage = coverage; }
     const Params& GetParams() const { return m_params; }
     bool Enabled() const { return m_params.enabled; }
 
@@ -48,7 +53,7 @@ class OceanSystem : public planet::IExternalStream {
     uint32_t instance_capacity() const override;
     void record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) override;
     void append_instances(planet::TlasBuilder& tlas, InstanceProperties* props, const planet::DVec3& sceneOrigin,
-                          uint32_t hitGroup, bool& forceRebuild) override;
+                          uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) override;
     void on_submitted(uint64_t copyFence, uint64_t computeFence) override;
 
     // Clear dielectric surface with separate absorption and single-scattering volume controls.
@@ -75,13 +80,30 @@ class OceanSystem : public planet::IExternalStream {
         // ocean::kMaxSkewSteepness the band is as peaked as it can get without its troughs
         // turning back up.
         double crestSteepness = 0.0;
+
+        // What the ocean costs the GPU each frame, by stage, in milliseconds. This work is
+        // recorded on the streaming compute queue, which the graphics queue waits on before it
+        // traces - so it lands in the frame's wait rather than in any of the render passes, and
+        // is invisible to a per-pass profiler even while it dominates.
+        float gpuStageMs[6] = {};   // spectrum, assemble, surface, mips, tessellation, structures
+        float gpuTotalMs = 0.0f;
     };
+    static constexpr const wchar_t* kGpuStageNames[6] = {L"spectrum", L"assemble", L"surface",
+                                                         L"mips", L"tessellation", L"structures"};
     const Stats& GetStats() const { return m_stats; }
 
   private:
+    // Tiles this ocean may keep resident, which is what its per-frame acceleration-structure work
+    // and its memory both scale with. Read wherever a buffer is sized, so it stays consistent with
+    // what GetReservation asked the scene for.
+    uint32_t TileBudget() const {
+        return m_params.maxTiles == 0u ? (uint32_t)OCEAN_MAX_TILES
+                                       : std::min(m_params.maxTiles, (uint32_t)OCEAN_MAX_TILES);
+    }
+
     // Vertices the acceleration structures may address. The indices stored for a tile are absolute
     // positions in the global buffer, so every build has to declare the whole span.
-    uint32_t VertexSpan() const { return m_vertexBase + OCEAN_MAX_TILES * OCEAN_TILE_VERTS; }
+    uint32_t VertexSpan() const { return m_vertexBase + TileBudget() * OCEAN_TILE_VERTS; }
 
     void Bake();
     void BakeTurbulence();
@@ -95,6 +117,7 @@ class OceanSystem : public planet::IExternalStream {
     }
 
     Params m_params;
+    const ICoverage* m_coverage = nullptr;
     bool m_paramsDirty = true;
     bool m_initialised = false;
 
@@ -183,6 +206,11 @@ class OceanSystem : public planet::IExternalStream {
     OceanParamsGPU m_gpuParams{};
     std::vector<OceanTileGPU> m_gpuTiles;
     std::vector<uint8_t> m_blasBuilt; // per slot: has a valid structure that may be refitted
+    // Simulated time each slot was last built rather than refitted. Paused water never goes
+    // stale, because its vertices are not moving.
+    std::vector<double> m_blasRebuiltAt;
+    // How long a refitted structure is allowed to drift before it is built again.
+    static constexpr double kBlasRebuildSeconds = 1.0;
 
     double m_time = 0.0;
     double m_phaseEpoch = 0.0;

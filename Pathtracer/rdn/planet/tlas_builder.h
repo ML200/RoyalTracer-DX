@@ -21,8 +21,9 @@ public:
                       uint32_t hit_group_index,
                       D3D12_RAYTRACING_INSTANCE_FLAGS flags);
 
-    // Rebuilds only when descriptors changed unless force is set.
-    bool build(ID3D12GraphicsCommandList4* cmd, bool force = false);
+    // Rebuilds when the descriptors changed or force is set; refits, in place, when only what
+    // they point at moved. A refit is much cheaper than a rebuild over thousands of instances.
+    bool build(ID3D12GraphicsCommandList4* cmd, bool force = false, bool refit = false);
     bool last_build_recorded() const { return m_lastBuildRecorded; }
 
     D3D12_GPU_VIRTUAL_ADDRESS tlas_address() const { return m_result->GetGPUVirtualAddress(); }
@@ -44,6 +45,7 @@ private:
     bool m_built = false;
     bool m_changed = true;
     bool m_lastBuildRecorded = false;
+    uint32_t m_refitsSinceBuild = 0;
     std::vector<D3D12_RAYTRACING_INSTANCE_DESC> m_descriptors;
 };
 

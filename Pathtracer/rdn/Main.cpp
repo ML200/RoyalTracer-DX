@@ -70,9 +70,9 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            {"newportnews.glb",
+            {"bedroom.glb",
              XMMatrixIdentity(), "Modern Tank Garage"},
-            /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
+            /*MinecraftWorld("C:/Users/Malte/Downloads/Night City - Full Map",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
                            XMMatrixIdentity(), "Night City"),*/
         };
@@ -95,6 +95,7 @@ class MainScene : public SceneDefinition {
         //m_emissiveCubes.Init(cubes, sm, r);
 
         Ocean::Params sea;
+        sea.enabled = false;      // water surface on or off for this scene
         sea.windSpeed = 11.0f;   // m/s at 10 m: Beaufort 6, a working sea with whitecaps
         sea.fetch = 250000.0f;   // m, effectively open ocean
         sea.windDirectionDeg = 35.0f;
@@ -123,18 +124,19 @@ class MainScene : public SceneDefinition {
         if (GetEnvironmentVariableA("RT_OCEAN_DEBUG", debugMode, sizeof(debugMode)))
             sea.debugMode = uint32_t(std::stoul(debugMode));
         m_ocean.Init(sea, r);
-        if (GetEnvironmentVariableA("RT_OCEAN_DISABLE", nullptr, 0) > 0) {
-            sea.enabled = false;
-            m_ocean.SetParams(sea, r);
-        }
 
+        // Framing for a sea, hundreds of metres of it, so it only belongs to a scene that has one.
+        // Anything else keeps whatever camera it was given, which for a room-sized model is a good
+        // deal closer than this.
+        //
         // The waves swing symmetrically about the mean level, so that level is lifted until the
         // deepest trough clears zero - the atmosphere treats anything below the ground plane as
         // underground. Everything that should float has to move up with it.
-        const float waterLine = m_ocean.SurfaceLevel();
-        if (GetEnvironmentVariableA("RT_MC_CAMERA", nullptr, 0) == 0)
+        if (sea.enabled && GetEnvironmentVariableA("RT_MC_CAMERA", nullptr, 0) == 0) {
+            const float waterLine = m_ocean.SurfaceLevel();
             nv_helpers_dx12::CameraManip.setLookat({0.0f, waterLine + 28.0f, 150.0f},
                                                    {0.0f, waterLine + 22.0f, -600.0f}, {0.0f, 1.0f, 0.0f});
+        }
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {
         flyCam.Update(dt);

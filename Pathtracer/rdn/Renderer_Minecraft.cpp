@@ -106,7 +106,6 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
         world->build_lod(&pool, cfg.lodDecorMaxLevel);
 
         m_mcWorld = std::move(world);
-        m_voxels.init(m_ctx.Device(), &m_ctx, m_mcWorld.get(), cfg.streamer);
 
         mc::Placement place;
         {
@@ -114,6 +113,37 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
             DirectX::XMStoreFloat4x4(&m, placement);
             place.set(&m.m[0][0]);
         }
+
+        // The wave tiles and the streamed world share one vertex buffer, and one structured-buffer
+        // view has to span it with a 32-bit extent. A world's default reservation alone already
+        // fills most of that range, so the ocean's tiles come out of the world's budget rather
+        // than on top of it. Taken at the ocean's full reservation, whatever the scene later asks
+        // of it, because the scene configures its sea state after this runs.
+        mc::StreamerConfig streamer = cfg.streamer;
+        if (m_ocean.Enabled()) {
+            constexpr uint32_t kOceanVerts = (uint32_t)(OCEAN_MAX_TILES * OCEAN_TILE_VERTS);
+            constexpr uint32_t kOceanIndices = (uint32_t)(OCEAN_MAX_TILES * OCEAN_TILE_INDICES);
+            streamer.vertexCapacity -= std::min(streamer.vertexCapacity / 2u, kOceanVerts);
+            streamer.indexCapacity -= std::min(streamer.indexCapacity / 2u, kOceanIndices);
+            LOG(L"[mc] the wave surface shares the scene's geometry buffers; world budget "
+                << (streamer.vertexCapacity >> 20) << L"M vertices / " << (streamer.indexCapacity >> 20)
+                << L"M indices");
+        }
+        m_voxels.init(m_ctx.Device(), &m_ctx, m_mcWorld.get(), streamer);
+
+        // Build the sea only where this world actually holds water. A block world is mostly land,
+        // and a plane over all of it is traversal cost on every ray in every street.
+        if (m_ocean.Enabled()) {
+            const auto t = clock::now();
+            m_voxels.water_coverage_mut().build(*m_mcWorld, place);
+            m_ocean.SetCoverage(&m_voxels.water_coverage());
+            const auto& cov = m_voxels.water_coverage();
+            LOG(L"[mc] water coverage: " << cov.columns_with_water() << L" of " << cov.columns_total()
+                << L" section columns hold water ("
+                << (cov.columns_total() ? 100.0 * cov.columns_with_water() / cov.columns_total() : 0.0)
+                << L"%), " << std::chrono::duration<double>(clock::now() - t).count() << L" s");
+        }
+
         m_voxels.set_placement(place);
 
         {

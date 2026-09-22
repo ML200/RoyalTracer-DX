@@ -18,6 +18,31 @@ inline float3 DlssEncode(float3 c) {
     return max(ScrubNonFiniteIn(c), 0.0f) * ReadExposureForCap();
 }
 
+// World direction the primary ray of this pixel left along.
+inline float3 PixelViewDir(uint2 px, float2 dims) {
+    const float2 d      = ((float2(px) + 0.5f) / dims) * 2.0f - 1.0f;
+    const float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
+    return normalize(mul(viewI, float4(target.xyz, 0)).xyz);
+}
+
+// Reconstruction demodulates radiance by the albedo guide, so the sky needs one that is actually
+// the sky's colour. A constant grey is wrong in both directions: at midday it is darker than the
+// sky and at night it is hundreds of times brighter than it, which leaves the stars sitting on a
+// field the denoiser cannot tell from noise. It also differs from the 1.0 the sky is given when
+// it arrives through a pane of glass, so the guide jumps across an edge where the image does not.
+//
+// Floored in luminance rather than per channel, because a per-channel floor would drag a deep
+// blue night sky towards grey - and the floor exists only so nothing divides by zero.
+static const float kMinSkyGuideLuma = 1e-3f;
+
+inline float3 SkyGuideAlbedo(float3 dir) {
+    const float3 c   = DlssEncode(EvaluateSkyBackground(dir));
+    const float  lum = Luma(c);
+    if (lum >= kMinSkyGuideLuma)
+        return saturate(c);
+    return lum > 1e-8f ? saturate(c * (kMinSkyGuideLuma / lum)) : kMinSkyGuideLuma.xxx;
+}
+
 #define DLSS_EMITTER_CAP 16.0f
 
 #define DLSS_SPEC_ROUGHNESS_THRESHOLD 0.25f
@@ -90,7 +115,9 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
         {
 
             g.x = camPos + vdir * cameraFar; g.n = -vdir;
-            g.Kd = float3(1.0f, 1.0f, 1.0f); g.Pr = 1.0f; g.Pm = 0.0f;
+            // The glass walk ran out of geometry: what is behind it is the sky, and its colour is
+            // the albedo that demodulates it, not white.
+            g.Kd = SkyGuideAlbedo(vdir); g.Pr = 1.0f; g.Pm = 0.0f;
             g.instID = 0xFFFFFFFFu;
             return g;
         }
@@ -121,6 +148,74 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
 
 // Water guides are always attached to the primary interface. They never trace through thin
 // glass, blend in the sky/seabed, or inherit the hit distance of the reflection probe.
+// What the water transmits from below, for the reconstruction guides only.
+//
+// Reconstruction demodulates radiance by the albedo guide, and a clear surface's own is zero -
+// its colour is entirely what comes up through it. Everything the bed contributes would otherwise
+// arrive undemodulated. The share blended in is the one that actually reaches the eye: the
+// transmitted Fresnel share, attenuated by the water it crossed. A refracted ray that escapes
+// without hitting anything has nothing to blend, so open water keeps the surface alone rather
+// than being handed an albedo for a bed that is not there.
+struct OceanBelow { float3 albedo; float3 weight; bool hit; };
+
+OceanBelow ResolveOceanBelow(SurfaceVertex sv, float3 transmitted, float3 camPos)
+{
+    OceanBelow b;
+    b.albedo = 0.0f; b.weight = 0.0f; b.hit = false;
+    if (!OceanMediumEnabled() || !any(transmitted > 0.01f))
+        return b;
+
+    // The view refracted through the interface. Total internal reflection has nothing below it.
+    const float3 vdir = normalize(sv.x - camPos);
+    const float3 n = dot(vdir, sv.n_s) < 0.0f ? sv.n_s : -sv.n_s;
+    const float3 dir = refract(vdir, n, sv.etai / sv.etat);
+    if (dot(dir, dir) < 1e-6f)
+        return b;
+
+    RayDesc r;
+    r.Origin    = offset_ray(sv.x, -n);
+    r.Direction = dir;
+    r.TMin      = 0.00001f;
+    r.TMax      = RAY_TMAX_PLANET;
+    if (!IsRayDescValid(r))
+        return b;
+
+    RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
+    [loop]
+    for (uint it = 0u; q.Proceed() && it < 32u; ++it)
+    {
+        if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+        const uint ci = q.CandidateInstanceID();
+        const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+        const uint cm = GetMatIDFast(ci, cp);
+        // The surface this started from is not what is under it.
+        if (LoadIsOceanMaterial(cm)) continue;
+        if (LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON ||
+            AlphaCandidateOccludes(ci, cp, q.CandidateTriangleBarycentrics()))
+            q.CommitNonOpaqueTriangleHit();
+    }
+    if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+        return b;
+
+    const uint  hi   = q.CommittedInstanceID();
+    const uint  hp   = FlatPrimID(hi, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+    const uint  hm   = GetMatIDFast(hi, hp);
+    const float dist = q.CommittedRayT();
+
+    HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), r.Origin,
+                                  PixelConeAngle() * (length(sv.x - camPos) + dist));
+    float3 bKd; float bPr, bPm;
+    RefetchMaterial(hm, bh, bKd, bPr, bPm);
+
+    float3 sigmaA, sigmaS; float phaseG;
+    OceanMediumCoefficients(sigmaA, sigmaS, phaseG);
+    b.albedo = bKd;
+    b.weight = transmitted * OceanMediumTransmittance(sigmaA + sigmaS, dist);
+    b.hit    = true;
+    return b;
+}
+
 void WriteOceanGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out DlssGuides g)
 {
     const uint instID = load_instID(g_sample_current, pixelIdx);
@@ -131,7 +226,13 @@ void WriteOceanGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out D
     g.roughness = sv.Pr;
     const float3 fresnel = FresnelDielectricTIR(sv.o, sv.n_s, sv.etai, sv.etat);
     g.specularAlbedo = lerp(fresnel, FresnelConductor(sv.Kd, sv.o, sv.n_s), sv.Pm);
-    g.diffuseAlbedo = float4(sv.Kd * LoadKd_w(sv.matID) * (1.0f - sv.Pm) * (1.0f - fresnel), 1.0f);
+    // The surface's own diffuse share, plus whatever it is transmitting from below. Depth, normal
+    // and motion stay the interface's own: it deforms every frame and is not a rigid mirror onto
+    // what is behind it, which is why they are not replaced the way a specular probe would.
+    const float3 below = 1.0f - fresnel;
+    const OceanBelow bed = ResolveOceanBelow(sv, below, camPos);
+    g.diffuseAlbedo = float4(sv.Kd * LoadKd_w(sv.matID) * (1.0f - sv.Pm) * below
+                                 + bed.albedo * bed.weight, 1.0f);
     g.mv = SurfaceMotionVector(px, dims, sv.x, instID);
     g.specMv = g.mv;
     g.specHitDist = 0.0f;
@@ -247,9 +348,14 @@ float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out Dl
     // specular of a surface seen through glass.
     const bool   baseSky     = (base.flags & DLSS_PSR_FLAG_SKY) != 0u;
     const bool   baseEmitter = (base.flags & DLSS_PSR_FLAG_EMITTER) != 0u;
+    // A chain that ended in the sky carries white, because the walk has no sky to ask. Giving it
+    // the sky's own colour here is what keeps a pane with sky behind it demodulating to the same
+    // thing as the sky beside it, instead of stepping by the difference between white and grey
+    // across the edge of the glass.
+    const float3 baseKd      = baseSky ? SkyGuideAlbedo(-sv.o) : base.Kd;
     const float3 baseAlbedo  = (seeThrough && !baseSky && !baseEmitter)
-        ? base.Kd * (1.0f - base.Pm) + EnvBRDFApprox2(base.Kd, base.Pr, base.Pm, saturate(dot(base.nVirtual, sv.o)))
-        : base.Kd * (1.0f - base.Pm);
+        ? baseKd * (1.0f - base.Pm) + EnvBRDFApprox2(base.Kd, base.Pr, base.Pm, saturate(dot(base.nVirtual, sv.o)))
+        : baseKd * (1.0f - base.Pm);
     const float3 baseDiffuse = baseT * baseAlbedo;
 
     // Virtual surface: the end of the reflection chain, mirrored into the primary view. The plain
@@ -265,7 +371,8 @@ float WritePsrGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out Dl
     const bool   virtualSky     = reflInstID == 0xFFFFFFFFu;
     const bool   virtualEmitter = (probe.flags & DLSS_PSR_FLAG_EMITTER) != 0u;
     const float3 nV  = virtualSky ? sv.o : probe.nVirtual;
-    const float3 KdV = virtualSky ? float3(1.0f, 1.0f, 1.0f) : probe.Kd;
+    // Likewise for a mirror image that ended in the sky: the reflected direction is what it shows.
+    const float3 KdV = virtualSky ? SkyGuideAlbedo(reflect(-sv.o, sv.n_s)) : probe.Kd;
     const float  PrV = virtualSky ? 1.0f : probe.Pr;
     const float  PmV = virtualSky ? 0.0f : probe.Pm;
     const float3 xV  = virtualSky ? camPos - sv.o * cameraFar : reflData.xyz;
@@ -348,6 +455,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= IMG_W || DTid.y >= IMG_H) return;
 
     const float3 camPosWorld = mul(viewI, float4(0, 0, 0, 1)).xyz;
+    // The guide writers below ask the sky for its colour; the trace passes set this for their own
+    // use and this pass has to do the same before any of them runs.
+    SetSkyObserver(camPosWorld + sceneOriginWorld);
 
     float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)].rgb;
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)].rgb;
@@ -448,7 +558,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g.specularAlbedo = float3(0.0f, 0.0f, 0.0f);
 
         const float3 emitterAlbedo = saturate(ScrubNonFiniteIn(dbgRawPrimary));
-        g.diffuseAlbedo = float4(hasPosition ? emitterAlbedo : float3(0.5f, 0.5f, 0.5f), 0.0f);
+        g.diffuseAlbedo = float4(hasPosition ? emitterAlbedo : SkyGuideAlbedo(PixelViewDir(DTid.xy, dims)), 0.0f);
 
         g.specHitDist = hasPosition ? 0.0f : DLSS_SPEC_HIT_MAX;
         g.specMv = float2(0.0f, 0.0f);

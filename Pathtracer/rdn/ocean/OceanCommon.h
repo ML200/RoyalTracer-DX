@@ -9,6 +9,26 @@ namespace ocean {
 
 constexpr double kGravity = 9.80665;
 
+// Optional test the quadtree asks about a square of the plane. The sea covers its whole extent,
+// and in a world whose water covers only part of it - a block world's coast and lakes, with a city
+// on the rest - every ray pays to traverse water tiles standing where there is no water.
+//
+// Three answers, not two, because a yes/no test is not enough: a tile the size of the map that
+// happens to contain a harbour would answer yes and stay that size, and its bounding box would
+// then enclose everything else in the scene. Partial means "split me": subdividing until each
+// tile is either all water or none of it is what actually keeps the bounds tight, and tight
+// bounds are the whole point - a box that overlaps the world is one every ray has to enter.
+//
+// Coordinates are absolute world XZ, matching the quadtree's own; `size` is the tile's edge.
+// Answering Full where there is no water only costs what it cost before; answering None where
+// there is water would leave a hole, so err towards Partial when unsure.
+enum class Coverage : uint8_t { None, Partial, Full };
+
+struct ICoverage {
+    virtual ~ICoverage() = default;
+    virtual Coverage Test(double minX, double minZ, double size) const = 0;
+};
+
 // User-facing description of a sea state. Wind speed and fetch drive the JONSWAP spectrum, so a
 // realistic sea needs only those two plus the water's optical type.
 struct Params {
@@ -94,6 +114,12 @@ struct Params {
     // never drop below it, which reads as wrong immediately in a wide ocean shot.
     bool curvature = true;
 
+    // Tiles the quadtree may keep resident. This is the ocean's cost knob: every tile is an
+    // acceleration structure rebuilt or refitted each frame, an extra instance in the scene's top
+    // level, and a block of the shared vertex and index buffers. An open-ocean shot wants the full
+    // budget; a sea capping a block world does not. Read once, when the buffers are sized.
+    uint32_t maxTiles = OCEAN_MAX_TILES;
+
     // Half-width of the simulated ocean in metres. The quadtree root spans 2x this.
     float extent = 60000.0f;
     // Smallest tile edge in metres; sets the finest displaced geometry.
@@ -114,7 +140,7 @@ struct Params {
     // the authored roughness and the full-resolution wave normal. Clear water is authored
     // mirror-flat, which leaves direct lighting a delta lobe whose glitter resolves as isolated
     // fireflies rather than as a sun track, so this trades highlight sharpness against that noise.
-    float sunLobeRoughness = 0.04f;
+    float sunLobeRoughness = 0.1f;
 
     // Mean sea level. The waves swing symmetrically about it, so a level of zero puts every trough
     // below the origin.
@@ -146,6 +172,7 @@ inline void ValidateParams(const Params& p) {
         p.bodyWeight < 0 || p.bodyWeight > 1 || p.subsurfaceStrength < 0 ||
         p.subsurfaceRadiusScale <= 0 || std::abs(p.subsurfacePhaseG) >= 1 ||
         p.sunLobeRoughness < 0 || p.sunLobeRoughness > 1 ||
+        p.maxTiles == 0 || p.maxTiles > (uint32_t)OCEAN_MAX_TILES ||
         p.extent < 64 || p.minTileSize < 1 || p.lodFactor <= 0 || p.nearKeepRadius < 0 || p.filterScale <= 0 || p.debugMode > 6)
         throw std::invalid_argument("Ocean parameter outside its supported range");
 }
