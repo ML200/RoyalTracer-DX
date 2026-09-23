@@ -200,9 +200,12 @@ LiteGen LiteGenEmpty()
     return g;
 }
 
+// Continue the reservoir of an earlier sample of the pixel; one left empty starts afresh, since its
+// park state belongs to another frame.
 LiteGen LiteGenLoad(uint px)
 {
     const LiteReservoir r = LiteLoad(g_liteReservoirs, px);
+    if (r.M == 0u) return LiteGenEmpty();
     const uint2 state = g_pathStateBuffer.Load2(LiteParkStateAddress(px));
     LiteGen g;
     g.s = r.s;

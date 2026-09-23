@@ -235,6 +235,16 @@ void SharcLoadBucket(uint bucket, out uint states[SHARC_BUCKET_SIZE])
     }
 }
 
+// A slot's state from a bucket read, with constant indices only: an array indexed at run time
+// is kept in local memory for the whole insert (3% of the training pass on bistro).
+uint SharcBucketState(uint states[SHARC_BUCKET_SIZE], uint p)
+{
+    uint state = 0u;
+    [unroll] for (uint q = 0u; q < SHARC_BUCKET_SIZE; ++q)
+        if (q == p) state = states[q];
+    return state;
+}
+
 bool SharcMergedNode(uint states[SHARC_BUCKET_SIZE], uint hash)
 {
     uint sameKey = 0u;
@@ -348,20 +358,21 @@ uint SharcFindOrInsert(int3 node, uint level, uint axis, SharcSurface s, float3 
     uint expected = 0u;
     if (slot == SHARC_INVALID)
     {
+        // No slot is locked here (that returned as contended above).
         uint victimAge = 0u;
         [loop] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
         {
             uint candidate = bucket * SHARC_BUCKET_SIZE + p;
             uint4 h = g_sharc.Load4(SharcEntryAddress(candidate) + SHARC_LAST_UPDATE);
             uint age = sharc_frame - h.x;
-            if (states[p] != SHARC_LOCKED && h.w != sharc_frame && age > victimAge)
+            if (h.w != sharc_frame && age > victimAge)
             {
                 victimAge = age;
                 slot = candidate;
-                expected = states[p];
             }
         }
         if (slot == SHARC_INVALID || victimAge < SHARC_REPLACE_AGE) return SHARC_INVALID;
+        expected = SharcBucketState(states, slot - bucket * SHARC_BUCKET_SIZE);
     }
     uint stateAddress = SharcStateAddress(slot), old;
     g_sharc.InterlockedCompareExchange(stateAddress, expected, SHARC_LOCKED, old);
@@ -548,25 +559,29 @@ void SharcQueryLevel(SharcSurface s, uint level, out float3 sum, out float suppo
     }
 }
 
-// Full angle of the circular cone as wide as the hemisphere (pi/4 angle^2 = 2 pi): the cone of a
-// diffuse lobe (SharcLobeConeAngle).
-static const float SHARC_HEMISPHERE_CONE = 2.82842712f;
+// Full angle of the circular cone of a diffuse lobe (SharcLobeConeAngle): the cosine lobe covers
+// 1.5 pi, since the integral of (cos/pi)^2 over the hemisphere is 2/(3 pi) (pi/4 angle^2 = 1.5 pi).
+static const float SHARC_DIFFUSE_CONE = 2.44948974f;
 
 // Share of queries the cache may answer where the path's cone meets a surface. The cone is the
 // lobes that led here (SharcLobeConeAngle), as its full angle and its width at the hit, so its apex
 // lies width/angle back along the ray. Seen from there, one cell may fill at most 1/q of the cone's
-// solid angle (q = sharc_queryFootprint): the lobe then reaches other cells as well, and no single
-// cell can show. The cell counts as a disk of its area projected towards the apex, whose solid
-// angle is exact at any distance and never exceeds the hemisphere, so a diffuse cone only reaches
-// the limit where a cell faces it from closer than about a third of its size. A short band around
-// the limit mixes both answers, so the switch leaves no edge.
+// solid angle (q = sharc_queryFootprint), and so hold about that share of the lobe's light: the
+// lobe then reaches other cells as well, and no single cell can show. The cell is the one a query
+// reads, the coarser level's with four times the area as often as the query picks that level. It
+// counts as a disk of its area projected towards the apex, whose solid angle is exact at any
+// distance and never exceeds the hemisphere. At the default q = 2 a diffuse cone reaches the limit
+// where the surface it meets lies closer than about half a cell: in a crevice or where two objects
+// touch, the cell also holds lit surface the query cannot see. A short band around the limit mixes
+// both answers, so the switch leaves no edge.
 float SharcConeRamp(float coneWidth, float coneAngle, float cosHit, float3 position)
 {
     if (!(coneAngle > 0.0f)) return 0.0f;
     const float coneSolidAngle = min(0.25f * PI * coneAngle * coneAngle, 2.0f * PI);
     const float apex = coneWidth / coneAngle;
-    const float size = sharc_cellSize * exp2(SharcLevel(position));
-    const float area = size * size * max(cosHit, 1e-4f);
+    const float lod  = SharcLevel(position);
+    const float size = sharc_cellSize * exp2(floor(lod));
+    const float area = size * size * (1.0f + 3.0f * frac(lod)) * max(cosHit, 1e-4f);
     const float s    = sqrt(apex * apex + area * INV_PI);
     const float cellSolidAngle = 2.0f * area / (s * (s + apex));   // 2 pi (1 - apex / s)
     return smoothstep(0.8f, 1.25f, coneSolidAngle / (sharc_queryFootprint * cellSolidAngle));
@@ -613,7 +628,7 @@ bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAng
 bool SharcQuery(SharcSurface s, float coneWidth, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
-    return SharcQueryFootprintAccepted(s.position, coneWidth, SHARC_HEMISPHERE_CONE, 1.0f, seed) &&
+    return SharcQueryFootprintAccepted(s.position, coneWidth, SHARC_DIFFUSE_CONE, 1.0f, seed) &&
         SharcQueryDraws(s, seed, radiance);
 }
 

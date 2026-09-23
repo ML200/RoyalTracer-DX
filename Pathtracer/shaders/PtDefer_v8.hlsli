@@ -65,6 +65,8 @@ uint dv_light  (uint px) { return ps_plane(DV_LIGHT_PLANE,   DV_LIGHT_BYTES,   p
 #define DVF_UNIT_IOR     8u   // subsurface exit: no interface, a white Lambertian vertex
 #define DVF_GROUP_SHIFT  4u   // 2 bits: the picked lobe group (LOBE_GROUP_*); its probability is in the path record
 #define DVF_REGULARIZE   64u  // the path had spread before this vertex: its roughness is regularized
+#define DVF_BROAD_NEE    128u // the broad group takes the light sample on every pick that defers the vertex
+#define DVF_LITE_NEE     256u // a reuse primary: its broad light sample feeds the reservoir, whatever the pick
 
 struct DvVertex {
     float3    pos;
@@ -110,8 +112,18 @@ void DvStoreVertex(uint px, DvVertex v)
         PackFloat2x16(v.sp.Pdiff, v.sp.Pspec), f32tof16(v.sp.Pcoat) | (v.flags << 16u)));
 }
 uint DvLoadVertexFlags(uint px) { return g_pathStateBuffer.Load(dv_vert(px) + 44u) >> 16u; }
-// The deferred vertex is evaluated on the lobe group its sample picked, and so is its light sample.
+// The deferred vertex is evaluated on the lobe group its sample picked, and so is the light sample
+// of a picked group other than the broad one (DVF_BROAD_NEE).
 uint DvLobeGroup(uint flags) { return (flags >> DVF_GROUP_SHIFT) & 3u; }
+// Probability that a sample at the vertex defers it: every pick of a wide lobe does
+// (SharcScatterHasSpread), a mirror-like GGX or coat pick bounces in place instead.
+float DvDeferP(DvVertex v)
+{
+    float narrow = 0.0f;
+    if (v.Pr < SMOOTH_SPECULAR_THRESHOLD) narrow += v.sp.Pspec;
+    if (LoadPcr(v.matID) < SMOOTH_SPECULAR_THRESHOLD) narrow += v.sp.Pcoat;
+    return max(1.0f - narrow, 1e-6f);
+}
 void DvLoadVertexSurface(uint px, out float3 pos, out float3 n)
 {
     const uint4 w = g_pathStateBuffer.Load4(dv_vert(px));

@@ -155,7 +155,7 @@ struct IntegratorSettings {
     int lightTreeCellExponent = 0;
     float lightTreeLodScale = 0.05f;
 
-    float lightTreeLearnRoughness = 0.3f;
+    float lightTreeLearnRoughness = 0.8f;
     bool lightTreeDebug = false;
     bool sharcEnabled = true;
     bool sharcReset = false;

@@ -404,7 +404,8 @@ inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
 // density. Summed over the picks this is the full BSDF. Diffuse and a near-Lambertian GGX form a
 // single lobe, the broad one, because guiding and the diffuse reuse both work on exactly that pair.
 // A light sample belongs to the pick as well: taken only when the picked lobe is wide, evaluated
-// on that lobe alone, weighted by 1/P(pick) and MIS-weighted against the lobe's own density.
+// on that lobe alone, weighted by 1/P(pick) and MIS-weighted against the lobe's own density. At
+// the deferred vertex the broad group takes it on every wide pick instead (Pass_pt_shade_v8).
 // ---------------------------------------------------------------------------------------------
 #define LOBE_GROUP_BROAD 0u   // diffuse, with the GGX lobe when IsBroadGGX
 #define LOBE_GROUP_SPEC  1u   // GGX

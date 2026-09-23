@@ -114,8 +114,12 @@ void Pass_pt_trace_v8()
         // instance of the camera record: with the reorder inside the trace branch (skipped on the
         // primary iteration) the device hung at random. Only a completed surface/miss endpoint
         // reaches it; the volume continuation above carries ordinary data, never a live HitObject.
+        // Paths past their deferred vertex sort apart from the ones before it, since the two shade
+        // differently (a cache lookup against a capture). Pass median on bistro (RTX 5090, 1200
+        // frames): 2.64 ms, against 2.75 ms on the instance alone; ten instance bits instead of
+        // eight were no better.
 #if PT_SER_REORDER
-        dx::MaybeReorderThread(reorderHint, 9u);
+        dx::MaybeReorderThread(reorderHint | (pending ? 0x200u : 0u), 10u);
 #endif
 
         // ---- shade: build the context of the vertex, then the one shading call ----
@@ -142,7 +146,7 @@ void Pass_pt_trace_v8()
         if (shade) PtVertexShade(io, ctx, geoN, rayDir, flipIOR, pixel, pixelIdx, presetOut);
         if (depth == 1u)
         {
-            if (LITE_ENABLED && s == 0u && (io.flags & PV_PRIMARY_LITE) == 0u) LiteMarkEmpty(pixelIdx);
+            if (LITE_ENABLED && s == 0u && (io.flags & PV_LITE_NEE) == 0u) LiteMarkEmpty(pixelIdx);
             ps = PtPsWith(ps, PT_PS_LITE_VERTEX, (io.flags & PV_PRIMARY_LITE) != 0u);
         }
         pos = io.pos;

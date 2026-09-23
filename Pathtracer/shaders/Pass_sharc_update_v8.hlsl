@@ -319,7 +319,7 @@ void Pass_sharc_update_v8()
                         if (lobe.pdf > 0.0f)
                         {
                             const float3 broad = group == LOBE_GROUP_BROAD ? lobe.val : 0.0f;
-                            trainingReward = dot(radiance*cosSurf*visT*LTC_TrainShare((float)ctx.hitLocalPr,ctx.matID,lobe.val,broad)/lightPdf,
+                            trainingReward = dot(radiance*cosSurf*visT*LTC_TrainShare((float)ctx.hitLocalPr,ctx.matID,lobe.val,group == LOBE_GROUP_BROAD)/lightPdf,
                                 float3(0.2126f,0.7152f,0.0722f));
 
                             const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
@@ -451,7 +451,7 @@ void Pass_sharc_update_v8()
         else ps |= PT_PS_MIS_NONE;
         const bool spread = SharcScatterHasSpread(sampledStrategy, ctx.matID, ctx.hitLocalPr);
         ps = PtPsWith(ps, PT_PS_SPREAD, spread);
-        coneAngle += SharcLobeConeAngle(sampledStrategy, ctx.matID, ctx.hitLocalPr);
+        coneAngle += SharcLobeConeAngle(sampledStrategy, ctx.matID, ctx.hitLocalPr, abs(dot(ctx.hitNormal, rayDir)));
         if (spread && PtPsGuideDepth(ps) < 15u) ps += 1u << PT_PS_GUIDE_SHIFT;
         rayDir   = dir;
         rayDirPk = PackNormal(dir);

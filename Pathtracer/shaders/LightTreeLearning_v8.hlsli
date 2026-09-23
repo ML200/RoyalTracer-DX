@@ -66,10 +66,17 @@ bool LTC_Enabled() { return (rs_flags & (LT_FLAG_LEARNING|RS_FLAG_NO_MESH_LIGHTS
 
 bool LTC_UseSurfaceLearning() { return LTC_Enabled(); }
 
-float3 LTC_TrainShare(float roughness,uint matID,float3 full,float3 broad) {
+// The response a light sample trains the cut with. A cut serves every pixel that sees its cell, so
+// it has to learn what the cell receives. A broad pick trains with its own value, which hardly
+// depends on where the surface is seen from. A glossy pick smoother than the training floor trains
+// as a white diffuse surface would, with the cosine alone: its own value holds the lights its
+// pixels see mirrored, which move across a cell with the view, so the cells of one polished floor
+// learned different lights and showed as patches of different noise. It still teaches the cut
+// which lights reach the cell and which are blocked.
+float3 LTC_TrainShare(float roughness,uint matID,float3 value,bool broadPick) {
     const float lo=lt_learnRoughness;
     const bool smoothCoat=LoadPc(matID)>0.01f && LoadPcr(matID)<lo;
-    return (roughness>=lo && !smoothCoat)?full:broad;
+    return (broadPick || (roughness>=lo && !smoothCoat))?value:INV_PI;
 }
 static const uint LTC_EXPIRED_SCORE=0x40000000u;
 // Ranks a cell the camera has turned away from above every cell still in front, however long

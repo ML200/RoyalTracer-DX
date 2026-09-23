@@ -160,19 +160,20 @@ uint GuideFindOrInsert(GuideKey k)
     uint expected = 0u;
     if (slot == GUIDE_INVALID)
     {
+        // No slot is locked here (that returned as contended above).
         uint victimAge = 0u;
         [loop] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
         {
             uint candidate = bucket * SHARC_BUCKET_SIZE + p;
             uint age = sharc_frame - g_sharc.Load(GuideEntryAddress(candidate) + GUIDE_LAST_TOUCH);
-            if (states[p] != SHARC_LOCKED && age > victimAge)
+            if (age > victimAge)
             {
                 victimAge = age;
                 slot = candidate;
-                expected = states[p];
             }
         }
         if (slot == GUIDE_INVALID || victimAge < SHARC_REPLACE_AGE) return GUIDE_INVALID;
+        expected = SharcBucketState(states, slot - bucket * SHARC_BUCKET_SIZE);
     }
     uint stateAddress = GuideStateAddress(slot), old;
     g_sharc.InterlockedCompareExchange(stateAddress, expected, SHARC_LOCKED, old);

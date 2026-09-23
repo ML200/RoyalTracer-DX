@@ -30,7 +30,12 @@ Renderer::Renderer(UINT width, UINT height)
         L"barrier",
         L"Pass_sharc_prepare_v8.hlsl|fx:4096",
         L"barrier",
+        // No barrier between the two: the primary atmosphere reads only the camera records and the
+        // sky bake, and writes scratch slices only the shading pass reads, so it runs in the long
+        // tail of the training paths instead of after it (frame median on bistro, RTX 5090:
+        // 0.16 ms less; the training timer now includes the part of it that overlaps).
         L"Pass_sharc_update_v8.hlsl|rg",
+        L"Pass_atmosphere_primary_v8.hlsl|cs:8x8",
         L"barrier",
         L"Pass_sharc_resolve_v8.hlsl|fx:4096",
         L"barrier",
@@ -50,8 +55,6 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_lite_shift_v8.hlsl|cs:16x16",
         L"barrier",
         L"Pass_lite_merge_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_atmosphere_primary_v8.hlsl|cs:8x8",
         L"barrier",
 
         L"Pass_shading_v8.hlsl|cs:16x16",

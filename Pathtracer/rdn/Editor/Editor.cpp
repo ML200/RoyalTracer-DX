@@ -1518,8 +1518,10 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
         ImGui::Text("Lighting capacity: %u cells (%.0f MiB)", LT_GRID_CAPACITY,
                     double(LT_LEARNING_BYTES) / (1024.0 * 1024.0));
         ImGui::SliderFloat("Training roughness floor", &rs.lightTreeLearnRoughness, 0.0f, 0.8f, "%.2f");
-        ImGui::SetItemTooltip("Lobes at least this rough feed the learning; the diffuse lobe always does, so "
-                              "polished surfaces train with their diffuse part only.\n"
+        ImGui::SetItemTooltip("Glossy lobes at least this rough train the learning with their own response; "
+                              "smoother ones train it as a white diffuse surface would, because what they "
+                              "mirror changes with the view and shows up as patches between cells. The "
+                              "diffuse lobe always trains with its own response.\n"
                               "Every receiver samples from the learned cuts (one MIS technique: this only trades "
                               "variance, never bias).");
         ImGui::SliderInt("Minimum lighting cell size (log2 m)", &rs.lightTreeCellExponent, -4, 8);

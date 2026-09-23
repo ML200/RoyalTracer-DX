@@ -10,18 +10,34 @@ bool SharcScatterHasSpread(uint strategy, uint matID, half roughness)
     return false;
 }
 
-// The cone of a picked lobe for the cache test (SharcConeRamp): the lobe itself, never the density
-// of the one direction drawn from it. Diffuse and sheen cover the hemisphere. A GGX lobe (the coat
-// too) reflects half of its microfacet normals within 2 atan(alpha) of the mirror direction, a cone
-// of solid angle 4 pi alpha^2 / (1 + alpha^2) that widens smoothly into the hemisphere at
-// alpha = 1. Returned as the full angle of the circular cone with that solid angle
+// The cone of a picked lobe for the cache test (SharcConeRamp): the solid angle the lobe actually
+// covers, one definition for every lobe, 1 / integral(p^2) with p its density over the directions
+// it can reach, normalized to one (the inverse of the density a direction drawn from it expects).
+// The kind of a lobe and its roughness enter only through that size. The cosine lobe covers
+// 1.5 pi (SHARC_DIFFUSE_CONE); a GGX lobe (the coat's too) of roughness 0.7 about as much, 0.8
+// 1.2 times as much and 1 the whole hemisphere, from any view. A glossy lobe narrows towards
+// grazing, about with the cosine of the view down to a floor the horizon sets; a rough one hardly
+// does. The GGX size is a fit to the numerically integrated VNDF reflection lobe, within 13% rms
+// over roughness 0.1 to 1 and all views: 12 pi alpha^2 at a glossy lobe, 2 pi at roughness 1. The
+// sheen fit is within 23%. Taken from the lobe itself, never from the density of the one direction
+// drawn from it. Returned as the full angle of the circular cone with that solid angle
 // (pi/4 angle^2), so the cones of successive lobes add up along the path.
-float SharcLobeConeAngle(uint strategy, uint matID, half roughness)
+float SharcLobeConeAngle(uint strategy, uint matID, half roughness, float cosView)
 {
-    if (strategy == 0u || strategy == 3u) return SHARC_HEMISPHERE_CONE;
-    const float r = strategy == 2u ? LoadPcr(matID) : (float)roughness;
-    const float a = r * r;
-    return 4.0f * a * rsqrt(1.0f + a * a);
+    if (strategy == 0u) return SHARC_DIFFUSE_CONE;
+    float solidAngle;
+    if (strategy == 3u)
+        solidAngle = 3.1f + 5.6f * cosView * (1.0f - cosView);
+    else
+    {
+        const float r = strategy == 2u ? LoadPcr(matID) : (float)roughness;
+        const float a = r * r;
+        const float b = 1.0f - a * a;
+        const float horizon = 2.05f * a / (1.0f + 5.9f * a);
+        const float s = 6.0f * a * a * sqrt(cosView * cosView + horizon * horizon) / max(b * b * b, 1e-6f);
+        solidAngle = 2.0f * PI * s / (1.0f + s);
+    }
+    return 2.0f * sqrt(solidAngle * INV_PI);
 }
 
 // Restrict cache updates to stable, sufficiently diffuse surfaces.

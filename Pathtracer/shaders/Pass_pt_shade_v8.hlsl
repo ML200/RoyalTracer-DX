@@ -4,8 +4,9 @@
 // Material evaluation at the deferred vertex, on the lobe group its sample picked: the value of
 // the cache-bound scatter that weights everything traced after it, the light and sun samples the
 // light pass resolved (with their visibility), MIS, and the diffuse-reuse candidates. The light
-// sample belongs to the pick: evaluated on the same group, divided by the probability of the pick,
-// and MIS-weighted against the group's own density. No rays are traced here.
+// sample belongs to the pick, evaluated on the same group and divided by the probability of the
+// pick, except on the broad group, which takes it on every pick that defers the vertex; each is
+// MIS-weighted against its group's own density. No rays are traced here.
 //
 // Three phases, so each BSDF evaluation runs with little around it: the scatter weight first,
 // then the two light techniques, each reading only its own part of the light record; their reuse
@@ -35,7 +36,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 rayDir  = v.dirIn;
     const uint   group   = DvLobeGroup(v.flags);
     const float  neeScale = path.pickP > 0.0f ? rcp(path.pickP) : 0.0f;   // the light sample stands for this pick
-    // A reuse primary is a broad pick, so its whole sample is the broad part the reservoir carries.
+    // The continuation of a broad pick at a reuse primary is broad as a whole: the reservoir carries it.
     const bool liteGen   = depth == 1u && (path.ps & PT_PS_LITE_VERTEX) != 0u && group == LOBE_GROUP_BROAD;
     float3 total = 0.0f;
 
@@ -60,11 +61,20 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
     const float3 liteBroad = liteGen ? W : 0.0f;
 
-    // --- light sample and sun sample: the light pass resolved both and their visibility ---
+    // --- light sample and sun sample: the light pass resolved both and their visibility. The broad
+    // group takes them on every pick that defers the vertex, divided by the probability of such a
+    // pick (DvDeferP), so that a glossy pick does not leave the pixel without its diffuse light. A
+    // picked group other than the broad one takes them on its own pick, divided by the probability
+    // of that pick. Each is MIS-weighted against its own group's density, as the BSDF side of that
+    // group is. ---
+    const bool broadEvery = (v.flags & DVF_BROAD_NEE) != 0u;
+    const bool liteNee    = (v.flags & DVF_LITE_NEE) != 0u;
+    LiteGen liteG = LiteGenEmpty();
+    if (liteNee && s != 0u) liteG = LiteGenLoad(pixelIdx);
     if ((v.flags & DVF_PERFORM_NEE) != 0u)
     {
-        LiteGen liteG = LiteGenEmpty();
-        if (liteGen && s != 0u) liteG = LiteGenLoad(pixelIdx);
+        const bool  broadPick  = group == LOBE_GROUP_BROAD;
+        const float broadScale = broadEvery ? rcp(DvDeferP(v)) : neeScale;
         float reward = 0.0f;
         [loop]
         for (uint tech = 0u; tech < 2u; ++tech)
@@ -84,43 +94,58 @@ void main(uint3 tid : SV_DispatchThreadID)
             else
                 DvLoadLightSun(pixelIdx, L, radiance, lightPdf, visT);
             if (!(lightPdf > 0.0f) || !any(visT > 0.0f) || !any(radiance > 0.0f)) continue;
-            const float cosSurf = dot(v.n, L);
-
-            const BrdfData lobeNEE = EvaluateLobe(v.sp, group, v.matID, v.n, v.n, L, -rayDir,
-                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
-            if (!(lobeNEE.pdf > 0.0f)) continue;
-            float3 lightScale = radiance * cosSurf * visT / lightPdf;
-            if (tech == 0u)
-                reward = dot(lightScale * LTC_TrainShare(v.Pr, v.matID, lobeNEE.val,
-                    group == LOBE_GROUP_BROAD ? lobeNEE.val : 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
-            lightScale *= neeScale;
-            const float  misWeight = lightPdf / (lightPdf + lobeNEE.pdf);
-            const float3 direct    = lobeNEE.val * lightScale * misWeight;
-            if (liteGen)
+            const float  cosSurf    = dot(v.n, L);
+            const float3 lightScale = radiance * cosSurf * visT / lightPdf;
+            // The cut learns from the broad response where there is one (LTC_TrainShare).
+            float3 trained = 0.0f;
+            [branch] if (broadEvery || broadPick)
             {
-                // All of it is broad: the reservoir carries it, none goes to the pixel here.
-                uint sLite = RcBounceSeed(pathSeed, depth, 0x4c495445u + tech);
-                LiteSample cand;
-                LiteLink   link;
-                float3     yWorld = 0.0f;
-                if (tech == 0u)
+                const BrdfData lobeNEE = EvaluateLobe(v.sp, LOBE_GROUP_BROAD, v.matID, v.n, v.n, L, -rayDir,
+                    ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+                if (lobeNEE.pdf > 0.0f)
                 {
-                    cand = LiteSampleSurface(objID, lightPos, lightN, radiance, LITE_KIND_LIGHT);
-                    link = LiteLinkFrom(dist, cosSurf, dot(lightN, -L), false);
-                    yWorld = lightPos;
+                    trained = lobeNEE.val;
+                    const float misWeight = lightPdf / (lightPdf + lobeNEE.pdf);
+                    if (liteNee)
+                    {
+                        // The reservoir carries the broad part; none of it goes to the pixel here.
+                        uint sLite = RcBounceSeed(pathSeed, depth, 0x4c495445u + tech);
+                        LiteSample cand;
+                        LiteLink   link;
+                        float3     yWorld = 0.0f;
+                        if (tech == 0u)
+                        {
+                            cand = LiteSampleSurface(objID, lightPos, lightN, radiance, LITE_KIND_LIGHT);
+                            link = LiteLinkFrom(dist, cosSurf, dot(lightN, -L), false);
+                            yWorld = lightPos;
+                        }
+                        else
+                        {
+                            cand = LiteSampleDirection(L, radiance);
+                            link = LiteLinkFrom(RAY_TMAX_PLANET, cosSurf, 1.0f, true);
+                        }
+                        LiteGenCandidate(liteG, v.Kd, cand, yWorld, link, visT, misWeight, lightPdf,
+                            invN * broadScale, sLite);
+                    }
+                    else total += path.T * lobeNEE.val * lightScale * (misWeight * broadScale);
                 }
-                else
-                {
-                    cand = LiteSampleDirection(L, radiance);
-                    link = LiteLinkFrom(RAY_TMAX_PLANET, cosSurf, 1.0f, true);
-                }
-                LiteGenCandidate(liteG, v.Kd, cand, yWorld, link, visT, misWeight, lightPdf, invN * neeScale, sLite);
             }
-            else total += path.T * direct;
+            [branch] if (!broadPick)
+            {
+                const BrdfData lobeNEE = EvaluateLobe(v.sp, group, v.matID, v.n, v.n, L, -rayDir,
+                    ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+                if (lobeNEE.pdf > 0.0f)
+                {
+                    if (!broadEvery) trained = LTC_TrainShare(v.Pr, v.matID, lobeNEE.val, false);
+                    const float misWeight = lightPdf / (lightPdf + lobeNEE.pdf);
+                    total += path.T * lobeNEE.val * lightScale * (misWeight * neeScale);
+                }
+            }
+            if (tech == 0u) reward = dot(lightScale * trained, float3(0.2126f, 0.7152f, 0.0722f));
         }
         LT_TrainSample(DvLoadLightToken(pixelIdx), reward);
-        if (liteGen) LiteGenCommit(pixelIdx, liteG);
     }
+    if (liteNee) LiteGenCommit(pixelIdx, liteG);
 
     // --- the tail: everything gathered after the deferred scatter, weighted by its value ---
     if (tailAlive)
