@@ -9,17 +9,6 @@
 // rewards of its picks with their (forgetting) count, the picks of the open batch, and the
 // power prior.
 
-// Lanes that share a key combine their work on one lane. The SM 6.5 operations for that
-// (WaveMatch, WaveMultiPrefix*) are not supported in raytracing shaders: in a raygen the lanes of
-// a WaveMatch mask need not reach the WaveMultiPrefix* that follows together, and that operation
-// waits for every lane of its mask. The raygen passes combine equal keys with SM 6.0 operations,
-// which only ever involve the lanes active at that point.
-#if __SHADER_TARGET_STAGE == __SHADER_STAGE_LIBRARY
-#define LT_WAVE_MATCH 0
-#else
-#define LT_WAVE_MATCH 1
-#endif
-
 // Hash cell keys before bucket probing.
 uint LTC_Hash(uint v) { v^=v>>16;v*=0x7feb352du;v^=v>>15;v*=0x846ca68bu;return v^(v>>16); }
 
@@ -202,16 +191,10 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
     uint index=LTC_Index(sourceCell);
     uint4 key=LTC_KeyAtLevel(x,n,desired);uint candidate=LT_SENTINEL;
 
-#if LT_WAVE_MATCH
     uint4 mask=WaveMatch(key);
     int4 highest=(int4)(firstbithigh(mask)|uint4(0,32,64,96));
     uint leader=(uint)max(max(highest.x,highest.y),max(highest.z,highest.w));
     if(WaveGetLaneIndex()!=leader) return;
-#else
-    // Only the lanes asking for the first active lane's key leave the request to that lane; the
-    // request lock below keeps other duplicates out.
-    if(all(key==WaveReadLaneFirst(key)) && !WaveIsFirstLane()) return;
-#endif
 
     uint idleCandidate=LT_SENTINEL;
     [loop] for(uint attempt=0u;attempt<(alternatives>0u?2u:1u);++attempt) {
@@ -546,16 +529,6 @@ float2 LTC_BatchMoments(uint cluster) {
     uint address=LTC_BatchAddress(cluster);
     return float2(LTC_ReadAccumulator(address),LTC_ReadAccumulator(address+LT_ACCUMULATOR_BYTES));
 }
-// Add the summed rewards of one cluster's picks to its open batch.
-void LTC_CommitRewards(uint token,uint a,float2 totals,uint selected) {
-    uint cell=LTC_Cell((token-1u)/LT_CUT_MAX),ignored;
-    if(g_sharc.Load(cell+68u)!=sharc_frame)
-        g_sharc.InterlockedExchange(cell+68u,sharc_frame,ignored);
-    uint batch=LTC_BatchAddress(a);
-    LTC_Accumulate(batch,totals.x);
-    LTC_Accumulate(batch+LT_ACCUMULATOR_BYTES,totals.y);
-    g_sharc.InterlockedAdd(LTC_Stats(a)+LT_ST_SELECTED,selected,ignored);
-}
 // Accumulate bounded reward moments for a selected cluster.
 void LT_TrainToken(uint token,float contributionOverPdf) {
     if(token==0u || !LTC_Enabled()) return;
@@ -563,26 +536,23 @@ void LT_TrainToken(uint token,float contributionOverPdf) {
     float p=LTC_FrozenProbability(a);
     float reward=max(0.0f,contributionOverPdf)*p;
     if(!isfinite(reward)) reward=0.0f;
-    float2 observation=float2(reward,min(reward*reward,3.0e38f));
-#if LT_WAVE_MATCH
+
     uint4 mask=WaveMatch(a);
+    float2 observation=float2(reward,min(reward*reward,3.0e38f));
     float2 totals=min(WaveMultiPrefixSum(observation,mask)+observation,3.0e38f);
     uint selected=WaveMultiPrefixCountBits(true,mask)+1u;
     int4 highest=(int4)(firstbithigh(mask)|uint4(0,32,64,96));
     uint leader=(uint)max(max(highest.x,highest.y),max(highest.z,highest.w));
-    if(WaveGetLaneIndex()==leader) LTC_CommitRewards(token,a,totals,selected);
-#else
-    // One cluster per round: the lanes that picked the first active lane's cluster sum their
-    // rewards on that lane and leave, the others go round again.
-    [loop] for(;;) {
-        if(a==WaveReadLaneFirst(a)) {
-            float2 totals=min(WaveActiveSum(observation),3.0e38f);
-            uint selected=WaveActiveCountBits(true);
-            if(WaveIsFirstLane()) LTC_CommitRewards(token,a,totals,selected);
-            break;
-        }
+    if(WaveGetLaneIndex()==leader) {
+
+        uint cell=LTC_Cell((token-1u)/LT_CUT_MAX),ignored;
+        if(g_sharc.Load(cell+68u)!=sharc_frame)
+            g_sharc.InterlockedExchange(cell+68u,sharc_frame,ignored);
+        uint batch=LTC_BatchAddress(a);
+        LTC_Accumulate(batch,totals.x);
+        LTC_Accumulate(batch+LT_ACCUMULATOR_BYTES,totals.y);
+        g_sharc.InterlockedAdd(LTC_Stats(a)+LT_ST_SELECTED,selected,ignored);
     }
-#endif
 }
 void LT_TrainSample(uint2 tokens,float contributionOverPdf) {
 
