@@ -63,7 +63,8 @@ uint dv_light  (uint px) { return ps_plane(DV_LIGHT_PLANE,   DV_LIGHT_BYTES,   p
 #define DVF_FLIP_IOR     2u
 #define DVF_PERFORM_NEE  4u
 #define DVF_UNIT_IOR     8u   // subsurface exit: no interface, a white Lambertian vertex
-#define DVF_WIDE_SHIFT   4u   // 12 bits: share of the lobe picks that defer the vertex
+#define DVF_GROUP_SHIFT  4u   // 2 bits: the picked lobe group (LOBE_GROUP_*); its probability is in the path record
+#define DVF_REGULARIZE   64u  // the path had spread before this vertex: its roughness is regularized
 
 struct DvVertex {
     float3    pos;
@@ -109,10 +110,8 @@ void DvStoreVertex(uint px, DvVertex v)
         PackFloat2x16(v.sp.Pdiff, v.sp.Pspec), f32tof16(v.sp.Pcoat) | (v.flags << 16u)));
 }
 uint DvLoadVertexFlags(uint px) { return g_pathStateBuffer.Load(dv_vert(px) + 44u) >> 16u; }
-// The light sample of a deferred vertex is taken only on the samples that pick a wide lobe;
-// the material pass weights it by the inverse of that share to stand for the whole vertex.
-uint  DvPackWideShare(float share) { return max((uint)(saturate(share) * 4095.0f + 0.5f), 1u); }
-float DvNeeScale(uint flags) { return 4095.0f / float(max((flags >> DVF_WIDE_SHIFT) & 4095u, 1u)); }
+// The deferred vertex is evaluated on the lobe group its sample picked, and so is its light sample.
+uint DvLobeGroup(uint flags) { return (flags >> DVF_GROUP_SHIFT) & 3u; }
 void DvLoadVertexSurface(uint px, out float3 pos, out float3 n)
 {
     const uint4 w = g_pathStateBuffer.Load4(dv_vert(px));
@@ -142,7 +141,8 @@ HitContext DvContext(DvVertex v)
 
 // ---------------------------------------------------------------------------------------------
 // Scatter record (16 bytes): the continuation sampled at the deferred vertex, with the sampling
-// density the trace pass already knows; the material pass supplies the BSDF value.
+// density the trace pass already knows; the material pass supplies the value of the picked lobe
+// group. info is the path's DV_* word (DvLoadInfo/DvStoreInfo), which the trace pass writes last.
 // ---------------------------------------------------------------------------------------------
 #define DV_KIND_NONE      0u  // light sampling only (budget reached, invalid ray)
 #define DV_KIND_BSDF      1u  // BSDF-sampled continuation, value pending
@@ -156,12 +156,14 @@ HitContext DvContext(DvVertex v)
 #define DV_VALID          (1u << 6u)
 #define DV_MIS_NONE       (1u << 7u)  // MIS state after the deferred scatter
 #define DV_LITE_MISS      (1u << 8u)  // escape happened directly after a reuse primary
+#define DV_LITE_X2        (1u << 9u)  // the reuse suffix parked a point; its radiance is in the lite record
+#define DV_LITE_GEN       (1u << 10u) // the deferred vertex is a reuse primary
 
 struct DvScatter {
     float3 dirOut;
-    uint   info;
-    float  pdfTotal;   // sampling density including guiding
-    float  bsdfPdf;    // mixture pdf, the MIS partner
+    uint   info;       // the path's DV_* word, shared with DvLoadInfo/DvStoreInfo
+    float  pdfTotal;   // sampling density: pick probability times the group density with guiding
+    float  bsdfPdf;    // group density without guiding, the MIS partner of the light sample
 };
 uint  DvLoadInfo(uint px) { return g_pathStateBuffer.Load(dv_scatter(px) + 4u); }
 void  DvStoreInfo(uint px, uint info) { g_pathStateBuffer.Store(dv_scatter(px) + 4u, info); }
@@ -182,12 +184,13 @@ void DvStoreScatter(uint px, DvScatter s)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Path record (32 bytes): throughput arriving at the deferred vertex, its footprint, the radiance
-// gathered after the deferred scatter (relative to that scatter) and the sampling flags.
+// Path record (32 bytes): throughput arriving at the deferred vertex, the probability of the lobe
+// pick there (the light sample is divided by it), the radiance gathered after the deferred scatter
+// (relative to that scatter) and the sampling flags.
 // ---------------------------------------------------------------------------------------------
 struct DvPath {
     float3 T;
-    float  pathSpread;
+    float  pickP;
     float3 relL;
     uint   ps;
 };
@@ -198,17 +201,22 @@ DvPath DvLoadPath(uint px)
     const uint4 w1 = g_pathStateBuffer.Load4(a + 16u);
     DvPath p;
     p.T = asfloat(w0.xyz);
-    p.pathSpread = asfloat(w0.w);
+    p.pickP = asfloat(w0.w);
     p.relL = asfloat(w1.xyz);
     p.ps = w1.w;
     return p;
 }
-void DvStorePath(uint px, DvPath p)
+// The trace pass writes the record in parts as each is known, so none stays live through the rest
+// of the path: the pick probability while shading the deferred vertex, the throughput and flags
+// when the raygen applies it, the radiance gathered after it at the end.
+void DvStorePickP(uint px, float pickP) { g_pathStateBuffer.Store(dv_path(px) + 12u, asuint(pickP)); }
+void DvStorePathHead(uint px, float3 T, uint ps)
 {
     const uint a = dv_path(px);
-    g_pathStateBuffer.Store4(a,       uint4(asuint(p.T), asuint(p.pathSpread)));
-    g_pathStateBuffer.Store4(a + 16u, uint4(asuint(p.relL), p.ps));
+    g_pathStateBuffer.Store3(a, asuint(T));
+    g_pathStateBuffer.Store(a + 28u, ps);
 }
+void DvStorePathRelL(uint px, float3 relL) { g_pathStateBuffer.Store3(dv_path(px) + 16u, asuint(relL)); }
 uint DvLoadPs(uint px) { return g_pathStateBuffer.Load(dv_path(px) + 28u); }
 float3 DvLoadPathRelL(uint px) { return asfloat(g_pathStateBuffer.Load3(dv_path(px) + 16u)); }
 
@@ -254,10 +262,6 @@ DvMiss DvLoadMiss(uint px)
     m.candMis = asfloat(w.z);
     return m;
 }
-
-// A subsurface walk moves the vertex; the exit point rides in the (still unused) terminal record.
-void   DvStoreSssExit(uint px, float3 pos) { g_pathStateBuffer.Store3(dv_end(px), asuint(pos)); }
-float3 DvLoadSssExit(uint px) { return asfloat(g_pathStateBuffer.Load3(dv_end(px))); }
 
 // ---------------------------------------------------------------------------------------------
 // Light record (60 bytes): the resolved light sample of the deferred vertex, its sun sample, the

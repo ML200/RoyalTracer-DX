@@ -1,8 +1,10 @@
 #pragma once
-// Per-vertex work of the split path tracer. The trace raygen reorders on the hit object and then
+// Per-vertex work of the split path tracer. The trace raygen reorders the secondary hits and then
 // shades every vertex here itself, including the primary one and the escaped rays; the
-// closest-hit and miss shaders of the pipeline are empty. The path loop only handles the compact
-// result: the next direction, the vertex normal for the ray offset, a throughput multiplier, one
+// closest-hit and miss shaders of the pipeline are empty. The raygen builds the context of the
+// vertex (PtPrimaryContext, PtHitContext) and hands it to the one PtVertexShade call, so the
+// shading code is inlined once. The path loop only handles the compact result: the next
+// direction, the vertex position and normal for the ray offset, a throughput multiplier, one
 // packed value and flags.
 #include "PtDefer_v8.hlsli"
 
@@ -11,8 +13,10 @@ struct PtVertexIO {
     float  pdf;      // in: pdf of the previous scatter; out: updated MIS/footprint pdf
     float  spread;   // path footprint, in/out
     float  dist;     // path length, in/out: with the pixel cone it sizes the texture footprint
+    uint   cone;     // cone of the path's lobes for the cache test, in/out (PtConePack)
     uint   dirPk;    // out: next direction
     uint   nPk;      // out: shading normal of the vertex the next ray leaves
+    float3 pos;      // out: position of the vertex the next ray leaves (a subsurface exit included)
     float3 color;    // out: throughput multiplier (see PV_CAPTURED), or sky radiance on a miss
     uint   auxPk;    // out: packed radiance or weight, see the result flags
     float3 nee;      // out: direct light of an in-place vertex from its own light sample (PV_NEE)
@@ -59,6 +63,14 @@ struct PtVertexIO {
 #define PV_WATER_MEDIUM     (1u << 19u)
 #define PV_WATER_SCATTERED  (1u << 20u)
 
+// The cone of the lobes picked so far (SharcLobeConeAngle), as two halves: its width at the
+// current vertex and its full angle, by which the width grows per unit of distance.
+uint PtConePack(float width, float angle)
+{
+    return f32tof16(min(width, 65504.0f)) | (f32tof16(min(angle, 65504.0f)) << 16u);
+}
+float2 PtConeUnpack(uint cone) { return float2(f16tof32(cone & 0xffffu), f16tof32(cone >> 16u)); }
+
 uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
 {
     return (PtPsDepth(ps) << PV_IN_DEPTH_SHIFT) | (PtPsDiffDepth(ps) << PV_IN_DIFF_SHIFT) |
@@ -68,13 +80,17 @@ uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
         (pending ? PV_IN_PENDING : 0u) | (immediate ? PV_IN_IMMEDIATE : 0u) | (last ? PV_IN_LAST : 0u);
 }
 
-// Light sample of an in-place wide vertex: the cache did not cover its broad lobes and the
-// deferred record is taken, so the vertex resolves its own here, as every vertex did before the
-// split. One light-tree pick and the sun, each with its shadow ray and the MIS weight against the
-// BSDF sample that continues from the vertex; the pick also trains the light tree. liteBroadOnly
-// restricts the reuse-suffix share to the broad lobes, as at the parked vertex.
-void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed, uint depth, bool blue,
-    uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath, out float3 direct, out float3 liteDirect)
+// Light sample of an in-place vertex: a wide pick after the deferred vertex where the cache may not
+// answer (the cone of the path too narrow for its cells, or a surface it does not know), a vertex
+// in the water (the medium attenuation has no slot in the deferred records), or the water surface
+// (its own light model). A surface the cache may answer but holds nothing for yet goes on without
+// one. One light-tree pick and the sun, evaluated on the lobe group this sample picked,
+// divided by the probability of that pick, and MIS-weighted against the group's own density; the
+// pick also trains the light tree. liteBroadOnly restricts the reuse-suffix share to the broad
+// group, as at the parked vertex.
+void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, float3 rayDir, uint pathSeed,
+    uint depth, bool blue, uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath,
+    out float3 direct, out float3 liteDirect)
 {
     direct = 0.0f;
     liteDirect = 0.0f;
@@ -88,8 +104,10 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed,
         // never lands inside a lobe that narrow, so the estimator is nearly all variance and pays
         // a shadow ray for it; BSDF sampling finds those lights on its own and its MIS partner is
         // already there. Everything else keeps the authored roughness.
+        // Only a picked GGX lobe widens: the broad group keeps the roughness its membership was
+        // decided with.
         const bool sunTech = tech == 1u;
-        const half neePr = (waterDirect && sunTech)
+        const half neePr = (waterDirect && sunTech && group == LOBE_GROUP_SPEC)
             ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness())
             : ctx.hitLocalPr;
 
@@ -139,20 +157,19 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed,
             const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
             if (any(visT > 0.0f))
             {
-                float3 broadNEE; float broadNeePdf;
-                const BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal,
-                    ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y,
-                    false, broadNEE, broadNeePdf);
-                if (bdataNEE.pdf > 0.0f)
+                const BrdfData lobe = EvaluateLobe(spPath, group, ctx.matID, ctx.hitNormal, ctx.hitNormal, L,
+                    -rayDir, ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+                if (lobe.pdf > 0.0f)
                 {
+                    const float3 broad = group == LOBE_GROUP_BROAD ? lobe.val : 0.0f;
                     reward = dot(radiance * cosSurf * visT *
-                        LTC_TrainShare((float)ctx.hitLocalPr, ctx.matID, bdataNEE.val, broadNEE) / lightPdf,
+                        LTC_TrainShare((float)ctx.hitLocalPr, ctx.matID, lobe.val, broad) / lightPdf,
                         float3(0.2126f, 0.7152f, 0.0722f));
                     // Water direct lighting has no BSDF-hit partner: continuation stays sharp.
-                    const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + bdataNEE.pdf);
-                    const float3 lightScale = radiance * cosSurf * visT * (misWeight / lightPdf);
-                    direct += bdataNEE.val * lightScale;
-                    if (litePath) liteDirect += (liteBroadOnly ? broadNEE : bdataNEE.val) * lightScale;
+                    const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
+                    const float3 lightScale = radiance * cosSurf * visT * (misWeight / (lightPdf * groupP));
+                    direct += lobe.val * lightScale;
+                    if (litePath) liteDirect += (liteBroadOnly ? broad : lobe.val) * lightScale;
                 }
             }
         }
@@ -161,16 +178,18 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, float3 rayDir, uint pathSeed,
     }
 }
 
-// Shade one vertex: subsurface walk, cache lookup, the lobe pick that classifies the vertex,
-// capture of the first wide vertex, then the continuation. The phases are ordered so the inputs
-// of each phase die before the next: the vertex record is written before the lobe is sampled,
-// and the guide cones die before the BSDF evaluation.
+// Shade one vertex: subsurface walk, cache lookup, the lobe pick, capture of the first wide
+// vertex, then the continuation. The phases are ordered so the inputs of each phase die before the
+// next: the vertex record is written before the lobe is sampled, and the guide cones die before
+// the BSDF evaluation.
 //
-// Whether a vertex is wide is decided per sample by the lobe it picks: a diffuse or rough pick
-// defers the vertex with its light sample, a mirror-like pick bounces in place and leaves the
-// deferral to the next wide vertex, so a reflection seen in a smooth surface is lit at the
-// surface it shows. The light sample of a mixed vertex is thus taken only on the samples that
-// pick a wide lobe, and the material pass weights it up by that share.
+// Each sample picks one lobe group and evaluates only that one (EvaluateLobe). A wide pick (a
+// diffuse or rough lobe) defers the vertex together with its light sample, which the light and
+// material passes take on the same pick; a mirror-like pick bounces in place, so a reflection seen
+// in a smooth surface is lit at the surface it shows. After the deferred vertex the cache ends the
+// path wherever the cone of its lobes is wide enough for the cells (SharcConeRamp); where it is
+// not, a wide pick takes its light sample in place (PtInlineNee). The hits of a vertex without a
+// light sample count in full.
 void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirIn, bool flipIOR,
     uint2 pixel, uint pixelIdx, uint presetOut)
 {
@@ -181,6 +200,7 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     const uint guideDepth = (inFlags >> PV_IN_GUIDE_SHIFT) & 15u;
     const bool pending    = (inFlags & PV_IN_PENDING) != 0u;
     const bool misNoneIn  = (inFlags & PV_IN_MIS_NONE) != 0u;
+    const bool inWater    = (inFlags & PV_IN_WATER_MEDIUM) != 0u;
     bool  sssEntered      = (inFlags & PV_IN_SSS) != 0u;
     bool  liteVertex      = (inFlags & PV_IN_LITE_VERTEX) != 0u;
     const uint pathSeed   = PtPathSeed(pixel, sample);
@@ -227,7 +247,6 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                 geoN    = w.exitNormal;
                 rayDir  = -w.exitNormal;
                 flipIOR = false;
-                DvStoreSssExit(pixelIdx, w.exitPos);
                 res |= PV_SSS_WALKED;
                 walked     = true;
                 sssEntered = true;
@@ -244,22 +263,29 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     const bool liteX2 = depth == 2u && liteVertex;
 
     // --- radiance cache: a diffuse hit ends the path here, or leaves a specular continuation.
-    // The subsurface exit is no surface the cache knows. ---
+    // The subsurface exit is no surface the cache knows. Only the cone of the lobes that led here
+    // decides, never the material of this surface: the cache answers where one of its cells fills
+    // at most a share of that cone, so the lobe reaches other cells as well (SharcConeRamp). A
+    // diffuse cone is the hemisphere, which a cell never fills that much of short of contact; a
+    // 0.2-roughness lobe passes at long range and not at short range. After the deferred vertex
+    // the cache answers wherever it holds anything; before it (and in water) its own confidence
+    // decides as well. (The training pass keeps a share of its paths going past the cache so that
+    // it does not only learn from itself; this pass does not.) ---
     const bool cacheSurface = sharc_enabled != 0u && !walked && SharcMaterialEligible(ctx, spPath, geoN);
+    float2 cone = PtConeUnpack(io.cone);
     float cacheScale = 1.0f;
+    bool  cacheRefused = false;
     if (alive && cacheSurface && depth > 1u)
     {
         uint sCache = RcBounceSeed(pathSeed, depth, 0x53484152u);
-        bool queryAccepted;
-        if (liteX2)
-        {
-            const float ramp = SharcFootprintRamp(io.spread, (uint)SharcLevel(ctx.hitPos));
-            queryAccepted = io.spread > 0.0f && ramp > 0.0f && RandomFloatSingle(sCache) < ramp;
-        }
-        else
-            queryAccepted = io.spread > 0.0f && SharcQueryFootprintAccepted(ctx.hitPos, io.spread, sCache);
+        const float ramp = SharcConeRamp(cone.x, cone.y, abs(dot(geoN, rayDir)), ctx.hitPos);
+        const bool accepted = ramp >= 1.0f || (ramp > 0.0f && RandomFloatSingle(sCache) < ramp);
+        cacheRefused = !accepted;
         float3 cached = 0.0f;
-        bool hit = queryAccepted && SharcQueryDraws(SharcMakeSurface(ctx, geoN), sCache, cached);
+        bool hit = false;
+        if (accepted)
+            hit = (pending && !inWater) ? SharcQueryForced(SharcMakeSurface(ctx, geoN), sCache, cached)
+                                        : SharcQueryDraws(SharcMakeSurface(ctx, geoN), sCache, cached);
         float layerT = 0.0f;
         if (hit)
         {
@@ -276,15 +302,18 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         }
     }
 
-    // --- the lobe of this sample: a wide pick makes the vertex wide ---
-    const bool  broadGGX  = IsBroadGGX(ctx.hitLocalPr);
+    // --- the lobe of this sample: one group is picked and evaluated, a wide pick makes the vertex
+    // wide and takes the light sample ---
     const float uStrategy = blue ? PtBlue1(pixel, blueIndex, depth, BN_DIM_STRATEGY) : RandomFloatSingle(sBsdf);
     const uint  strategy  = SelectSamplingStrategyFrom(spPath, uStrategy);
+    const uint  group     = LobeGroupOf(strategy, ctx.hitLocalPr);
+    const float groupP    = LobeGroupP(spPath, group, ctx.hitLocalPr);
     const bool  wide      = SharcScatterHasSpread(strategy, ctx.matID, ctx.hitLocalPr);
     const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
     if (depth == 1u)
     {
-        liteVertex = LITE_ENABLED && (inFlags & PV_IN_WATER_MEDIUM) == 0u && !waterDirect && !sssEntered && wide &&
+        // Only a broad pick feeds the diffuse reuse; the other picks leave the reservoir empty.
+        liteVertex = LITE_ENABLED && !inWater && !waterDirect && !sssEntered && group == LOBE_GROUP_BROAD &&
             HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) &&
             !LoadIsSSS(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID &&
             LoadKd_w(ctx.matID) >= EPSILON && !freeBounce;
@@ -293,46 +322,41 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
 
     if (alive)
     {
-        // --- classification: a narrow pick bounces in place, a wide one is deferred unless a
-        // deferred vertex already exists. The light sample of a vertex is taken on its wide picks:
-        // deferred at the captured vertex, right here at an in-place one. ---
+        // --- classification: a narrow pick bounces in place, a wide one is deferred with the
+        // path's light sample unless a deferred vertex already exists. ---
         const bool neeBase = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
-        // Take water NEE once per vertex, irrespective of the continuation lobe pick.
-        // Keep it in place so its special light model never enters deferred/reuse records.
-        const bool performNEE  = waterDirect || (neeBase && wide);
-        const bool capture     = !waterDirect && (inFlags & PV_IN_WATER_MEDIUM) == 0u && wide && !pending;
+        const bool capture     = !waterDirect && !inWater && wide && !pending;
+        // A wide pick lights itself in place where the cache may not answer (the cone too narrow
+        // for its cells, or a surface it does not know), and anywhere in the water (the medium
+        // attenuation has no slot in the deferred records). The water surface does on every pick,
+        // with its own light model. A surface the cache may answer but holds nothing for yet goes
+        // on without one.
+        const bool inlineNee   = !capture && (waterDirect ||
+            (neeBase && wide && (inWater || !cacheSurface || cacheRefused)));
         const bool budgetBreak = !freeBounce && diffDepth >= (uint)pt_maxDiffuseBounces;
-        // Share of the lobe picks that are narrow and take no light sample; the wide picks stand
-        // for the whole vertex. Wherever some pick takes one, the hits along every pick's
-        // direction are weighted against it, so both techniques partition the light.
-        const float narrowShare = (GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr) ? spPath.Pspec : 0.0f) +
-            (LoadPcr(ctx.matID) < SMOOTH_SPECULAR_THRESHOLD ? spPath.Pcoat : 0.0f);
-        const bool neeCovered = neeBase && (1.0f - narrowShare) > EPSILON;
 
         if (capture)
         {
-            // Defer this vertex: the light and material passes finish it. Written first so its
-            // inputs are not kept alive through the sampling below. The record carries the share
-            // of the lobe picks that defer here, since only those take the light sample.
+            // Defer this vertex: the light and material passes finish it on the picked group.
+            // Written first so its inputs are not kept alive through the sampling below.
             DvVertex dv;
             dv.pos = ctx.hitPos; dv.n = n; dv.dirIn = rayDir;
             dv.matID = ctx.matID; dv.instID = ctx.instID; dv.Kd = (float3)ctx.hitLocalKd;
             dv.Pr = ctx.hitLocalPr; dv.Pm = ctx.hitLocalPm; dv.sp = spPath; dv.absorb = absorb;
             dv.flags = (ctx.backface ? DVF_BACKFACE : 0u) | (flipIOR ? DVF_FLIP_IOR : 0u) |
-                (performNEE ? DVF_PERFORM_NEE : 0u) | (walked ? DVF_UNIT_IOR : 0u) |
-                (DvPackWideShare(1.0f - narrowShare) << DVF_WIDE_SHIFT);
+                (neeBase ? DVF_PERFORM_NEE : 0u) | (walked ? DVF_UNIT_IOR : 0u) |
+                (group << DVF_GROUP_SHIFT) | (io.spread > 0.0f ? DVF_REGULARIZE : 0u);
             DvStoreVertex(pixelIdx, dv);
+            DvStorePickP(pixelIdx, groupP);
             color *= cacheScale;
             cacheScale = 1.0f;
             res |= PV_CAPTURED;
         }
-        else if (performNEE)
+        else if (inlineNee)
         {
-            // In place after the deferred vertex, and the cache did not end the path here (or it
-            // left only the narrow lobes): the vertex takes its own light sample.
-            PtInlineNee(ctx, spPath, rayDir, pathSeed, depth, blue, pixel, blueIndex, liteX2 && cacheSurface,
-                depth >= 2u && liteVertex, nee, neeLite);
+            PtInlineNee(ctx, spPath, group, groupP, rayDir, pathSeed, depth, blue, pixel, blueIndex,
+                liteX2 && cacheSurface, depth >= 2u && liteVertex, nee, neeLite);
             res |= PV_NEE;
         }
 
@@ -348,8 +372,8 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         else
         {
             // --- continuation: sample the picked lobe, maybe replace it by a guide draw, then
-            // evaluate the mixture once. The cones are built after the lobe sample, so they overlap
-            // neither the samplers nor the evaluation below.
+            // evaluate that lobe group alone. The cones are built after the lobe sample, so they
+            // overlap neither the samplers nor the evaluation below; only the broad group is guided.
             if (strategy == 0u)
             {
                 const float2 u = blue ? PtBlue2(pixel, blueIndex, depth, BN_PAIR_COSINE)
@@ -360,26 +384,23 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                 dir = SampleBRDF_WithStrategy(strategy, ctx.matID, -rayDir, n, n, ctx.hitLocalKd,
                     ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false);
             float guideQ = 0.0f, guidePdf = 0.0f;
-            if (cacheSurface && GUIDE_ENABLED && HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) &&
-                1u + guideDepth <= (uint)GUIDE_MAX_DEPTH)
+            if (group == LOBE_GROUP_BROAD && cacheSurface && GUIDE_ENABLED &&
+                HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) && 1u + guideDepth <= (uint)GUIDE_MAX_DEPTH)
             {
                 uint sKey = RcBounceSeed(pathSeed, depth, 0x4b455953u);
                 const GuideSet guide = GuideBuildAt(GuideKeyOf(ctx.hitPos, geoN, sKey), ctx.hitPos, n);
                 if (guide.q > 0.0f)
                 {
                     guideQ = guide.q;
-                    if (strategy == 0u || (strategy == 1u && broadGGX))
+                    uint sGuide = RcBounceSeed(pathSeed, depth, GUIDE_STREAM);
+                    const float uTest = blue ? PtBlue1(pixel, blueIndex, depth, BN_DIM_GUIDE_TEST) : RandomFloatSingle(sGuide);
+                    if (uTest < guide.q)
                     {
-                        uint sGuide = RcBounceSeed(pathSeed, depth, GUIDE_STREAM);
-                        const float uTest = blue ? PtBlue1(pixel, blueIndex, depth, BN_DIM_GUIDE_TEST) : RandomFloatSingle(sGuide);
-                        if (uTest < guide.q)
-                        {
-                            const float  uPick = blue ? PtBlue1(pixel, blueIndex, depth, BN_DIM_GUIDE_PICK) : RandomFloatSingle(sGuide);
-                            const float2 uDir  = blue ? PtBlue2(pixel, blueIndex, depth, BN_PAIR_GUIDE_CAP)
-                                : float2(RandomFloatSingle(sGuide), RandomFloatSingle(sGuide));
-                            uint pick;
-                            dir = GuideSample(guide, uPick, uDir, pick);
-                        }
+                        const float  uPick = blue ? PtBlue1(pixel, blueIndex, depth, BN_DIM_GUIDE_PICK) : RandomFloatSingle(sGuide);
+                        const float2 uDir  = blue ? PtBlue2(pixel, blueIndex, depth, BN_PAIR_GUIDE_CAP)
+                            : float2(RandomFloatSingle(sGuide), RandomFloatSingle(sGuide));
+                        uint pick;
+                        dir = GuideSample(guide, uPick, uDir, pick);
                     }
                     guidePdf = GuidePdf(guide, dir);   // the cones are dead from here on
                 }
@@ -387,12 +408,22 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
             res |= strategy << PV_STRATEGY_SHIFT;
             if (!freeBounce) res |= PV_DIFF_INC;
             if (wide) res |= PV_SPREAD;
+            cone.y += SharcLobeConeAngle(strategy, ctx.matID, ctx.hitLocalPr);
 
-            float3 broadVal; float broadPdf;
-            const BrdfData bdata = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, n, n, dir, -rayDir,
-                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadVal, broadPdf);
-            const float pShare   = spPath.Pdiff + (broadGGX ? spPath.Pspec : 0.0f);
-            const float pdfTotal = guideQ > 0.0f ? max(bdata.pdf + pShare * guideQ * (guidePdf - broadPdf), 0.0f) : bdata.pdf;
+            // The group's density, with the guide mixed in, times the probability of the pick. The
+            // deferred vertex needs the density only (its value is the material pass's), so it
+            // has a call of its own that the compiler strips down to the densities.
+            BrdfData lobe;
+            if (capture)
+            {
+                lobe.pdf = EvaluateLobe(spPath, group, ctx.matID, n, n, dir, -rayDir,
+                    ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y).pdf;
+                lobe.val = 0.0f;
+            }
+            else
+                lobe = EvaluateLobe(spPath, group, ctx.matID, n, n, dir, -rayDir,
+                    ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+            const float pdfTotal = groupP * (guideQ > 0.0f ? max(lerp(lobe.pdf, guidePdf, guideQ), 0.0f) : lobe.pdf);
             const bool  valid    = dot(dir, dir) > 1e-12f && pdfTotal > 1e-6f;
             const bool  passThrough = strategy == 1u && dot(dir, n) < 0.0f && LoadKd_w(ctx.matID) < 1.0f - EPSILON;
             if (OceanDirectLightingOwnsRay(waterDirect, dot(dir, n)) ||
@@ -401,9 +432,10 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
 
             if (capture)
             {
-                // Densities only: the material pass supplies the value of this scatter.
+                // Densities only: the material pass supplies the value of this scatter. The light
+                // sample is weighted against the group density without the guide, on both sides.
                 DvScatter dsc;
-                dsc.dirOut = dir; dsc.info = 0u; dsc.pdfTotal = pdfTotal; dsc.bsdfPdf = bdata.pdf;
+                dsc.dirOut = dir; dsc.info = 0u; dsc.pdfTotal = pdfTotal; dsc.bsdfPdf = lobe.pdf;
                 DvStoreScatter(pixelIdx, dsc);
                 if (!valid)
                 {
@@ -414,32 +446,34 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                 {
                     bool misNone = misNoneIn;
                     if (passThrough) res |= PV_PASS_THROUGH;
-                    else if (performNEE) { pdfOut = bdata.pdf; misNone = false; }
+                    else if (neeBase) { pdfOut = lobe.pdf; misNone = false; }
                     else misNone = true;
                     res |= (DV_KIND_BSDF << PV_KIND_SHIFT) | (misNone ? PV_MIS_NONE : 0u);
                 }
             }
             else
             {
-                // In-place vertex: narrow lobes before the deferred vertex, or anything after it.
+                // In-place vertex: narrow picks before the deferred vertex, or anything after it.
                 const float  cosTheta = abs(dot(n, dir));
-                const float3 W = valid ? bdata.val * absorb * cosTheta / pdfTotal : float3(0, 0, 0);
+                const float3 W = valid ? lobe.val * absorb * cosTheta / pdfTotal : float3(0, 0, 0);
                 if (!valid || any(isnan(W)) || any(isinf(W)) || !any(W > 0.0f)) alive = false;
                 else
                 {
                     if (passThrough) res |= PV_PASS_THROUGH;
                     else
                     {
-                        // The footprint tracks the density; the hits along this direction are
-                        // weighted against the light sample of the vertex wherever one is taken.
-                        if (neeBase) pdfOut = bdata.pdf;
-                        if (!neeCovered) res |= PV_MIS_NONE;
+                        // The footprint tracks the density. Only a vertex that took its own light
+                        // sample weighs the hits along this direction against it; everywhere else
+                        // they count in full.
+                        pdfOut = lobe.pdf;
+                        if (!inlineNee) res |= PV_MIS_NONE;
                     }
                     color *= W * cacheScale;
                     if (liteX2 && cacheSurface && (res & PV_CACHE_HIT) == 0u)
                     {
+                        // The reuse suffix carries the broad part: all of a broad pick, none of another.
                         res |= PV_AUX_BROAD;
-                        auxPk = PackRGB9E5(broadVal * absorb * cosTheta / pdfTotal);
+                        auxPk = PackRGB9E5(group == LOBE_GROUP_BROAD ? W : 0.0f);
                     }
                 }
             }
@@ -460,26 +494,29 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     io.pdf     = pdfOut;
     io.dirPk   = PackNormal(dir);
     io.nPk     = PackNormal(outN);
+    io.cone    = PtConePack(cone.x, cone.y);
+    io.pos     = ctx.hitPos;
     io.color   = color;
     io.auxPk   = auxPk;
     io.nee     = nee;
     io.neeLite = neeLite;
 }
 
-// Shade the primary vertex from the camera record: the camera pass resolved its surface
-// (including primary surface replacement) and, with the cache enabled, wrote its geometric
-// normal to the scratch slice. The retrace in the raygen only sorts the threads, so whether it
-// hit, and what it hit, does not matter here; without the cache nothing keys on the geometric
-// normal and the shading normal stands in (the inspection views overwrite the slice earlier).
-void PtShadePrimary(inout PtVertexIO io, float3 rayDir, uint2 pixel, uint pixelIdx)
+// The primary vertex from the camera record: the camera pass resolved its surface (including
+// primary surface replacement) and, with the cache enabled, wrote its geometric normal to the
+// scratch slice. Without the cache nothing keys on the geometric normal and the shading normal
+// stands in (the inspection views overwrite the slice earlier). The raygen reads this before any
+// reorder, while its threads still cover a screen tile.
+void PtPrimaryContext(uint2 pixel, uint pixelIdx, out HitContext ctx, out float3 geoN, out bool flipIOR)
 {
     const SDRecord sd = load_SD(g_sample_current, pixelIdx);
     float2 pIors; uint pMedium; float3 pAbsorb;
     load_rg_primaryExtra(pixelIdx, pIors, pMedium, pAbsorb);
-    const float3 geoN = (sharc_enabled != 0u && SHARC_DEBUG_MODE == 0u)
+    geoN = (sharc_enabled != 0u && SHARC_DEBUG_MODE == 0u)
         ? gScratchPing[uint3(pixel, SHARC_DEBUG_SCRATCH)].xyz : sd.n1_s;
+    flipIOR = pMedium != MEDIUM_INVALID;
 
-    HitContext ctx = (HitContext)0;
+    ctx = (HitContext)0;
     ctx.hitPos         = sd.x1;
     ctx.hitNormal      = sd.n1_s;
     ctx.matID          = sd.matID;
@@ -491,23 +528,25 @@ void PtShadePrimary(inout PtVertexIO io, float3 rayDir, uint2 pixel, uint pixelI
     ctx.iors           = (half2)pIors;
     ctx.mediumMatID    = pMedium;
     ctx.absorptionTint = (half3)pAbsorb;
-    PtVertexShade(io, ctx, geoN, rayDir, pMedium != MEDIUM_INVALID, pixel, pixelIdx, 0u);
 }
 
-// Shade a secondary hit the raygen found: evaluate the surface and the material, then feed the
-// vertex routine. prevPos and prevN are the vertex the ray left, for the MIS weight of an emitter
-// hit against that vertex's light sample.
-void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex,
-    float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, float3 prevN, uint2 pixel, uint pixelIdx)
+// A secondary hit the raygen found: evaluate the surface and the material into the context of the
+// vertex. An emitter hit or the bounce limit resolves the vertex right here (io carries the
+// result) and returns false; otherwise the raygen hands the context to PtVertexShade. prevPos and
+// prevN are the vertex the ray left, for the MIS weight of an emitter hit against that vertex's
+// light sample.
+bool PtHitContext(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex,
+    float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, float3 prevN, uint pixelIdx,
+    out HitContext ctx, out float3 geoN, out bool flipIOR, out uint presetOut)
 {
     const uint   depth    = (io.flags >> PV_IN_DEPTH_SHIFT) & 0x7Fu;
     const uint primID = FlatPrimID(instID, geometryIndex, primitiveIndex);
 
-    HitContext ctx = (HitContext)0;
-    float3 geoN      = 0.0f;
-    bool   flipIOR   = false;
-    uint   presetOut = 0u;
-    bool   shade     = true;
+    ctx       = (HitContext)0;
+    geoN      = 0.0f;
+    flipIOR   = false;
+    presetOut = 0u;
+    bool shade = true;
 
     // The beam width at this hit: the pixel cone over the path length, plus the spread of the
     // rough scatters so far and of the one that led here.
@@ -528,7 +567,7 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
         {
             io.flags = PV_TERMINATE;
             io.auxPk = 0u;
-            return;
+            return false;
         }
         const bool pending   = (io.flags & PV_IN_PENDING) != 0u;
         const bool immediate = (io.flags & PV_IN_IMMEDIATE) != 0u;
@@ -586,6 +625,9 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
 
         if ((io.flags & PV_IN_SPREAD) != 0u)
             io.spread += hitT * sqrt(min(16.0f, rcp(max(io.pdf * abs(dot(hinfo.geometricNormal, -rayDir)), 1e-6f))));
+        // The cone of the path's lobes widens over the segment by its angle.
+        const float2 cone = PtConeUnpack(io.cone);
+        io.cone = PtConePack(cone.x + hitT * cone.y, cone.y);
         const float regularize = io.spread > 0.0f ? PT_REGULARIZE_ROUGHNESS : 0.0f;
 
         geoN = hinfo.geometricNormal;
@@ -601,12 +643,12 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
         ctx.mediumMatID    = flipIOR ? matID : MEDIUM_INVALID;
         ctx.absorptionTint = (half3)(flipIOR && !LoadIsOceanMaterial(matID) ? CalculateAbsorptionThroughput(LoadTf(matID), hitT) : float3(1, 1, 1));
     }
-
-    if (shade) PtVertexShade(io, ctx, geoN, rayDir, flipIOR, pixel, pixelIdx, presetOut);
+    return shade;
 }
 
 // Escaped ray: sky and sun radiance with the sun MIS weight of the scatter the ray came from.
-// The raygen owns the throughput and the reuse candidate.
+// The raygen owns the throughput and the reuse candidate. rayOrigin only places the sky
+// observer, so the vertex the ray left stands in for the offset origin.
 void PtShadeMiss(inout PtVertexIO io, float3 rayOrigin, float3 rayDir)
 {
     const bool underground = WorldPosIsUnderground(rayOrigin + sceneOriginWorld);

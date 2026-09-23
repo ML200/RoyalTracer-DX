@@ -113,6 +113,25 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
         args.push_back(d.c_str());
     }
 
+    // Defines for every shader from RDN_SHADER_DEFINES ("A=0;B=1"), so a feature can be compiled
+    // out for an A/B measurement without editing the shaders.
+    static const std::vector<std::wstring> envDefines = [] {
+        std::vector<std::wstring> defines;
+        wchar_t buffer[1024];
+        const DWORD length = GetEnvironmentVariableW(L"RDN_SHADER_DEFINES", buffer, 1024);
+        if (length == 0 || length >= 1024)
+            return defines;
+        std::wstringstream list(std::wstring(buffer, length));
+        for (std::wstring define; std::getline(list, define, L';');)
+            if (!define.empty())
+                defines.push_back(define);
+        return defines;
+    }();
+    for (const auto& d : envDefines) {
+        args.push_back(L"-D");
+        args.push_back(d.c_str());
+    }
+
     ComPtr<IDxcResult> pResult;
     auto compileT0 = std::chrono::high_resolution_clock::now();
     hr = context.compiler->Compile(&sourceBuffer, args.data(), (uint32_t)args.size(), context.includes.Get(),
@@ -145,6 +164,22 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
 
     ComPtr<IDxcBlob> pBlob;
     ThrowIfFailed(pResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pBlob), nullptr));
+
+    // With Aftermath GPU crash dumps on (Diagnostics.h), every shader handed to the driver is kept
+    // next to the dump, so the dump's shader hashes can be resolved to the HLSL lines embedded in
+    // the binaries (-Zi -Qembed_debug).
+    wchar_t keepDir[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"RT_AFTERMATH_SHADER_DIR", keepDir, MAX_PATH) > 0) {
+        uint32_t hash = 2166136261u;
+        const auto* bytes = static_cast<const uint8_t*>(pBlob->GetBufferPointer());
+        for (size_t i = 0; i < pBlob->GetBufferSize(); ++i)
+            hash = (hash ^ bytes[i]) * 16777619u;
+        wchar_t suffix[16];
+        swprintf_s(suffix, L"-%08X.dxil", hash);
+        std::ofstream keep(std::wstring(keepDir) + shaderName + L"-" + entryPoint + suffix,
+                           std::ios::binary | std::ios::trunc);
+        keep.write(static_cast<const char*>(pBlob->GetBufferPointer()), (std::streamsize)pBlob->GetBufferSize());
+    }
 
     return pBlob;
 }

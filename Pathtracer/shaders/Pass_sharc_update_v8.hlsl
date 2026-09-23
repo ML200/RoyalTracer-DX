@@ -20,9 +20,10 @@ uint2 PtPixel()
 
 uint GuideLane() { return DispatchRaysIndex().y * DispatchRaysDimensions().x + DispatchRaysIndex().x; }
 
-// Diffuse cache hits reweight throughput before specular continuation.
+// Diffuse cache hits reweight throughput before specular continuation. The cone of the lobes that
+// led here decides whether the path may end in the cache, as in the path tracer (SharcConeRamp).
 bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
-    bool sssEntered, uint pathSeed, uint depth, uint maxBounces, float pathSpread,
+    bool sssEntered, uint pathSeed, uint depth, uint maxBounces, float coneWidth, float coneAngle,
     inout SamplingP spPath, out bool cacheSurface, out bool diffuseCached, inout float3 throughput,
     inout SharcTrainingState training, uint guideRoots
 )
@@ -35,7 +36,7 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
     {
         const SharcSurface surface = SharcMakeSurface(ctx, geometricNormal);
         const float layerT = SharcLayerTransmission(spPath, ctx, -rayDir);
-        const bool queryable = pathSpread > 0.0f && layerT > 1e-3f;
+        const bool queryable = layerT > 1e-3f;
         uint sCache = RcBounceSeed(pathSeed, (uint)depth, 0x53484152u);
         float3 cached;
         bool hit = false;
@@ -46,7 +47,8 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
             const bool forced = attempt != 0u;
             if (!forced)
             {
-                if (!queryable || !SharcQueryFootprintAccepted(surface.position, pathSpread, sCache)) continue;
+                if (!queryable || !SharcQueryFootprintAccepted(surface.position, coneWidth, coneAngle,
+                    abs(dot(geometricNormal, rayDir)), sCache)) continue;
             }
             else if ((uint)depth + 1u < maxBounces) break;
             hit = SharcQueryStochastic(surface, forced, sCache, cached);
@@ -84,6 +86,7 @@ static const uint PT_PS_DIFF_SHIFT    = 8u;
 static const uint PT_PS_SAMPLE_SHIFT  = 16u;
 static const uint PT_PS_GUIDE_SHIFT   = 20u;
 static const uint PT_PS_SSS           = 1u << 24u;
+static const uint PT_PS_SSS_EXIT      = 1u << 25u;   // the current vertex is a subsurface exit
 static const uint PT_PS_DIFF_CACHED   = 1u << 27u;
 static const uint PT_PS_FLIP_IOR      = 1u << 28u;
 static const uint PT_PS_SPREAD        = 1u << 29u;
@@ -98,6 +101,12 @@ uint PtPsDiffDepth(uint ps) { return (ps >> PT_PS_DIFF_SHIFT) & 0x7Fu; }
 uint PtPsSample(uint ps)    { return (ps >> PT_PS_SAMPLE_SHIFT) & 0xFu; }
 uint PtPsGuideDepth(uint ps){ return (ps >> PT_PS_GUIDE_SHIFT) & 0xFu; }
 uint PtPsWith(uint ps, uint flag, bool on) { return on ? (ps | flag) : (ps & ~flag); }
+
+// Reorder key of a vertex: its instance, and whether the path behind it still carries much.
+uint SharcReorderHint(uint instID, float suffixLuma)
+{
+    return ((0x40u | (instID & 0x3Fu)) << 1u) | (suffixLuma < 0.25f ? 1u : 0u);
+}
 
 // Each bounce combines cache, direct-light, and BSDF estimators.
 [shader("raygeneration")]
@@ -125,27 +134,29 @@ void Pass_sharc_update_v8()
     SharcTrainingInit(training, GuideLane());
 
     const SDRecord sd = load_SD(g_sample_current, sampleIdx);
-    float2 pIors; uint pMedium; float3 pAbsorb;
-    load_rg_primaryExtra(sampleIdx, pIors, pMedium, pAbsorb);
 
-    HitContext ctx;
+    // The normals and the medium state of the context are rebuilt at the top of each iteration
+    // (see the reorder there); the rest carries over.
+    HitContext ctx = (HitContext)0;
     ctx.hitPos         = sd.x1;
-    ctx.hitNormal      = sd.n1_s;
     ctx.matID          = sd.matID;
     ctx.instID         = sd.instID;
     ctx.backface       = (sd.flags & SD_FLAG_BACKFACE) != 0u;
     ctx.hitLocalKd     = (half3)sd.Kd;
     ctx.hitLocalPr     = (half)sd.Pr;
     ctx.hitLocalPm     = (half)sd.Pm;
-    ctx.iors           = (half2)pIors;
-    ctx.mediumMatID    = pMedium;
-    ctx.absorptionTint = (half3)pAbsorb;
 
     float3  throughput   = float3(1, 1, 1);
     float   prev_pdf     = 1.0f;
     uint    rayDirPk     = PackNormal(normalize(sd.x1 - InitOrigin()));
-    float3 geometricNormal = gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz;
+    uint    hitNormalPk  = PackNormal(sd.n1_s);
+    uint    geoNormalPk  = PackNormal(gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz);
+    float3  geometricNormal = 0.0f;
+    float   hitT = 0.0f;   // length of the segment that reached the current vertex
+    uint    reorderHint = SharcReorderHint(sd.instID, training.suffixLuma);
     float pathSpread = 0.0f;
+    float coneWidth  = 0.0f;   // cone of the path's lobes for the cache test: width here, full angle
+    float coneAngle  = 0.0f;
     float pathDist   = length(sd.x1 - InitOrigin());   // one training path stands for a tile of pixels
     bool waterDirectSegment = false;
     bool waterMedium = (sd.flags & SD_FLAG_CAMERA_WATER) != 0u;
@@ -155,8 +166,42 @@ void Pass_sharc_update_v8()
     [loop]
     for (;;)
     {
+        // The one reorder point, at the top of every iteration, the primary one included (sorted
+        // by the instance of the camera record), as in the path tracer: behind the early exits at
+        // the end of an iteration and skipped by the subsurface continuation, the device hung at
+        // random. The context crosses it compact: the normals packed, the medium state rebuilt
+        // below from the camera record, the subsurface exit, or the side and length of the hit.
+#if SHARC_SER_REORDER
+        dx::MaybeReorderThread(reorderHint, 8u);
+#endif
         const uint depth = PtPsDepth(ps);
         if (depth >= maxBounces) break;
+        ctx.hitNormal   = UnpackNormal(hitNormalPk);
+        geometricNormal = UnpackNormal(geoNormalPk);
+        if (depth == 1u)
+        {
+            float2 pIors; uint pMedium; float3 pAbsorb;
+            load_rg_primaryExtra(sampleIdx, pIors, pMedium, pAbsorb);
+            ctx.iors           = (half2)pIors;
+            ctx.mediumMatID    = pMedium;
+            ctx.absorptionTint = (half3)pAbsorb;
+        }
+        else if ((ps & PT_PS_SSS_EXIT) != 0u)
+        {
+            ctx.iors           = (half2)float2(1.0f, 1.0f);
+            ctx.mediumMatID    = MEDIUM_INVALID;
+            ctx.absorptionTint = (half3)float3(1, 1, 1);
+        }
+        else
+        {
+            const bool  enters = (ps & PT_PS_FLIP_IOR) != 0u;
+            const float ni     = LoadNi(ctx.matID);
+            ctx.iors           = (half2)(enters ? float2(ni, 1.0f) : float2(1.0f, ni));
+            ctx.mediumMatID    = enters ? ctx.matID : MEDIUM_INVALID;
+            ctx.absorptionTint = (half3)(enters && !LoadIsOceanMaterial(ctx.matID)
+                ? CalculateAbsorptionThroughput(LoadTf(ctx.matID), hitT) : float3(1, 1, 1));
+        }
+        ps &= ~PT_PS_SSS_EXIT;
         const bool sssEntered = (ps & PT_PS_SSS) != 0u;
         float3 rayDir = UnpackNormal(rayDirPk);
 
@@ -171,7 +216,7 @@ void Pass_sharc_update_v8()
         bool diffuseCached = (ps & PT_PS_DIFF_CACHED) != 0u;
 
         if (!PtPrepareVertex(ctx, geometricNormal, rayDir, sssEntered,
-            pathSeed, depth, maxBounces, pathSpread, spPath, cacheSurface, diffuseCached,
+            pathSeed, depth, maxBounces, coneWidth, coneAngle, spPath, cacheSurface, diffuseCached,
             throughput, training, PtPsRoots(ps))) break;
 
         const bool useLearnedLights=LTC_UseSurfaceLearning();
@@ -189,10 +234,18 @@ void Pass_sharc_update_v8()
         const bool performNEE = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
 
+        // --- the lobe of this sample: one group is picked and evaluated, for the light sample
+        // and the scatter alike (see EvaluateLobe). A wide pick takes the light sample, divided by
+        // the probability of the pick; the water surface takes one on every pick. ---
+        const uint  strategy = SelectSamplingStrategy(spPath, sBsdf);
+        const uint  group    = LobeGroupOf(strategy, ctx.hitLocalPr);
+        const float groupP   = LobeGroupP(spPath, group, ctx.hitLocalPr);
+        const bool  neeTaken = performNEE && (waterDirect || SharcScatterHasSpread(strategy, ctx.matID, ctx.hitLocalPr));
+
         // --- light sampling first: both shadow traversals run before any scatter state exists ---
         float3 directSum = float3(0, 0, 0);
         float3 directBroad = float3(0, 0, 0);
-        if (performNEE)
+        if (neeTaken)
         {
             [loop]
             for (uint tech = 0u; tech < 2u; ++tech)
@@ -207,9 +260,10 @@ void Pass_sharc_update_v8()
                 float  trainingReward = 0.0f;
                 bool   sampled = false;
 
-                // Only the sun is worth widening the water's lobe for; see PtInlineNee.
+                // Only the sun is worth widening the water's lobe for, and only a picked GGX lobe
+                // widens; see PtInlineNee.
                 const bool sunTech = tech == 1u;
-                const half neePr = (waterDirect && sunTech)
+                const half neePr = (waterDirect && sunTech && group == LOBE_GROUP_SPEC)
                     ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness())
                     : ctx.hitLocalPr;
 
@@ -259,20 +313,20 @@ void Pass_sharc_update_v8()
                     const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
                     if (any(visT > 0.0f))
                     {
-                        float3 broadNEE; float broadNeePdf;
-                        const BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir,
-                            ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadNEE, broadNeePdf);
-                        if (bdataNEE.pdf > 0.0f)
+                        const BrdfData lobe = EvaluateLobe(spPath, group, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir,
+                            ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+                        if (lobe.pdf > 0.0f)
                         {
-                            trainingReward = dot(radiance*cosSurf*visT*LTC_TrainShare((float)ctx.hitLocalPr,ctx.matID,bdataNEE.val,broadNEE)/lightPdf,
+                            const float3 broad = group == LOBE_GROUP_BROAD ? lobe.val : 0.0f;
+                            trainingReward = dot(radiance*cosSurf*visT*LTC_TrainShare((float)ctx.hitLocalPr,ctx.matID,lobe.val,broad)/lightPdf,
                                 float3(0.2126f,0.7152f,0.0722f));
 
-                            const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + bdataNEE.pdf);
-                            const float3 lightScale = radiance * cosSurf * visT * (misWeight / lightPdf);
-                            directSum += bdataNEE.val * lightScale;
+                            const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
+                            const float3 lightScale = radiance * cosSurf * visT * (misWeight / (lightPdf * groupP));
+                            directSum += lobe.val * lightScale;
 
                             if (training.fresh != SHARC_INVALID)
-                                directBroad += broadNEE * lightScale;
+                                directBroad += broad * lightScale;
                         }
                     }
                 }
@@ -282,23 +336,23 @@ void Pass_sharc_update_v8()
         }
         GuideRootsAddSource(GuideLane(), PtPsRoots(ps), directSum);
 
-        // --- the scatter: guide cones, one lobe sample, one evaluation of the mixture ---
+        // --- the scatter: one sample of the picked lobe, guide cones for the broad group, one
+        // evaluation of that group ---
         uint   guideEntry = GUIDE_INVALID;
         uint   guideParent = GUIDE_INVALID;
         uint   guideRoot = GUIDE_ROOTS;
-        uint   sampledStrategy = 0u;
+        const uint sampledStrategy = strategy;
         float3 dir = 0.0f;
-        BrdfData bdata = (BrdfData)0;
-        float3 broadScatter = 0.0f; float broadScatterPdf = 0.0f;
+        BrdfData lobe = (BrdfData)0;
         float  pdfTotal = 0.0f;
-        const bool broadGGX = IsBroadGGX(ctx.hitLocalPr);
         if (scatterLive)
         {
-            dir = SampleBRDF(spPath, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false, sampledStrategy);
+            dir = SampleBRDF_WithStrategy(strategy, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd,
+                ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false);
 
             float guideQ = 0.0f, guidePdf = 0.0f;
-            if (cacheSurface && GUIDE_ENABLED && HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) &&
-                1u + PtPsGuideDepth(ps) <= (uint)GUIDE_MAX_DEPTH)
+            if (group == LOBE_GROUP_BROAD && cacheSurface && GUIDE_ENABLED &&
+                HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) && 1u + PtPsGuideDepth(ps) <= (uint)GUIDE_MAX_DEPTH)
             {
                 uint sKey = RcBounceSeed(pathSeed, (uint)depth, 0x4b455953u);
                 const GuideKey guideKey = GuideKeyOf(ctx.hitPos, geometricNormal, sKey);
@@ -314,25 +368,22 @@ void Pass_sharc_update_v8()
                     if (guide.q > 0.0f)
                     {
                         guideQ = guide.q;
-                        if (sampledStrategy == 0u || (sampledStrategy == 1u && broadGGX))
+                        uint sGuide = RcBounceSeed(pathSeed, (uint)depth, GUIDE_STREAM);
+                        float uTest = RandomFloatSingle(sGuide);
+                        if (uTest < guide.q)
                         {
-                            uint sGuide = RcBounceSeed(pathSeed, (uint)depth, GUIDE_STREAM);
-                            float uTest = RandomFloatSingle(sGuide);
-                            if (uTest < guide.q)
-                            {
-                                uint pick;
-                                dir = GuideSample(guide, sGuide, pick);
-                            }
+                            uint pick;
+                            dir = GuideSample(guide, sGuide, pick);
                         }
                         guidePdf = GuidePdf(guide, dir);
                     }
                 }
             }
 
-            bdata = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal, ctx.hitNormal, dir, -rayDir,
-                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadScatter, broadScatterPdf);
-            const float pShare = spPath.Pdiff + (broadGGX ? spPath.Pspec : 0.0f);
-            pdfTotal = guideQ > 0.0f ? max(bdata.pdf + pShare * guideQ * (guidePdf - broadScatterPdf), 0.0f) : bdata.pdf;
+            // The group's density, with the guide mixed in, times the probability of the pick.
+            lobe = EvaluateLobe(spPath, group, ctx.matID, ctx.hitNormal, ctx.hitNormal, dir, -rayDir,
+                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+            pdfTotal = groupP * (guideQ > 0.0f ? max(lerp(lobe.pdf, guidePdf, guideQ), 0.0f) : lobe.pdf);
         }
         if ((guideEntry != GUIDE_INVALID || guideParent != GUIDE_INVALID) && PtPsRoots(ps) != 3u &&
             ps_guideRootBacked(GuideLane()))
@@ -352,25 +403,23 @@ void Pass_sharc_update_v8()
             SharcTrainingAdvance(training, w.wTotal * surfKd, w.wTotal * surfKd, 1.0f);
             GuideRootsScale(GuideLane(), PtPsRoots(ps), w.wTotal * surfKd);
             ctx.hitPos         = w.exitPos;
-            ctx.hitNormal      = w.exitNormal;
             ctx.hitLocalKd     = (half3)float3(1, 1, 1);
             ctx.hitLocalPr     = (half)1.0f;
             ctx.hitLocalPm     = (half)0.0f;
-            ctx.iors           = (half2)float2(1.0f, 1.0f);
-            ctx.mediumMatID    = MEDIUM_INVALID;
-            ctx.absorptionTint = (half3)float3(1, 1, 1);
+            hitNormalPk        = PackNormal(w.exitNormal);   // unit IORs, no medium: PT_PS_SSS_EXIT
             rayDirPk           = PackNormal(-w.exitNormal);
-            ps = (ps | PT_PS_SSS) & ~PT_PS_DIFF_CACHED;
+            ps = (ps | PT_PS_SSS | PT_PS_SSS_EXIT) & ~PT_PS_DIFF_CACHED;
             waterDirectSegment = false;
             ps += 1u << PT_PS_DEPTH_SHIFT;
             if (PtPsGuideDepth(ps) < 15u) ps += 1u << PT_PS_GUIDE_SHIFT;
+            reorderHint = SharcReorderHint(ctx.instID, training.suffixLuma);
             continue;
         }
 
         if (!MaterialIsFreeBounce(ctx.matID)) ps += 1u << PT_PS_DIFF_SHIFT;
         const float  cosTheta     = abs(dot(ctx.hitNormal, dir));
         const float3 updateWeight = (pdfTotal > 1e-6f)
-            ? (bdata.val * (float3)ctx.absorptionTint * cosTheta / pdfTotal)
+            ? (lobe.val * (float3)ctx.absorptionTint * cosTheta / pdfTotal)
             : float3(0, 0, 0);
         if (dot(dir, dir) < 1e-12f || pdfTotal <= 1e-6f ||
             any(isnan(updateWeight)) || any(isinf(updateWeight)))
@@ -379,7 +428,8 @@ void Pass_sharc_update_v8()
         if (!any(updateWeight > 0.0f))
             break;
 
-        const float3 broadWeight = broadScatter * (float3)ctx.absorptionTint * cosTheta / pdfTotal;
+        // The broad part of this scatter: all of a broad pick, none of another.
+        const float3 broadWeight = group == LOBE_GROUP_BROAD ? updateWeight : 0.0f;
         const float3 updateWeightBroad = training.fresh != SHARC_INVALID ? broadWeight : updateWeight;
 
         const bool passThrough = sampledStrategy == 1u && dot(dir, ctx.hitNormal) < 0.0f &&
@@ -392,14 +442,15 @@ void Pass_sharc_update_v8()
         waterScatterUsed = OceanScatterUsedAfterSurface(waterScatterUsed,incomingWater,waterMedium,
             LoadIsOceanMaterial(ctx.matID),passThrough && LoadIsThinGlass(ctx.matID));
         if (passThrough) { }
-        else if (performNEE)
+        else if (neeTaken)
         {
-            prev_pdf = bdata.pdf;
+            prev_pdf = lobe.pdf;
             ps &= ~PT_PS_MIS_NONE;
         }
         else ps |= PT_PS_MIS_NONE;
         const bool spread = SharcScatterHasSpread(sampledStrategy, ctx.matID, ctx.hitLocalPr);
         ps = PtPsWith(ps, PT_PS_SPREAD, spread);
+        coneAngle += SharcLobeConeAngle(sampledStrategy, ctx.matID, ctx.hitLocalPr);
         if (spread && PtPsGuideDepth(ps) < 15u) ps += 1u << PT_PS_GUIDE_SHIFT;
         rayDir   = dir;
         rayDirPk = PackNormal(dir);
@@ -428,7 +479,7 @@ void Pass_sharc_update_v8()
         if (guideRoot < GUIDE_ROOTS)
             GuideRootSetWeight(GuideLane(), guideRoot,
                 broadWeight * (rrWeight * rcp(max(Luma((float3)ctx.hitLocalKd), 0.05f))),
-                broadScatterPdf / pdfTotal);
+                lobe.pdf / pdfTotal);
 
         RayDesc rayB;
         rayB.Origin    = rayOrigin;
@@ -438,7 +489,6 @@ void Pass_sharc_update_v8()
         if (!IsRayDescValid(rayB))
             break;
         OceanPathHit hit = OceanTracePathHit(rayB);
-        const uint traceSuffixHint = training.suffixLuma < 0.25f ? 1u : 0u;
 
         bool volumeRedirected = false;
         bool waterAbsorbed = false;
@@ -533,18 +583,13 @@ void Pass_sharc_update_v8()
 
         if (!terminate)
         {
-            const float  matNi_n        = LoadNi(matID_n);
+            // The side of the hit decides the medium state, which the next iteration rebuilds
+            // from PT_PS_FLIP_IOR and the segment length.
             const bool   transmissive_n = LoadKd_w(matID_n) < 1.0f - EPSILON;
             const bool   flipIOR_n      = hinfo_n.backface && transmissive_n && !LoadIsThinGlass(matID_n);
-            const float2 iors_n         = flipIOR_n ? float2(matNi_n, 1.0f) : float2(1.0f, matNi_n);
-            const uint   mediumMatID_n  = flipIOR_n ? matID_n : MEDIUM_INVALID;
 
             float3 hitLocalKd_n; float hitLocalPr_n, hitLocalPm_n;
             RefetchMaterial(matID_n, hinfo_n, hitLocalKd_n, hitLocalPr_n, hitLocalPm_n);
-
-            const float3 absorptionTint_n = (mediumMatID_n != MEDIUM_INVALID && !LoadIsOceanMaterial(mediumMatID_n))
-                ? CalculateAbsorptionThroughput(LoadTf(mediumMatID_n), hitT_n)
-                : float3(1, 1, 1);
 
             ctx.hitPos         = hitPos_n;
             geometricNormal    = hinfo_n.geometricNormal;
@@ -552,6 +597,7 @@ void Pass_sharc_update_v8()
             if ((ps & PT_PS_SPREAD) != 0u)
                 pathSpread += hitT_n * sqrt(min(16.0f, rcp(max(prev_pdf *
                     abs(dot(geometricNormal, -rayDir)), 1e-6f))));
+            coneWidth += hitT_n * coneAngle;
             ctx.hitNormal      = hinfo_n.hitNormal;
             ctx.matID          = matID_n;
             ctx.instID         = instID_n;
@@ -562,9 +608,6 @@ void Pass_sharc_update_v8()
             g_regularizeRoughness = regularize;
             ctx.hitLocalPr     = (half) max(hitLocalPr_n, regularize);
             ctx.hitLocalPm     = (half) hitLocalPm_n;
-            ctx.iors           = (half2)iors_n;
-            ctx.mediumMatID    = mediumMatID_n;
-            ctx.absorptionTint = (half3)absorptionTint_n;
             ps = PtPsWith(ps, PT_PS_FLIP_IOR, flipIOR_n);
         }
 
@@ -575,21 +618,10 @@ void Pass_sharc_update_v8()
 
         const uint nextDepth = depth + 1u;
         if (nextDepth >= maxBounces) break;
-        const uint hint = 0x40u | (ctx.instID & 0x3Fu);
-
-        const uint hitNormalPk = PackNormal(ctx.hitNormal);
-        const uint geoNormalPk = PackNormal(geometricNormal);
-        dx::MaybeReorderThread((hint << 1u) | traceSuffixHint, 8u);
-        ctx.hitNormal   = UnpackNormal(hitNormalPk);
-        geometricNormal = UnpackNormal(geoNormalPk);
-        {
-            const bool  enters = (ps & PT_PS_FLIP_IOR) != 0u;
-            const float ni     = LoadNi(ctx.matID);
-            ctx.iors           = (half2)(enters ? float2(ni, 1.0f) : float2(1.0f, ni));
-            ctx.mediumMatID    = enters ? ctx.matID : MEDIUM_INVALID;
-            ctx.absorptionTint = (half3)(enters && !LoadIsOceanMaterial(ctx.matID)
-                ? CalculateAbsorptionThroughput(LoadTf(ctx.matID), hitT_n) : float3(1, 1, 1));
-        }
+        hitNormalPk = PackNormal(ctx.hitNormal);
+        geoNormalPk = PackNormal(geometricNormal);
+        hitT        = hitT_n;
+        reorderHint = SharcReorderHint(ctx.instID, training.suffixLuma);
         ps += 1u << PT_PS_DEPTH_SHIFT;
     }
     SharcTrainingCommit(training);

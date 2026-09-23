@@ -1,14 +1,16 @@
 #include "Includes_v8.hlsli"
 #include "PtDefer_v8.hlsli"
 
-// Material evaluation at the deferred vertex: the BSDF value of the cache-bound scatter that
-// weights everything traced after it, the light and sun samples the light pass resolved (with
-// their visibility), MIS, and the diffuse-reuse candidates. No rays are traced here.
+// Material evaluation at the deferred vertex, on the lobe group its sample picked: the value of
+// the cache-bound scatter that weights everything traced after it, the light and sun samples the
+// light pass resolved (with their visibility), MIS, and the diffuse-reuse candidates. The light
+// sample belongs to the pick: evaluated on the same group, divided by the probability of the pick,
+// and MIS-weighted against the group's own density. No rays are traced here.
 //
-// Three phases, so each layered BSDF evaluation runs with little around it: the scatter weight
-// first, then the two light techniques, each reading only its own part of the light record; their
-// reuse candidates stay in the register generator (a reservoir-side accumulation of these produced
-// wrong reservoirs in practice); then the tail, which reloads the scatter and path fields it needs.
+// Three phases, so each BSDF evaluation runs with little around it: the scatter weight first,
+// then the two light techniques, each reading only its own part of the light record; their reuse
+// candidates stay in the register generator (a reservoir-side accumulation of these produced wrong
+// reservoirs in practice); then the tail, which reloads the path fields it needs.
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
@@ -20,49 +22,43 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint info = DvLoadInfo(pixelIdx);
     if ((info & DV_VALID) == 0u) return;
 
-    const DvVertex v     = DvLoadVertex(pixelIdx);
-    const DvPath   path  = DvLoadPath(pixelIdx);
+    const DvVertex  v    = DvLoadVertex(pixelIdx);
+    const DvPath    path = DvLoadPath(pixelIdx);
+    const DvScatter sc   = DvLoadScatter(pixelIdx);
     const uint  depth    = PtPsDepth(path.ps);
     const uint  s        = PtPsSample(path.ps);
     const float invN     = rcp((float)PtSampleCount());
     const uint  pathSeed = PtPathSeed(pixel, s);
-    g_regularizeRoughness = path.pathSpread > 0.0f ? PT_REGULARIZE_ROUGHNESS : 0.0f;
+    g_regularizeRoughness = (v.flags & DVF_REGULARIZE) != 0u ? PT_REGULARIZE_ROUGHNESS : 0.0f;
 
     const HitContext ctx = DvContext(v);
     const float3 rayDir  = v.dirIn;
-    const float  neeScale = DvNeeScale(v.flags);   // the light sample stands for every lobe pick
-    const bool liteGen   = depth == 1u && (path.ps & PT_PS_LITE_VERTEX) != 0u;
+    const uint   group   = DvLobeGroup(v.flags);
+    const float  neeScale = path.pickP > 0.0f ? rcp(path.pickP) : 0.0f;   // the light sample stands for this pick
+    // A reuse primary is a broad pick, so its whole sample is the broad part the reservoir carries.
+    const bool liteGen   = depth == 1u && (path.ps & PT_PS_LITE_VERTEX) != 0u && group == LOBE_GROUP_BROAD;
     float3 total = 0.0f;
 
     // --- the cache-bound scatter first: afterwards only its weight stays live ---
     float3 W = 0.0f;
-    float3 liteBroad = 0.0f;
     bool tailAlive = false;
+    if ((info & DV_KIND_MASK) == DV_KIND_BSDF)
     {
-        const uint kind = info & DV_KIND_MASK;
-        if (kind == DV_KIND_BSDF)
+        const BrdfData lobe = EvaluateLobe(v.sp, group, v.matID, v.n, v.n, sc.dirOut, -rayDir,
+            ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+        const float cosTheta = abs(dot(v.n, sc.dirOut));
+        W = lobe.val * v.absorb * cosTheta / sc.pdfTotal;
+        tailAlive = !(any(isnan(W)) || any(isinf(W))) && any(W > 0.0f);
+        // Russian roulette, replayed with the throughput the trace pass could not know.
+        if (tailAlive && depth >= (uint)pt_rrStartDepth)
         {
-            const DvScatter sc = DvLoadScatter(pixelIdx);
-            float3 broadScatter; float broadScatterPdf;
-            const BrdfData bdata = EvaluateAndPdf_COMBINED_L(v.sp, LOBE_BROAD, v.matID, v.n, v.n, sc.dirOut, -rayDir,
-                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadScatter, broadScatterPdf);
-            const float cosTheta = abs(dot(v.n, sc.dirOut));
-            W = bdata.val * v.absorb * cosTheta / sc.pdfTotal;
-            tailAlive = !(any(isnan(W)) || any(isinf(W))) && any(W > 0.0f);
-            if (tailAlive)
-            {
-                if (liteGen) liteBroad = broadScatter * v.absorb * cosTheta / sc.pdfTotal;
-                // Russian roulette, replayed with the throughput the trace pass could not know.
-                if (depth >= (uint)pt_rrStartDepth)
-                {
-                    uint sRr = RcBounceSeed(pathSeed, depth, RC_STREAM_RR);
-                    const float survivalProb = max(min(1.0f, Luma(path.T * W)), 0.05f);
-                    if (RandomFloatSingle(sRr) >= survivalProb) tailAlive = false;
-                    else { W /= survivalProb; liteBroad /= survivalProb; }
-                }
-            }
+            uint sRr = RcBounceSeed(pathSeed, depth, RC_STREAM_RR);
+            const float survivalProb = max(min(1.0f, Luma(path.T * W)), 0.05f);
+            if (RandomFloatSingle(sRr) >= survivalProb) tailAlive = false;
+            else W /= survivalProb;
         }
     }
+    const float3 liteBroad = liteGen ? W : 0.0f;
 
     // --- light sample and sun sample: the light pass resolved both and their visibility ---
     if ((v.flags & DVF_PERFORM_NEE) != 0u)
@@ -90,20 +86,19 @@ void main(uint3 tid : SV_DispatchThreadID)
             if (!(lightPdf > 0.0f) || !any(visT > 0.0f) || !any(radiance > 0.0f)) continue;
             const float cosSurf = dot(v.n, L);
 
-            float3 broadNEE; float broadNeePdf;
-            const BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(v.sp, LOBE_BROAD, v.matID, v.n, v.n, L, -rayDir,
-                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadNEE, broadNeePdf);
-            if (!(bdataNEE.pdf > 0.0f)) continue;
+            const BrdfData lobeNEE = EvaluateLobe(v.sp, group, v.matID, v.n, v.n, L, -rayDir,
+                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+            if (!(lobeNEE.pdf > 0.0f)) continue;
             float3 lightScale = radiance * cosSurf * visT / lightPdf;
             if (tech == 0u)
-                reward = dot(lightScale * LTC_TrainShare(v.Pr, v.matID, bdataNEE.val, broadNEE),
-                    float3(0.2126f, 0.7152f, 0.0722f));
+                reward = dot(lightScale * LTC_TrainShare(v.Pr, v.matID, lobeNEE.val,
+                    group == LOBE_GROUP_BROAD ? lobeNEE.val : 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
             lightScale *= neeScale;
-            const float  misWeight = lightPdf / (lightPdf + bdataNEE.pdf);
-            const float3 direct    = bdataNEE.val * lightScale * misWeight;
+            const float  misWeight = lightPdf / (lightPdf + lobeNEE.pdf);
+            const float3 direct    = lobeNEE.val * lightScale * misWeight;
             if (liteGen)
             {
-                total += path.T * (direct - broadNEE * lightScale * misWeight);
+                // All of it is broad: the reservoir carries it, none goes to the pixel here.
                 uint sLite = RcBounceSeed(pathSeed, depth, 0x4c495445u + tech);
                 LiteSample cand;
                 LiteLink   link;
@@ -130,9 +125,8 @@ void main(uint3 tid : SV_DispatchThreadID)
     // --- the tail: everything gathered after the deferred scatter, weighted by its value ---
     if (tailAlive)
     {
-        const DvScatter sc = DvLoadScatter(pixelIdx);
         // A reuse primary hands its broad-lobe share to the reservoir; the rest continues down the path.
-        const float3 Wtail = liteGen ? max(W - liteBroad, 0.0f) : W;
+        const float3 Wtail = W - liteBroad;
         total += path.T * Wtail * DvLoadPathRelL(pixelIdx);
 
         const uint endKind = (info >> DV_END_SHIFT) & DV_END_MASK;
@@ -169,7 +163,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             LiteCandidate(pixelIdx, load_kd(g_sample_current, pixelIdx), cand, m.dir, link, (float3)1.0f,
                 m.candMis, sc.pdfTotal, invN, sLite);
         }
-        if ((path.ps & PT_PS_LITE_X2) != 0u)
+        if ((info & DV_LITE_X2) != 0u)
         {
             uint sLite = RcBounceSeed(pathSeed, 2u, 0x4c495448u);
             LiteCandidatePoint(pixelIdx, DvLoadLiteL(pixelIdx), invN, sLite);

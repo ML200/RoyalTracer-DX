@@ -70,9 +70,9 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            {"bedroom.glb",
+            {"bistro/bistro.obj",
              XMMatrixIdentity(), "Modern Tank Garage"},
-            /*MinecraftWorld("C:/Users/Malte/Downloads/Night City - Full Map",
+            /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
                            XMMatrixIdentity(), "Night City"),*/
         };

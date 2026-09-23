@@ -1552,7 +1552,8 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
         ImGui::SliderInt("History length", &rs.sharcHistoryFrames, 8, 256);
         ImGui::SliderInt("Retention (frames)", &rs.sharcMaxAge, 32, 4096);
         ImGui::SliderFloat("Query footprint", &rs.sharcQueryFootprint, 0.5f, 8.0f, "%.1f");
-        ImGui::SetItemTooltip("Minimum path spread in cache-cell widths. Higher values trace further.");
+        ImGui::SetItemTooltip("How many cache cells the lobe that reaches a surface must span (by solid angle) before "
+                              "the cache may answer there. Higher values trace further.");
     }
     if (rs.sharcGuideEnabled && ImGui::CollapsingHeader("Guiding tuning")) {
         ImGui::SliderFloat("Maximum guide probability", &rs.sharcGuideMax, 0.0f, 0.9f, "%.2f");

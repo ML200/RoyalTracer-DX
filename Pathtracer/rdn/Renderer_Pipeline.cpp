@@ -277,34 +277,43 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.reserve(40);
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     const auto STATIC = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+    // Buffer SRVs take volatile descriptors. With static ones the driver (NVIDIA 610.88, RTX 5090)
+    // drops the bounds check of StructuredBuffer reads in raygen shaders, even with
+    // DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS: a read past the end of a view returns the
+    // memory behind it, and past the allocation it page-faults (the TDRs in LT_LoadTLAS /
+    // LT_LoadBLAS). Compute shaders, UAVs and typed buffers stay bounds-checked either way.
+    // Measured cost: none (1920x1080 raygen, 64 dependent reads each: 1.198 ms static, 1.197 ms
+    // volatile).
+    const auto BUFFER_SRV =
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 5, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 5, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     for (UINT u = 2; u <= 7; ++u)
         ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, u, 0, VOLATILE,
                                    D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 7, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 8, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 7, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 8, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 8, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 9, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     for (UINT t = 9; t <= 12; ++t)
-        ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, t, 0, STATIC,
+        ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, t, 0, BUFFER_SRV,
                                    D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 15, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 15, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     for (UINT t = 16; t <= 18; ++t)
-        ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, t, 0, STATIC,
+        ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, t, 0, BUFFER_SRV,
                                    D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     for (UINT t = 30; t <= 33; ++t)
         ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, t, 0, STATIC,
@@ -478,9 +487,14 @@ void Renderer::CreateRaytracingPipeline() {
         const UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(exportName);
         return sz >= 0xFFFFFFFFull ? 0ull : sz;
     };
+    // A raygen's stack holds the state it keeps live across TraceRay, so it tracks the live state
+    // that the traces (and the reorders next to them) have to save and restore.
     UINT64 rgStack = 0;
-    for (const auto& name : rayGenNames)
-        rgStack = std::max(rgStack, stackOf(name.c_str()));
+    for (const auto& name : rayGenNames) {
+        const UINT64 sz = stackOf(name.c_str());
+        LOG(L"[RT] raygen " << name << L" stack " << sz);
+        rgStack = std::max(rgStack, sz);
+    }
     LOG(L"[RT] shader stack sizes: raygen " << rgStack << L", any-hit " << stackOf(L"AlphaHitGroup::anyhit")
                                             << L", miss " << stackOf(L"Miss") << L" (driver default pipeline stack)");
 }

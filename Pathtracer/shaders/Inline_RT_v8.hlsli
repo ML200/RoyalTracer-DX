@@ -7,6 +7,18 @@ struct [raypayload] TracePayload
 
 static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
 
+// The reorder point of each raygen. Any of them can be compiled out (e.g. -D PT_SER_REORDER=0 via
+// RDN_SHADER_DEFINES) to weigh what the reorder costs in saved live state against what it buys.
+#ifndef CAMERA_SER_REORDER
+#define CAMERA_SER_REORDER 1
+#endif
+#ifndef PT_SER_REORDER
+#define PT_SER_REORDER 1
+#endif
+#ifndef SHARC_SER_REORDER
+#define SHARC_SER_REORDER 1
+#endif
+
 // Material context of a path vertex, shared by the passes that shade one.
 struct HitContext {
     float3 hitPos;
@@ -71,18 +83,28 @@ inline float3 offset_ray(float3 p, float3 n)
 // direction far from unit length, an origin outside the representable scene, or extents that
 // are inverted, negative or infinite make the traversal undefined and have hung the GPU before.
 // Such a ray is never traced: the caller treats it as a miss (or as occluded) instead.
+//
+// The test works on the bit patterns. DXC compiles every float compare, isnan and isinf with
+// fast-math flags, under which the driver may assume no value is ever NaN or Inf and drop exactly
+// these tests; integer compares on asuint() stay. The magnitude bits of a float order like its
+// absolute value, and NaN and Inf lie above every finite magnitude, so one bound per component
+// rejects them together with values that are merely too large. A non-negative finite float is at
+// most 0x7F7FFFFF with the sign bit clear, and those order like their values.
 static const float RAY_ORIGIN_LIMIT = 5.0e7f;
 
 inline bool IsRayDescValid(RayDesc r)
 {
-    if (any(isnan(r.Origin))    || any(isinf(r.Origin)))    return false;
-    if (any(isnan(r.Direction)) || any(isinf(r.Direction))) return false;
+    const uint3 origin    = asuint(r.Origin)    & 0x7FFFFFFFu;
+    const uint3 direction = asuint(r.Direction) & 0x7FFFFFFFu;
+    const uint  tMin      = asuint(r.TMin);
+    const uint  tMax      = asuint(r.TMax);
+    if (any(origin > asuint(RAY_ORIGIN_LIMIT))) return false;   // NaN, Inf, or outside the scene
+    if (any(direction > asuint(2.0f))) return false;            // NaN, Inf, or far from unit length
+    if (tMin > 0x7F7FFFFFu || tMax > 0x7F7FFFFFu) return false;  // negative, NaN or Inf extents
+    if (tMax <= tMin) return false;                             // inverted or empty extents
+    // Every component is finite and bounded from here on, so the float test is exact.
     const float d2 = dot(r.Direction, r.Direction);
-    if (!(d2 >= 0.25f && d2 <= 4.0f)) return false;
-    if (!(r.TMin >= 0.0f)) return false;                   // also rejects NaN
-    if (!(r.TMax > r.TMin) || isinf(r.TMax)) return false; // also rejects NaN and inverted extents
-    if (any(abs(r.Origin) > RAY_ORIGIN_LIMIT)) return false;
-    return true;
+    return d2 >= 0.25f && d2 <= 4.0f;
 }
 
 inline bool IsRayValid(float3 origin, float3 direction, float tMax)
@@ -465,8 +487,10 @@ inline dx::HitObject TraceRay_Custom(
 {
     dx::HitObject hitObj = TraceRayChecked(SceneBVH, rayFlags, instanceMask, ray);
 
+#if CAMERA_SER_REORDER
     const uint hint = ((hitObj.IsHit() ? (0x40u | (hitObj.GetInstanceID() & 0x3Fu)) : 0u) << lowHintBits) | lowHint;
     dx::MaybeReorderThread(hitObj, hint, 7u + lowHintBits);
+#endif
     return hitObj;
 }
 

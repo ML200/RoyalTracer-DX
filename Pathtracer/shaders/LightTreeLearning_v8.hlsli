@@ -9,6 +9,17 @@
 // rewards of its picks with their (forgetting) count, the picks of the open batch, and the
 // power prior.
 
+// Lanes that share a key combine their work on one lane. The SM 6.5 operations for that
+// (WaveMatch, WaveMultiPrefix*) are not supported in raytracing shaders: in a raygen the lanes of
+// a WaveMatch mask need not reach the WaveMultiPrefix* that follows together, and that operation
+// waits for every lane of its mask. The raygen passes combine equal keys with SM 6.0 operations,
+// which only ever involve the lanes active at that point.
+#if __SHADER_TARGET_STAGE == __SHADER_STAGE_LIBRARY
+#define LT_WAVE_MATCH 0
+#else
+#define LT_WAVE_MATCH 1
+#endif
+
 // Hash cell keys before bucket probing.
 uint LTC_Hash(uint v) { v^=v>>16;v*=0x7feb352du;v^=v>>15;v*=0x846ca68bu;return v^(v>>16); }
 
@@ -106,12 +117,16 @@ void LTC_UpdateRetention(uint cell) {
     }
     g_sharc.Store(cell+20u,score);
 }
-// Probe the fixed-size hash table for an exact key.
+// Probe the fixed-size hash table for an exact key. A bucket's keys are contiguous, so all of
+// them are loaded before any is compared: one round trip per bucket instead of one per probe.
 bool LTC_FindExact(uint4 key,out uint cell) {
     cell=0u;
-    [unroll] for(uint probe=0;probe<LT_CELL_PROBES;++probe) {
-        uint index=LTC_Probe(key,probe);
-        if(all(g_sharc.Load4(LTC_KeyAddress(index))==key)) {cell=LTC_Cell(index);return true;}
+    [unroll] for(uint bucket=0u;bucket<LT_CELL_PROBES/LT_BUCKET_SIZE;++bucket) {
+        const uint base=LTC_Probe(key,bucket*LT_BUCKET_SIZE);
+        uint4 stored[LT_BUCKET_SIZE];
+        [unroll] for(uint i=0u;i<LT_BUCKET_SIZE;++i) stored[i]=g_sharc.Load4(LTC_KeyAddress(base+i));
+        [unroll] for(uint j=0u;j<LT_BUCKET_SIZE;++j)
+            if(all(stored[j]==key)) {cell=LTC_Cell(base+j);return true;}
     }
     return false;
 }
@@ -187,10 +202,16 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
     uint index=LTC_Index(sourceCell);
     uint4 key=LTC_KeyAtLevel(x,n,desired);uint candidate=LT_SENTINEL;
 
+#if LT_WAVE_MATCH
     uint4 mask=WaveMatch(key);
     int4 highest=(int4)(firstbithigh(mask)|uint4(0,32,64,96));
     uint leader=(uint)max(max(highest.x,highest.y),max(highest.z,highest.w));
     if(WaveGetLaneIndex()!=leader) return;
+#else
+    // Only the lanes asking for the first active lane's key leave the request to that lane; the
+    // request lock below keeps other duplicates out.
+    if(all(key==WaveReadLaneFirst(key)) && !WaveIsFirstLane()) return;
+#endif
 
     uint idleCandidate=LT_SENTINEL;
     [loop] for(uint attempt=0u;attempt<(alternatives>0u?2u:1u);++attempt) {
@@ -369,6 +390,13 @@ float LTC_CellPdf(float3 x,float3 n,uint cell,uint tri,uint slot,out uint token)
     }
     return probability*LT_PdfSubtree(x,n,tri,slot,node,start,depth);
 }
+// The training token LTC_CellPdf hands out, without the tree walk that its pdf needs.
+uint LTC_CellToken(uint cell,uint tri,uint slot) {
+    uint count=cell==LT_SENTINEL?0u:g_sharc.Load(cell+4u);
+    if(count==0u || count>LT_CUT_MAX) return 0u;
+    uint a=LTC_ClusterForTriangle(cell,count,tri,slot);
+    return a==LT_SENTINEL?0u:LTC_ClusterIndex(a)+1u;
+}
 uint LTC_RefreshToken(float3 x,float3 n,uint cell,uint tri,uint slot,uint ticket) {
     if(ticket>=4u || LTC_Index(cell)>=LT_GRID_CAPACITY) return 0u;
     uint parent=LTC_Cell(LT_GRID_CAPACITY+LTC_NormalFace(n));
@@ -449,15 +477,15 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
     if(proposal.blend>0.0f) pdfCell=useCoarse?proposal.fine:proposal.coarse;
     else if(proposal.coarse!=proposal.fine) pdfCell=proposal.coarse;
     if(pdfCell!=LT_SENTINEL) {
-        uint otherToken;
-        float other=LTC_CellPdf(x,n,pdfCell,sample.id,sampleSlot,otherToken);
         if(proposal.blend>0.0f) {
+            uint otherToken;
+            float other=LTC_CellPdf(x,n,pdfCell,sample.id,sampleSlot,otherToken);
             sample.pdf=useCoarse?lerp(other,sample.pdf,proposal.blend):lerp(sample.pdf,other,proposal.blend);
             sample.learningToken.y=useCoarse?sample.learningToken.x:otherToken;
             if(useCoarse) sample.learningToken.x=otherToken;
         } else {
-
-            sample.learningToken.y=otherToken;
+            // Warm-up only: the coarse cell is trained, its pdf does not enter the sample.
+            sample.learningToken.y=LTC_CellToken(pdfCell,sample.id,sampleSlot);
         }
     } else sample.learningToken.y=LTC_RefreshToken(x,n,proposal.fine,sample.id,sampleSlot,refreshTicket);
     return sample;
@@ -518,6 +546,16 @@ float2 LTC_BatchMoments(uint cluster) {
     uint address=LTC_BatchAddress(cluster);
     return float2(LTC_ReadAccumulator(address),LTC_ReadAccumulator(address+LT_ACCUMULATOR_BYTES));
 }
+// Add the summed rewards of one cluster's picks to its open batch.
+void LTC_CommitRewards(uint token,uint a,float2 totals,uint selected) {
+    uint cell=LTC_Cell((token-1u)/LT_CUT_MAX),ignored;
+    if(g_sharc.Load(cell+68u)!=sharc_frame)
+        g_sharc.InterlockedExchange(cell+68u,sharc_frame,ignored);
+    uint batch=LTC_BatchAddress(a);
+    LTC_Accumulate(batch,totals.x);
+    LTC_Accumulate(batch+LT_ACCUMULATOR_BYTES,totals.y);
+    g_sharc.InterlockedAdd(LTC_Stats(a)+LT_ST_SELECTED,selected,ignored);
+}
 // Accumulate bounded reward moments for a selected cluster.
 void LT_TrainToken(uint token,float contributionOverPdf) {
     if(token==0u || !LTC_Enabled()) return;
@@ -525,23 +563,26 @@ void LT_TrainToken(uint token,float contributionOverPdf) {
     float p=LTC_FrozenProbability(a);
     float reward=max(0.0f,contributionOverPdf)*p;
     if(!isfinite(reward)) reward=0.0f;
-
-    uint4 mask=WaveMatch(a);
     float2 observation=float2(reward,min(reward*reward,3.0e38f));
+#if LT_WAVE_MATCH
+    uint4 mask=WaveMatch(a);
     float2 totals=min(WaveMultiPrefixSum(observation,mask)+observation,3.0e38f);
     uint selected=WaveMultiPrefixCountBits(true,mask)+1u;
     int4 highest=(int4)(firstbithigh(mask)|uint4(0,32,64,96));
     uint leader=(uint)max(max(highest.x,highest.y),max(highest.z,highest.w));
-    if(WaveGetLaneIndex()==leader) {
-
-        uint cell=LTC_Cell((token-1u)/LT_CUT_MAX),ignored;
-        if(g_sharc.Load(cell+68u)!=sharc_frame)
-            g_sharc.InterlockedExchange(cell+68u,sharc_frame,ignored);
-        uint batch=LTC_BatchAddress(a);
-        LTC_Accumulate(batch,totals.x);
-        LTC_Accumulate(batch+LT_ACCUMULATOR_BYTES,totals.y);
-        g_sharc.InterlockedAdd(LTC_Stats(a)+LT_ST_SELECTED,selected,ignored);
+    if(WaveGetLaneIndex()==leader) LTC_CommitRewards(token,a,totals,selected);
+#else
+    // One cluster per round: the lanes that picked the first active lane's cluster sum their
+    // rewards on that lane and leave, the others go round again.
+    [loop] for(;;) {
+        if(a==WaveReadLaneFirst(a)) {
+            float2 totals=min(WaveActiveSum(observation),3.0e38f);
+            uint selected=WaveActiveCountBits(true);
+            if(WaveIsFirstLane()) LTC_CommitRewards(token,a,totals,selected);
+            break;
+        }
     }
+#endif
 }
 void LT_TrainSample(uint2 tokens,float contributionOverPdf) {
 

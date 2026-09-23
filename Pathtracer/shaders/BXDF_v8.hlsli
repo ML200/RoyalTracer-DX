@@ -398,6 +398,110 @@ inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
     return sp;
 }
 
+// ---------------------------------------------------------------------------------------------
+// One-lobe estimation. A vertex picks one lobe and evaluates only that one: its value under the
+// transmittance of the layers above it, over the probability of the pick times the lobe's own
+// density. Summed over the picks this is the full BSDF. Diffuse and a near-Lambertian GGX form a
+// single lobe, the broad one, because guiding and the diffuse reuse both work on exactly that pair.
+// A light sample belongs to the pick as well: taken only when the picked lobe is wide, evaluated
+// on that lobe alone, weighted by 1/P(pick) and MIS-weighted against the lobe's own density.
+// ---------------------------------------------------------------------------------------------
+#define LOBE_GROUP_BROAD 0u   // diffuse, with the GGX lobe when IsBroadGGX
+#define LOBE_GROUP_SPEC  1u   // GGX
+#define LOBE_GROUP_COAT  2u
+#define LOBE_GROUP_SHEEN 3u
+
+inline uint LobeGroupOf(uint strategy, half Pr)
+{
+    return (strategy == 1u && IsBroadGGX(Pr)) ? LOBE_GROUP_BROAD : strategy;
+}
+
+// Probability that a pick lands in the group.
+inline float LobeGroupP(SamplingP p, uint group, half Pr)
+{
+    if (group == LOBE_GROUP_BROAD) return p.Pdiff + (IsBroadGGX(Pr) ? p.Pspec : 0.0f);
+    if (group == LOBE_GROUP_SPEC)  return p.Pspec;
+    if (group == LOBE_GROUP_COAT)  return p.Pcoat;
+    return p.Psheen;
+}
+
+// Value (with the transmittance of the layers above) and density of one lobe group. The broad
+// group's density is the Pdiff/Pspec mixture of its two lobes, normalized to the group.
+inline BrdfData EvaluateLobe(
+    SamplingP p, uint group,
+    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
+    float3 localKd, half localPr, half localPm, half etai, half etat,
+    bool ggxNoReflect = false)
+{
+    BrdfData res;
+    res.val = 0.0f;
+    res.pdf = 0.0f;
+
+    if (group == LOBE_GROUP_SHEEN)
+    {
+        if (p.Psheen >= EPSILON)
+        {
+            res.val = EvaluateBRDF_SHEEN(matID, n_s, -s, o);
+            res.pdf = BRDF_PDF_SHEEN(matID, n_s, -s, o);
+        }
+        return res;
+    }
+
+    const float3 N  = normalize(n_s);
+    const float3 fN = normalize(n_g);
+    const float3 V  = normalize(o);
+    const float3 L  = normalize(s);
+
+    half gate = (half)1.0;
+    if (p.Psheen >= EPSILON) gate *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
+
+    if (group == LOBE_GROUP_COAT)
+    {
+        if (p.Pcoat >= EPSILON)
+        {
+            const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat, false);
+            res.val = (float)gate * cr.f;
+            res.pdf = cr.pdf;
+        }
+        return res;
+    }
+    if (p.Pcoat >= EPSILON) gate *= (half)CoatTransmittance(matID, N, V, L, etai, etat);
+
+    // The GGX lobe: the spec group on its own, or the upper half of the broad group. Otherwise the
+    // broad group only needs its transmittance. The broad group is the broad GGX lobe when there
+    // is one, and the diffuse lobe under everything above it.
+    float pdfSum = 0.0f, pSum = 0.0f;
+    if (p.Pspec >= EPSILON)
+    {
+        if (group == LOBE_GROUP_SPEC || IsBroadGGX(localPr))
+        {
+            const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm,
+                ggxNoReflect, group == LOBE_GROUP_BROAD && p.Pdiff >= EPSILON);
+            res.val = (float)gate * gr.f;
+            if (group == LOBE_GROUP_SPEC)
+            {
+                res.pdf = gr.pdf;
+                return res;
+            }
+            pdfSum  = p.Pspec * gr.pdf;
+            pSum    = p.Pspec;
+            gate   *= (half)gr.t;
+        }
+        else if (p.Pdiff >= EPSILON)
+            gate *= (half)GGXTransmittance(matID, N, V, L, etai, etat, localKd, localPr, localPm);
+    }
+    else if (group == LOBE_GROUP_SPEC)
+        return res;
+    if (p.Pdiff >= EPSILON)
+    {
+        res.val += (float)gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+        pdfSum  += p.Pdiff * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+        pSum    += p.Pdiff;
+    }
+    res.pdf = pSum > 0.0f ? pdfSum / pSum : 0.0f;
+    return res;
+}
+
 inline bool DropBroadLobes(inout SamplingP sp, half Pr)
 {
     sp.Pdiff = 0.0f;

@@ -14,6 +14,7 @@
 #include <memory>
 #include <sstream>
 #include <ctime>
+#include <filesystem>
 #include <Windows.h>
 
 // The functions below are inline: every translation unit that includes this header must see the
@@ -101,6 +102,157 @@ inline void InstallCrashHandler() {
     SetUnhandledExceptionFilter(&CrashExceptionFilter);
 }
 
+// NVIDIA Nsight Aftermath GPU crash dumps. DRED names the command a hang happened in; Aftermath
+// names the shader and, for each warp still running, the source line it is stuck on. The library
+// is loaded at run time from the newest Nsight Graphics install (or the path in RT_AFTERMATH_DLL;
+// RT_NO_AFTERMATH=1 skips it), so the build does not depend on it. On a device hang or fault it
+// writes gpu_crash_<pid>.nv-gpudmp next to the executable, the debug info of the shaders involved
+// to aftermath\*.nvdbg, and CompileShaderNew keeps every compiled shader in aftermath\ as well
+// (it follows RT_AFTERMATH_SHADER_DIR). nv-aftermath-format from the same install decodes it:
+//   nv-aftermath-format -D aftermath -B aftermath gpu_crash_<pid>.nv-gpudmp
+namespace aftermath {
+// The declarations used from GFSDK_Aftermath.h and GFSDK_Aftermath_GpuCrashDump.h (API 2.27).
+constexpr uint32_t kVersionApi = 0x21B;
+constexpr uint32_t kWatchDx = 0x1;
+constexpr uint32_t kDeferDebugInfoCallbacks = 0x1;
+constexpr uint32_t kResourceTracking = 0x2, kShaderDebugInfo = 0x8, kShaderErrorReporting = 0x10;
+constexpr uint32_t kStatusCollectingFailed = 2, kStatusFinished = 4, kStatusUnknown = 5;
+using Result = uint32_t;
+inline bool Ok(Result r) { return (r & 0xFFF00000u) != 0xBAD00000u; }
+struct DebugInfoId { uint64_t id[2]; };
+using DataCb = void(__cdecl*)(const void*, uint32_t, void*);
+using AddDescriptionFn = void(__cdecl*)(uint32_t, const char*);
+using DescriptionCb = void(__cdecl*)(AddDescriptionFn, void*);
+using EnableFn = Result(__cdecl*)(uint32_t, uint32_t, uint32_t, DataCb, DataCb, DescriptionCb, void*, void*);
+using InitDx12Fn = Result(__cdecl*)(uint32_t, uint32_t, ID3D12Device*);
+using StatusFn = Result(__cdecl*)(uint32_t*);
+using DebugInfoIdFn = Result(__cdecl*)(uint32_t, const void*, uint32_t, DebugInfoId*);
+
+struct State {
+    InitDx12Fn initDx12 = nullptr;
+    StatusFn status = nullptr;
+    DebugInfoIdFn debugInfoId = nullptr;
+    bool enabled = false;
+    std::wstring outDir;
+    std::mutex files;
+};
+inline State& Get() {
+    static State s;
+    return s;
+}
+
+inline void WriteFile(const std::wstring& path, const void* data, uint32_t size) {
+    std::ofstream f(path.c_str(), std::ios::binary | std::ios::trunc);
+    f.write(static_cast<const char*>(data), size);
+}
+
+inline void __cdecl OnCrashDump(const void* data, uint32_t size, void*) {
+    std::lock_guard<std::mutex> lock(Get().files);
+    std::wstring path = CrashLogPath();
+    path.resize(path.find_last_of(L"\\/") + 1);
+    path += L"gpu_crash_" + std::to_wstring(GetCurrentProcessId()) + L".nv-gpudmp";
+    WriteFile(path, data, size);
+    CrashLogF(L"[aftermath] GPU crash dump written: %ls (%u bytes)\n", path.c_str(), size);
+}
+
+inline void __cdecl OnShaderDebugInfo(const void* data, uint32_t size, void*) {
+    State& s = Get();
+    DebugInfoId id{};
+    if (!s.debugInfoId || !Ok(s.debugInfoId(kVersionApi, data, size, &id)))
+        return;
+    wchar_t name[64];
+    swprintf_s(name, L"shader-%016llX%016llX.nvdbg", (unsigned long long)id.id[0], (unsigned long long)id.id[1]);
+    std::lock_guard<std::mutex> lock(s.files);
+    WriteFile(s.outDir + name, data, size);
+}
+
+inline void __cdecl OnDescription(AddDescriptionFn add, void*) {
+    add(0x1u, "RoyalTracer Pathtracer");
+}
+
+// The library of the newest Nsight Graphics install that ships the Aftermath SDK.
+inline std::wstring FindLibrary() {
+    wchar_t overridePath[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"RT_AFTERMATH_DLL", overridePath, MAX_PATH) > 0)
+        return overridePath;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::wstring best;
+    const fs::path root = L"C:\\Program Files\\NVIDIA Corporation";
+    for (const auto& install : fs::directory_iterator(root, ec)) {
+        if (install.path().filename().wstring().rfind(L"Nsight Graphics", 0) != 0)
+            continue;
+        for (const auto& sdk : fs::directory_iterator(install.path() / L"SDKs" / L"NsightAftermathSDK", ec)) {
+            const fs::path dll = sdk.path() / L"lib" / L"x64" / L"GFSDK_Aftermath_Lib.x64.dll";
+            if (fs::exists(dll, ec) && dll.wstring() > best)
+                best = dll.wstring();
+        }
+    }
+    return best;
+}
+
+// Before the device is created.
+inline void Enable() {
+    if (GetEnvironmentVariableA("RT_NO_AFTERMATH", nullptr, 0) > 0) {
+        CrashLog(L"[aftermath] skipped (RT_NO_AFTERMATH set)\n");
+        return;
+    }
+    const std::wstring dll = FindLibrary();
+    HMODULE lib = dll.empty() ? nullptr : LoadLibraryW(dll.c_str());
+    if (!lib) {
+        CrashLog(L"[aftermath] library not found: install Nsight Graphics or set RT_AFTERMATH_DLL\n");
+        return;
+    }
+    State& s = Get();
+    const auto enable = reinterpret_cast<EnableFn>(GetProcAddress(lib, "GFSDK_Aftermath_EnableGpuCrashDumps"));
+    s.initDx12 = reinterpret_cast<InitDx12Fn>(GetProcAddress(lib, "GFSDK_Aftermath_DX12_Initialize"));
+    s.status = reinterpret_cast<StatusFn>(GetProcAddress(lib, "GFSDK_Aftermath_GetCrashDumpStatus"));
+    s.debugInfoId =
+        reinterpret_cast<DebugInfoIdFn>(GetProcAddress(lib, "GFSDK_Aftermath_GetShaderDebugInfoIdentifier"));
+    if (!enable || !s.initDx12 || !s.status) {
+        CrashLogF(L"[aftermath] %ls lacks the crash dump entry points\n", dll.c_str());
+        return;
+    }
+    s.outDir = CrashLogPath();
+    s.outDir.resize(s.outDir.find_last_of(L"\\/") + 1);
+    s.outDir += L"aftermath\\";
+    std::error_code ec;
+    std::filesystem::create_directories(s.outDir, ec);
+    const Result r = enable(kVersionApi, kWatchDx, kDeferDebugInfoCallbacks, &OnCrashDump, &OnShaderDebugInfo,
+                            &OnDescription, nullptr, nullptr);
+    s.enabled = Ok(r);
+    if (s.enabled)
+        SetEnvironmentVariableW(L"RT_AFTERMATH_SHADER_DIR", s.outDir.c_str());
+    CrashLogF(L"[aftermath] %ls: %ls (0x%08X)\n", s.enabled ? L"GPU crash dumps on" : L"enable failed", dll.c_str(),
+              (unsigned)r);
+}
+
+// Right after the device is created, on the native device.
+inline void InitDevice(ID3D12Device* device) {
+    State& s = Get();
+    if (!s.enabled)
+        return;
+    const Result r = s.initDx12(kVersionApi, kResourceTracking | kShaderDebugInfo | kShaderErrorReporting, device);
+    CrashLogF(L"[aftermath] DX12 initialize: 0x%08X\n", (unsigned)r);
+}
+
+// After a device removal: the dump is written from a driver thread, so the process has to wait
+// for it before it terminates.
+inline void WaitForDump() {
+    State& s = Get();
+    if (!s.enabled)
+        return;
+    uint32_t status = 0;
+    for (int i = 0; i < 1500; ++i) {
+        if (!Ok(s.status(&status)) || status == kStatusFinished || status == kStatusCollectingFailed ||
+            status == kStatusUnknown)
+            break;
+        Sleep(10);
+    }
+    CrashLogF(L"[aftermath] crash dump status %u (4 = written, 2 = collection failed)\n", status);
+}
+} // namespace aftermath
+
 // Off by default: the validation layer is heavy enough that a pass which is merely expensive can
 // cross the driver's timeout under it, which reads as a hang that does not happen otherwise.
 // Build with DXDIAG_ENABLE_DEBUG_LAYER=1 to put it back. DRED below is unaffected and stays on,
@@ -112,6 +264,7 @@ inline void InstallCrashHandler() {
 // Enable device-removal breadcrumbs before creating the D3D12 device.
 inline void EnableDebugLayerAndDred() {
     CrashLog(L"[dxdiag] EnableDebugLayerAndDred reached, diagnostic plumbing live\n");
+    aftermath::Enable();
 
 #if DXDIAG_ENABLE_DEBUG_LAYER
     // RT_NO_DEBUG_LAYER=1 in the environment skips the validation layer for one run: it is slow,
@@ -146,6 +299,7 @@ inline void EnableDebugLayerAndDred() {
 inline void HookDevice(ID3D12Device* device) {
     device->QueryInterface(IID_PPV_ARGS(&g_infoQ));
     device->QueryInterface(IID_PPV_ARGS(&g_dred));
+    aftermath::InitDevice(device);
 
 #if DXDIAG_ENABLE_DEBUG_LAYER
     if (g_infoQ) {
@@ -427,6 +581,7 @@ inline void CheckDeviceRemoved(ID3D12Device* device, int pollMs = 0) {
         }
     }
     CrashLog(L"*** end of crash dump ***\n");
+    aftermath::WaitForDump();
     if (CrashLogFile().is_open())
         CrashLogFile().flush();
     std::wcerr.flush();

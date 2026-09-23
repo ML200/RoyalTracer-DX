@@ -33,6 +33,14 @@ static const uint SHARC_REPLACE_AGE = 16u;
 
 static const uint SHARC_MERGE_RECORDS = 4u;
 
+// How far a query may differ from an entry and still read it. The geometric normal and the plane
+// keep light from leaking between surfaces; the shading normal, the albedo (the entries store
+// demodulated radiance) and the roughness only vary with texture detail, which a query through a
+// wide cone averages anyway, so they are allowed to differ a lot before an entry is split.
+static const float2 SHARC_SIMILAR_NORMAL    = float2(0.50f, 0.80f);   // shading-normal cosine
+static const float2 SHARC_SIMILAR_ALBEDO    = float2(1.00f, 2.00f);   // log2 of the albedo ratio
+static const float2 SHARC_SIMILAR_ROUGHNESS = float2(0.15f, 0.35f);   // roughness difference
+
 struct SharcSurface
 {
     float3 position;
@@ -245,15 +253,15 @@ float SharcSurfaceWeight(SharcDescriptor d, SharcSurface s, float3 relative, flo
     float3 delta = relative - d.representative;
     float plane = max(abs(dot(delta, d.geometricNormal)), abs(dot(delta, s.geometricNormal)));
     float w = smoothstep(0.90f, 0.99f, dot(d.geometricNormal, s.geometricNormal));
-    w *= smoothstep(0.90f, 0.99f, dot(d.normal, s.normal));
+    w *= smoothstep(SHARC_SIMILAR_NORMAL.x, SHARC_SIMILAR_NORMAL.y, dot(d.normal, s.normal));
     w *= 1.0f - smoothstep(0.015f * size, 0.05f * size, plane);
-    w *= 1.0f - smoothstep(0.05f, 0.15f, abs(s.roughness - d.roughness));
+    w *= 1.0f - smoothstep(SHARC_SIMILAR_ROUGHNESS.x, SHARC_SIMILAR_ROUGHNESS.y, abs(s.roughness - d.roughness));
 
     float3 ratio = s.demodulator / d.demodulator;
 
     float ratioMax = max(ratio.x, max(ratio.y, ratio.z));
     float ratioMin = min(ratio.x, min(ratio.y, ratio.z));
-    w *= 1.0f - smoothstep(0.3f, 0.7f, log2(max(ratioMax, rcp(ratioMin))));
+    w *= 1.0f - smoothstep(SHARC_SIMILAR_ALBEDO.x, SHARC_SIMILAR_ALBEDO.y, log2(max(ratioMax, rcp(ratioMin))));
     return w;
 }
 
@@ -446,11 +454,13 @@ float SharcStatisticalConfidence(uint e)
     float error = sqrt(variance / max(neff, 1.0f)) / max(mean, 1e-8f);
     uint frames = g_sharc.Load(e + SHARC_FRAMES);
 
-    float positive = asfloat(g_sharc.Load(e + SHARC_HISTORY_POSITIVE)) / max(w, 1e-20f) * neff;
-    float confidence = smoothstep((float)sharc_minSamples, 2.0f * sharc_minSamples, neff);
-    confidence *= smoothstep(2.0f, 4.0f, (float)frames);
-    confidence *= smoothstep(3.0f, 8.0f, positive);
-    confidence *= 1.0f - smoothstep(0.20f, 0.50f, error);
+    // Trust follows the sample count. The relative error only rejects an entry that is plainly
+    // garbage: light-tree NEE keeps the per-sample variance so high that a tight error bound left
+    // most entries unused, and the paths that should have ended in them went on to take their
+    // own light samples instead.
+    float confidence = smoothstep(0.5f * (float)sharc_minSamples, (float)sharc_minSamples, neff);
+    confidence *= smoothstep(1.0f, 2.0f, (float)frames);
+    confidence *= 1.0f - smoothstep(1.0f, 2.0f, error);
     return all(isfinite(float4(mean, variance, neff, confidence))) ? confidence : 0.0f;
 }
 
@@ -538,10 +548,28 @@ void SharcQueryLevel(SharcSurface s, uint level, out float3 sum, out float suppo
     }
 }
 
-float SharcFootprintRamp(float pathSpread, uint level)
+// Full angle of the circular cone as wide as the hemisphere (pi/4 angle^2 = 2 pi): the cone of a
+// diffuse lobe (SharcLobeConeAngle).
+static const float SHARC_HEMISPHERE_CONE = 2.82842712f;
+
+// Share of queries the cache may answer where the path's cone meets a surface. The cone is the
+// lobes that led here (SharcLobeConeAngle), as its full angle and its width at the hit, so its apex
+// lies width/angle back along the ray. Seen from there, one cell may fill at most 1/q of the cone's
+// solid angle (q = sharc_queryFootprint): the lobe then reaches other cells as well, and no single
+// cell can show. The cell counts as a disk of its area projected towards the apex, whose solid
+// angle is exact at any distance and never exceeds the hemisphere, so a diffuse cone only reaches
+// the limit where a cell faces it from closer than about a third of its size. A short band around
+// the limit mixes both answers, so the switch leaves no edge.
+float SharcConeRamp(float coneWidth, float coneAngle, float cosHit, float3 position)
 {
-    return smoothstep(sharc_queryFootprint, 2.0f * sharc_queryFootprint,
-        pathSpread / SharcCellSize(level + 1u));
+    if (!(coneAngle > 0.0f)) return 0.0f;
+    const float coneSolidAngle = min(0.25f * PI * coneAngle * coneAngle, 2.0f * PI);
+    const float apex = coneWidth / coneAngle;
+    const float size = sharc_cellSize * exp2(SharcLevel(position));
+    const float area = size * size * max(cosHit, 1e-4f);
+    const float s    = sqrt(apex * apex + area * INV_PI);
+    const float cellSolidAngle = 2.0f * area / (s * (s + apex));   // 2 pi (1 - apex / s)
+    return smoothstep(0.8f, 1.25f, coneSolidAngle / (sharc_queryFootprint * cellSolidAngle));
 }
 
 // Draw a cache estimate using confidence-aware stochastic rejection.
@@ -570,20 +598,22 @@ bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance)
 {
     return SharcQueryStochastic(s, false, seed, radiance);
 }
-bool SharcQueryFootprintAccepted(float3 position, float pathSpread, inout uint seed)
+// Whether a training path may end in the cache here (SharcConeRamp). A share of the paths goes on
+// past the cache either way, so that it does not only learn from itself.
+bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAngle, float cosHit, inout uint seed)
 {
-
-    float footprint = SharcFootprintRamp(pathSpread, (uint)SharcLevel(position));
+    float footprint = SharcConeRamp(coneWidth, coneAngle, cosHit, position);
     if (footprint <= 0.0f) return false;
     if (RandomFloatSingle(seed) >= footprint * (31.0f / 32.0f)) return false;
     return true;
 }
 
-// Accept cache history only when its footprint and confidence agree.
-bool SharcQuery(SharcSurface s, float pathSpread, inout uint seed, out float3 radiance)
+// Accept cache history only when its footprint and confidence agree, for a diffuse cone of the
+// given width meeting the surface head-on.
+bool SharcQuery(SharcSurface s, float coneWidth, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
-    return SharcQueryFootprintAccepted(s.position, pathSpread, seed) &&
+    return SharcQueryFootprintAccepted(s.position, coneWidth, SHARC_HEMISPHERE_CONE, 1.0f, seed) &&
         SharcQueryDraws(s, seed, radiance);
 }
 

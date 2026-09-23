@@ -168,7 +168,7 @@ struct IntegratorSettings {
     int sharcHistoryFrames = 16;
     int sharcMaxAge = 512;
 
-    float sharcQueryFootprint = 0.5f;
+    float sharcQueryFootprint = 2.0f;
 
     int sharcTrainBounces = 8;
     int sharcTrainRrDepth = 5;
