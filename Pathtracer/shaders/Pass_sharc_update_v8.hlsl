@@ -47,8 +47,8 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
             const bool forced = attempt != 0u;
             if (!forced)
             {
-                if (!queryable || !SharcQueryFootprintAccepted(surface.position, coneWidth, coneAngle,
-                    abs(dot(geometricNormal, rayDir)), sCache)) continue;
+                if (!queryable || !SharcQueryFootprintAccepted(surface.position, coneWidth, coneAngle, sCache))
+                    continue;
             }
             else if ((uint)depth + 1u < maxBounces) break;
             hit = SharcQueryStochastic(surface, forced, sCache, cached);

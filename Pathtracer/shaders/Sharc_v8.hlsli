@@ -569,19 +569,23 @@ static const float SHARC_DIFFUSE_CONE = 2.44948974f;
 // solid angle (q = sharc_queryFootprint), and so hold about that share of the lobe's light: the
 // lobe then reaches other cells as well, and no single cell can show. The cell is the one a query
 // reads, the coarser level's with four times the area as often as the query picks that level. It
-// counts as a disk of its area projected towards the apex, whose solid angle is exact at any
-// distance and never exceeds the hemisphere. At the default q = 2 a diffuse cone reaches the limit
+// counts as a disk of that area facing the apex, whose solid angle is exact at any distance and
+// never exceeds the hemisphere, not as the smaller disk a slant shows: a cone meeting the surface
+// at a slant is stretched along it but no wider across it, so a cell wider than the cone shows
+// across the slant however many cells the stretch reaches. (Counted with the slant, the narrow
+// lobe of a 0.03 glass pane let the cache answer on the ground seen through it at a glance, and its
+// cells showed as splotches.) At the default q = 2 a diffuse cone reaches the limit
 // where the surface it meets lies closer than about half a cell: in a crevice or where two objects
 // touch, the cell also holds lit surface the query cannot see. A short band around the limit mixes
 // both answers, so the switch leaves no edge.
-float SharcConeRamp(float coneWidth, float coneAngle, float cosHit, float3 position)
+float SharcConeRamp(float coneWidth, float coneAngle, float3 position)
 {
     if (!(coneAngle > 0.0f)) return 0.0f;
     const float coneSolidAngle = min(0.25f * PI * coneAngle * coneAngle, 2.0f * PI);
     const float apex = coneWidth / coneAngle;
     const float lod  = SharcLevel(position);
     const float size = sharc_cellSize * exp2(floor(lod));
-    const float area = size * size * (1.0f + 3.0f * frac(lod)) * max(cosHit, 1e-4f);
+    const float area = size * size * (1.0f + 3.0f * frac(lod));
     const float s    = sqrt(apex * apex + area * INV_PI);
     const float cellSolidAngle = 2.0f * area / (s * (s + apex));   // 2 pi (1 - apex / s)
     return smoothstep(0.8f, 1.25f, coneSolidAngle / (sharc_queryFootprint * cellSolidAngle));
@@ -615,20 +619,20 @@ bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance)
 }
 // Whether a training path may end in the cache here (SharcConeRamp). A share of the paths goes on
 // past the cache either way, so that it does not only learn from itself.
-bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAngle, float cosHit, inout uint seed)
+bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAngle, inout uint seed)
 {
-    float footprint = SharcConeRamp(coneWidth, coneAngle, cosHit, position);
+    float footprint = SharcConeRamp(coneWidth, coneAngle, position);
     if (footprint <= 0.0f) return false;
     if (RandomFloatSingle(seed) >= footprint * (31.0f / 32.0f)) return false;
     return true;
 }
 
 // Accept cache history only when its footprint and confidence agree, for a diffuse cone of the
-// given width meeting the surface head-on.
+// given width.
 bool SharcQuery(SharcSurface s, float coneWidth, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
-    return SharcQueryFootprintAccepted(s.position, coneWidth, SHARC_DIFFUSE_CONE, 1.0f, seed) &&
+    return SharcQueryFootprintAccepted(s.position, coneWidth, SHARC_DIFFUSE_CONE, seed) &&
         SharcQueryDraws(s, seed, radiance);
 }
 

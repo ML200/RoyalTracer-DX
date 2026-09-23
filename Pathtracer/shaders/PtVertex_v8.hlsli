@@ -279,7 +279,7 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     if (alive && cacheSurface && depth > 1u)
     {
         uint sCache = RcBounceSeed(pathSeed, depth, 0x53484152u);
-        const float ramp = SharcConeRamp(cone.x, cone.y, abs(dot(geoN, rayDir)), ctx.hitPos);
+        const float ramp = SharcConeRamp(cone.x, cone.y, ctx.hitPos);
         const bool accepted = ramp >= 1.0f || (ramp > 0.0f && RandomFloatSingle(sCache) < ramp);
         cacheRefused = !accepted;
         float3 cached = 0.0f;
