@@ -128,6 +128,19 @@ int main() { try {
             const double period=2*pi/sp.omegaP;Require(period>previous*1.2,"Period grows with the wind");previous=period;}
         Params young;young.windSpeed=20;young.fetch=20000;Spectrum sp;sp.Init(young);
         Require(sp.omegaP*20/kGravity>1.5 && sp.gamma>2.5,"Short fetch keeps the sea young");}
+    // The waves shorter than the peak follow the wind: the slope the cascades resolve keeps the share
+    // of Cox & Munk's it has at the reference wind, which keeps its spectrum as it was; a gale gets
+    // steeper short waves, a breeze calmer ones, and an explicit height is still met.
+    {auto coxMunk=[](double U){double a,c;CoxMunkSlopeVariance(U,a,c);return a+c;};
+        Params ref;ref.fetch=250000;Spectrum rs;rs.Init(ref);
+        Require(rs.equilibriumGain==1.0,"Reference sea keeps its spectrum");
+        double all,ramped;ResolvedSlopeMoments(ref,rs,all,ramped);const double share=all/coxMunk(ref.windSpeed);
+        for(float wind:{5.f,8.f,15.f,20.f,28.f}){Params w=ref;w.windSpeed=wind;Spectrum sp;sp.Init(w);
+            ResolvedSlopeMoments(w,sp,all,ramped);
+            Require(std::abs(all/coxMunk(wind)/share-1)<1e-9,"Resolved slope follows Cox-Munk");
+            Require(wind>11.f?sp.equilibriumGain>1.0:sp.equilibriumGain<1.0,"Short waves steepen with the wind");}
+        Params gale=ref;gale.windSpeed=20;gale.significantHeight=4;gale.peakPeriod=9;Spectrum gs;gs.Init(gale);
+        Require(gs.equilibriumGain>1.0 && std::abs(4*std::sqrt(Integrate(gs))-4)<1e-5,"Explicit height kept in a gale");}
     // Turbulence gives the short waves their extra chop, up to its cap; the dominant waves and
     // centimetre ripples keep the physical displacement.
     {Params c;Spectrum sp;sp.Init(c);const ChopBand band=ShortChopBand(sp.omegaP);

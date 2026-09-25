@@ -67,6 +67,9 @@ class Camera {
     float planetRadius = 6371000.0f;
 
     float skyGroundY = 0.0f;
+    // Lowest point of the sea's troughs, set by the renderer every frame while there is a sea. The
+    // atmosphere's ground is taken below it, so a trough never counts as underground.
+    float oceanGroundY = 3.0e38f;
     float terrainHeightFrequency = 0.0f;
 
     // First instance-property index owned by the ocean. Every instance at or above it is an ocean

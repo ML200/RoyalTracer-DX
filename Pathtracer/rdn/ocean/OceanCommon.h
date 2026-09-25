@@ -166,14 +166,12 @@ struct Params {
     // fireflies rather than as a sun track, so this trades highlight sharpness against that noise.
     float sunLobeRoughness = 0.1f;
 
-    // Mean sea level. The waves swing symmetrically about it, so a level of zero puts every trough
-    // below the origin.
+    // Mean sea level. The waves swing about it and it stays put whatever the wind: the atmosphere
+    // model treats anything below its ground as underground, so the renderer takes that ground
+    // below the deepest trough rather than lifting the sea clear of it. Lifting the sea did the
+    // same for the sky, but raised the whole water plane with every step of wind and flooded
+    // whatever stood at the water line.
     float seaLevelY = 0.0f;
-    // Lift the mean level so the deepest trough still clears this height. The atmosphere model
-    // treats anything below the ground plane as underground, so a sea centred on zero renders its
-    // own troughs black; the offset is computed from the wave height once the spectrum is baked.
-    bool keepAboveZero = true;
-    float minClearance = 0.5f; // metres the lowest trough should stay above zero
 
     uint32_t seed = 1337;
 };
@@ -185,7 +183,7 @@ inline void ValidateParams(const Params& p) {
         p.bodyWeight,p.turbulence,p.turbulenceVariation,p.turbulencePeriod,p.crestSharpening,p.choppiness,p.amplitudeScale,p.shortWaveAmplitude,p.chlorophyll,p.turbidity,p.foamCoverage,p.foamDecay,
         p.foamAlbedo,p.subsurfaceStrength,p.subsurfaceRadiusScale,p.subsurfacePhaseG,p.extent,p.minTileSize,p.lodFactor,
         p.offscreenLodScale,p.nearKeepRadius,
-        p.filterScale,p.sunLobeRoughness,p.seaLevelY,p.minClearance};
+        p.filterScale,p.sunLobeRoughness,p.seaLevelY};
     for (float v : values) if (!std::isfinite(v)) throw std::invalid_argument("Ocean parameters must be finite");
     if (p.windSpeed < 0 || p.fetch <= 0 || p.windAlign < 0 || p.swell < 0 || p.swell > 1 ||
         p.swellHeight < 0 || p.swellPeriod <= 0 || p.swellSpreadDeg < 2 || p.swellSpreadDeg > 90 ||
@@ -416,6 +414,8 @@ struct Spectrum {
     double windAlign = 0.0;
     double focus = 1.0; // DirectionalFocus
     double energyScale = 1.0;
+    // Energy gain on the waves shorter than the peak, the equilibrium range (Init).
+    double equilibriumGain = 1.0;
     // Per-omega normalisation of the directional term, so that its integral over theta is 1.
     static constexpr int kNormBins = 256;
     std::array<double, kNormBins> dirNorm{};
@@ -423,8 +423,13 @@ struct Spectrum {
     double omegaNormMax = 40.0;
 
     void Init(const Params& p);
+    // The frequency spectrum alone, without the equilibrium gain or the directional table.
+    void InitShape(const Params& p);
 
     double S(double omega) const; // frequency spectrum, m^2 s
+    // Share of equilibriumGain a wave of this frequency takes: none up to 1.5 times the peak's
+    // wavenumber, all of it from 3 times on.
+    double EquilibriumShare(double omega) const;
     double D(double omega, double theta) const; // normalised directional spreading, 1/rad
     // Two-sided wavenumber spectrum in m^4, already including the omega->k jacobian.
     double S2D(double kx, double kz) const;
@@ -454,20 +459,54 @@ inline double PeakEnhancement(double windSpeed, double omegaP) {
     return std::min(1.7 + 6.0 * std::log10(inverseAge), 3.3);
 }
 
+inline void CoxMunkSlopeVariance(double windSpeed10m, double& varAlong, double& varCross);
+
+// Slope variance the cascades resolve of this spectrum, as the bake sums it (the directional term
+// integrates to one): k^2 S over the band from the coarsest cascade's fundamental to the finest's
+// Nyquist limit, short-wave gain included. `ramped` is the part the equilibrium gain scales.
+inline void ResolvedSlopeMoments(const Params& p, const Spectrum& s, double& all, double& ramped) {
+    const double w0 = std::sqrt(kGravity * CascadeFundamental(0));
+    const double w1 = std::sqrt(kGravity * CascadeNyquist(OCEAN_CASCADES - 1));
+    constexpr int steps = 2048;
+    const double logStep = std::log(w1 / w0) / steps;
+    all = ramped = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        const double w = w0 * std::exp((i + 0.5) * logStep);
+        const double k = w * w / kGravity;
+        const double gain = ShortWaveAmplitude(p, k);
+        const double m = k * k * s.S(w) * gain * gain * w * logStep;
+        all += m;
+        ramped += m * s.EquilibriumShare(w);
+    }
+}
+
+// The waves shorter than the peak grow with the wind. JONSWAP's tail, alpha g^2 omega^-5 with alpha
+// all but fixed once the sea is developed, leaves them nearly alone: a stronger wind lengthened and
+// raised the dominant waves while the ones riding them stayed as they were, so a gale only heaved
+// the water about - at 28 m/s the waves resolved carried little more slope than at 11. The sea's
+// mean-square slope in fact rises in step with the wind (Cox & Munk; the omega^-4 equilibrium range
+// of Toba and of Donelan, Hamilton & Hui, whose level grows with the wind). So the equilibrium range
+// takes the energy gain that keeps the slope the cascades resolve at the share of Cox & Munk it has at
+// the reference wind, where the sea keeps exactly its calibrated look: 0.33 at 3 m/s, 1.37 at 20,
+// 1.63 at 28 (open-ocean fetch), steeper waves in a gale and calmer ones in a breeze. The slope is
+// linear in the gain, so it is solved in closed form. An explicit wave height keeps its height.
 inline void Spectrum::Init(const Params& p) {
-    const double U = std::max(0.1, (double)p.windSpeed);
-    const double chi = std::min(std::max(1000.0, (double)p.fetch) * kGravity / (U * U), kFullyDevelopedFetch);
-    const double F = chi * U * U / kGravity;
-    alpha = 0.076 * std::pow(U * U / (F * kGravity), 0.22);
-    omegaP = 22.0 * std::pow(kGravity * kGravity / (U * F), 1.0 / 3.0);
-    swell = std::clamp((double)p.swell, 0.0, 1.0);
-    focus = DirectionalFocus(p);
-    // A confused sea also sends more of its waves back against the wind.
-    windAlign = std::max(0.0, (double)p.windAlign) * focus;
-    if (p.peakPeriod > 0.0f) omegaP = 6.283185307179586 / std::max(0.5, (double)p.peakPeriod);
-    gamma = PeakEnhancement(U, omegaP);
-    energyScale = 1.0;
-    if (p.significantHeight >= 0.0f) {
+    InitShape(p);
+    Spectrum reference;
+    Params rp = p;
+    rp.windSpeed = (float)kReferenceWind;
+    reference.InitShape(rp);
+    double refAll = 0.0, refRamped = 0.0, all = 0.0, ramped = 0.0;
+    ResolvedSlopeMoments(rp, reference, refAll, refRamped);
+    ResolvedSlopeMoments(p, *this, all, ramped);
+    auto coxMunk = [](double U) {
+        double along = 0.0, cross = 0.0;
+        CoxMunkSlopeVariance(U, along, cross);
+        return along + cross;
+    };
+    const double target = refAll / coxMunk(kReferenceWind) * coxMunk(std::max(0.0, (double)p.windSpeed));
+    equilibriumGain = ramped > 1e-12 ? std::clamp(1.0 + (target - all) / ramped, 0.2, 4.0) : 1.0;
+    if (p.significantHeight >= 0.0f && equilibriumGain != 1.0) {
         double integral = 0.0;
         constexpr int steps = 8192;
         const double lo = omegaP * 0.05, hi = omegaP * 100.0;
@@ -476,7 +515,7 @@ inline void Spectrum::Init(const Params& p) {
             const double w = lo * std::exp((i + 0.5) * logStep);
             integral += S(w) * w * logStep;
         }
-        energyScale = double(p.significantHeight) * p.significantHeight / (16.0 * std::max(integral, 1e-30));
+        energyScale *= double(p.significantHeight) * p.significantHeight / (16.0 * std::max(integral, 1e-30));
     }
 
     // Tabulate the directional normalisation over a log-spaced omega range; D is expensive enough
@@ -495,6 +534,39 @@ inline void Spectrum::Init(const Params& p) {
     }
 }
 
+inline void Spectrum::InitShape(const Params& p) {
+    const double U = std::max(0.1, (double)p.windSpeed);
+    const double chi = std::min(std::max(1000.0, (double)p.fetch) * kGravity / (U * U), kFullyDevelopedFetch);
+    const double F = chi * U * U / kGravity;
+    alpha = 0.076 * std::pow(U * U / (F * kGravity), 0.22);
+    omegaP = 22.0 * std::pow(kGravity * kGravity / (U * F), 1.0 / 3.0);
+    swell = std::clamp((double)p.swell, 0.0, 1.0);
+    focus = DirectionalFocus(p);
+    // A confused sea also sends more of its waves back against the wind.
+    windAlign = std::max(0.0, (double)p.windAlign) * focus;
+    if (p.peakPeriod > 0.0f) omegaP = 6.283185307179586 / std::max(0.5, (double)p.peakPeriod);
+    gamma = PeakEnhancement(U, omegaP);
+    equilibriumGain = 1.0;
+    energyScale = 1.0;
+    if (p.significantHeight >= 0.0f) {
+        double integral = 0.0;
+        constexpr int steps = 8192;
+        const double lo = omegaP * 0.05, hi = omegaP * 100.0;
+        const double logStep = std::log(hi / lo) / steps;
+        for (int i = 0; i < steps; ++i) {
+            const double w = lo * std::exp((i + 0.5) * logStep);
+            integral += S(w) * w * logStep;
+        }
+        energyScale = double(p.significantHeight) * p.significantHeight / (16.0 * std::max(integral, 1e-30));
+    }
+}
+
+inline double Spectrum::EquilibriumShare(double omega) const {
+    const double r = omega / std::max(omegaP, 1e-6);
+    double t = std::clamp(std::log2(r * r / 1.5), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
 inline double Spectrum::S(double omega) const {
     if (omega <= 1e-4)
         return 0.0;
@@ -503,7 +575,8 @@ inline double Spectrum::S(double omega) const {
     const double r = std::exp(-(d * d) / (2.0 * sigma * sigma * omegaP * omegaP));
     const double wp_w = omegaP / omega;
     const double body = alpha * kGravity * kGravity / std::pow(omega, 5.0);
-    return energyScale * body * std::exp(-1.25 * std::pow(wp_w, 4.0)) * std::pow(gamma, r);
+    const double equilibrium = 1.0 + (equilibriumGain - 1.0) * EquilibriumShare(omega);
+    return energyScale * equilibrium * body * std::exp(-1.25 * std::pow(wp_w, 4.0)) * std::pow(gamma, r);
 }
 
 inline double Spectrum::DRaw(double omega, double theta) const {
@@ -611,10 +684,7 @@ inline double PredictWaveDepth(const Params& p) {
 
 // Mean sea level the ocean will actually use.
 inline double PredictSurfaceLevel(const Params& p) {
-    double y = (double)p.seaLevelY;
-    if (p.keepAboveZero)
-        y = std::max(y, PredictWaveDepth(p) + (double)p.minClearance);
-    return y;
+    return (double)p.seaLevelY;
 }
 
 // --------------------------------------------------------------------------------------------

@@ -133,7 +133,7 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra), &sunSettings, sizeof(SunSettings));
 
     const float planetTail[11] = {planetCenter.x,           planetCenter.y, planetCenter.z,
-                                  planetRadius,             skyGroundY,     terrainHeightFrequency,
+                                  planetRadius,             std::min(skyGroundY, oceanGroundY), terrainHeightFrequency,
                                   (float)oceanInstanceBase, oceanEnabled ? 1.0f : 0.0f,
                                   dlssResponsivityRough,    dlssResponsivityMirror,
                                   dlssWaterResponsivity};

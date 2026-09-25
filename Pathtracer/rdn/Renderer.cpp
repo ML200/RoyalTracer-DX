@@ -547,6 +547,13 @@ void Renderer::UpdateRenderer(float dt) {
     m_camera.dlssResponsivityRough = std::clamp(m_dlss.rrResponsivityRough, -1.0f, 1.0f);
     m_camera.dlssResponsivityMirror = std::clamp(m_dlss.rrResponsivityMirror, -1.0f, 1.0f);
     m_camera.dlssWaterResponsivity = std::clamp(m_dlss.rrWaterResponsivity, -1.0f, 1.0f);
+    // The sea's troughs swing below its mean level, and the atmosphere renders anything below its
+    // ground as underground: black sky in every reflection a trough takes. The ground goes below
+    // the deepest trough the waves can reach, a metre clear of it.
+    if (m_ocean.Enabled()) {
+        const auto& os = m_ocean.GetStats();
+        m_camera.oceanGroundY = (float)(os.surfaceY - os.troughDepth - 1.0);
+    }
     m_camera.UploadGPUBuffer(m_aspectRatio);
 
     if (m_camera.ConsumeResetPending()) {

@@ -111,8 +111,7 @@ void OceanSystem::Configure(const Params& p) {
                         p.windDirectionDeg != m_params.windDirectionDeg || p.swell != m_params.swell ||
                         p.windAlign != m_params.windAlign || p.amplitudeScale != m_params.amplitudeScale ||
                         p.shortWaveAmplitude != m_params.shortWaveAmplitude || p.turbulence != m_params.turbulence ||
-                        p.seaLevelY != m_params.seaLevelY || p.keepAboveZero != m_params.keepAboveZero ||
-                        p.minClearance != m_params.minClearance || p.seed != m_params.seed ||
+                        p.seaLevelY != m_params.seaLevelY || p.seed != m_params.seed ||
                         p.choppiness != m_params.choppiness || p.significantHeight != m_params.significantHeight ||
                         p.peakPeriod != m_params.peakPeriod || p.swellHeight != m_params.swellHeight ||
                         p.swellPeriod != m_params.swellPeriod || p.swellDirectionDeg != m_params.swellDirectionDeg ||
@@ -733,7 +732,7 @@ void OceanSystem::Bake() {
                          << m_strainRms << L" (bake " << m_stats.bakeMs << L" ms)");
     auto alphaAt = [&](int log2Width) { return std::sqrt(m_residualSlope[log2Width - OCEAN_ROUGHNESS_OFFSET]); };
     LOG(L"[ocean] Tp=" << (6.283185307179586 / m_spectrum.omegaP) << L" s gamma=" << m_spectrum.gamma
-                       << L" footprint alpha: 1 mm " << alphaAt(-10) << L", 1 cm " << alphaAt(-7) << L", 12 cm "
+                       << L" equilibrium gain " << m_spectrum.equilibriumGain << L" footprint alpha: 1 mm " << alphaAt(-10) << L", 1 cm " << alphaAt(-7) << L", 12 cm "
                        << alphaAt(-3) << L", 1 m "
                        << alphaAt(0) << L", 8 m " << alphaAt(3) << L"; short-wave chop +" << ShortWaveChop(m_params)
                        << L" from " << (6.283185307179586 / std::exp2(m_chopBand.lo)) << L" m waves");

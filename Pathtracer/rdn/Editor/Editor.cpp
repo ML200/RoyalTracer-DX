@@ -324,13 +324,6 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
     ImGui::SetItemTooltip("Height the waves swing about, in world units. In a Minecraft world this is where\n"
                           "the water line is: the top of the surface blocks, once the world's own water is\n"
                           "replaced from the Materials panel.");
-    respec |= ImGui::Checkbox("Keep troughs above zero", &p.keepAboveZero);
-    ImGui::SetItemTooltip("Lifts the level until the deepest trough clears the ground plane, because the\n"
-                          "atmosphere treats anything below it as underground and renders it black. Turn it\n"
-                          "off when the sea level is set deliberately and already sits well clear.");
-    if (p.keepAboveZero)
-        ImGui::TextDisabled("in use %.2f (lifted to clear a %.2f m trough)", st.surfaceY,
-                            st.surfaceY - p.seaLevelY);
 
     ImGui::SeparatorText("Wind");
     respec |= ImGui::SliderFloat("Speed (m/s)", &p.windSpeed, 0.0f, 32.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);

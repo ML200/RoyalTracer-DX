@@ -70,11 +70,11 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            {"newportnews.glb",
-             XMMatrixIdentity(), "Modern Tank Garage"},
-            /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
+            /*{"newportnews.glb",
+             XMMatrixIdentity(), "Modern Tank Garage"},*/
+            MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
-                           XMMatrixIdentity(), "Night City"),*/
+                           XMMatrixIdentity(), "Night City"),
         };
     }
     void Init(SceneManager& sm, Renderer& r) override {
@@ -106,6 +106,7 @@ class MainScene : public SceneDefinition {
         sea.chlorophyll = 0.05f; // mg/m^3: clear deep water, so the body reads indigo
         sea.extent = 60000.0f;   // m half-extent; the horizon cull trims what is not visible
         sea.minTileSize = 8.0f;
+        sea.seaLevelY = 5.7f;    // m: the ship's water line; a Minecraft world's is the top of its water, about 63
         // Opt-in ocean fixtures leave production lighting, exposure and tracing settings alone.
         char fixture[64] = {};
         if (GetEnvironmentVariableA("RT_OCEAN_FIXTURE", fixture, sizeof(fixture))) {
@@ -129,10 +130,6 @@ class MainScene : public SceneDefinition {
         // Framing for a sea, hundreds of metres of it, so it only belongs to a scene that has one.
         // Anything else keeps whatever camera it was given, which for a room-sized model is a good
         // deal closer than this.
-        //
-        // The waves swing symmetrically about the mean level, so that level is lifted until the
-        // deepest trough clears zero - the atmosphere treats anything below the ground plane as
-        // underground. Everything that should float has to move up with it.
         if (sea.enabled && GetEnvironmentVariableA("RT_MC_CAMERA", nullptr, 0) == 0) {
             const float waterLine = m_ocean.SurfaceLevel();
             nv_helpers_dx12::CameraManip.setLookat({0.0f, waterLine + 28.0f, 150.0f},
