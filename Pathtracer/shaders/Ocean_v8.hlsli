@@ -257,13 +257,16 @@ static const float OCEAN_FOAM_OPEN = 0.9f; // share of the plane even the denses
 static const float OCEAN_FOAM_EDGE = 0.3f; // how softly the alpha map is cut, as a share of its range
 static const float OCEAN_FOAM_DENSEST = OCEAN_FOAM_OPEN * (1.0f - 0.5f * OCEAN_FOAM_GRAIN) +
                                         OCEAN_FOAM_FILM * (1.0f - OCEAN_FOAM_OPEN + OCEAN_FOAM_OPEN * OCEAN_FOAM_GRAIN / 3.0f);
+// The alpha map cut at `share`: a linear cut centred on the threshold and narrowed towards either
+// end of the range, so that over an alpha map uniform on [0, 1] exactly `share` of it is foam.
+float OceanFoamCut(float detail, float share) {
+    const float edge = max(2.0f * OCEAN_FOAM_EDGE * min(share, 1.0f - share), 1e-4f);
+    return saturate((detail - 1.0f + share) / edge + 0.5f);
+}
 float OceanFoamRaft(float u, float amount, float feather, float detail, float detailed) {
     const float a = saturate(amount);
     const float share = saturate((u - 1.0f + a * (1.0f + feather)) / feather) * OCEAN_FOAM_OPEN;
-    // A linear cut centred on the threshold and narrowed towards either end of the range, so that
-    // over an alpha map uniform on [0, 1] exactly `share` of it is foam.
-    const float edge = max(2.0f * OCEAN_FOAM_EDGE * min(share, 1.0f - share), 1e-4f);
-    const float alpha = lerp(share, saturate((detail - 1.0f + share) / edge + 0.5f), detailed);
+    const float alpha = lerp(share, OceanFoamCut(detail, share), detailed);
     const float web = alpha * pow(a, OCEAN_FOAM_DIM) * (1.0f - OCEAN_FOAM_GRAIN * (1.0f - u));
     return web + (1.0f - web) * OCEAN_FOAM_FILM * a * a * 2.0f * u;
 }
@@ -312,27 +315,39 @@ float OceanFoamWalls(float2 p, uint seed) {
     }
     return f2 - f1;
 }
-// Measured distributions' quantiles in steps of 1/16 (from millions of samples), and a value's
-// place in one of them, 0 to 1: the web's walls alone and perforated (OceanFoamWeb), and the alpha
-// map standardised (OceanFoamDetail).
+// Measured distributions' quantiles (from millions of samples), and a value's place in one of them,
+// 0 to 1: the web's walls alone and perforated in steps of 1/16 (OceanFoamWeb), and the alpha map
+// standardised in steps of 1/64 (OceanFoamDetail) - the alpha map is cut near both ends of its
+// range, where a table of sixteenths left a thin share of foam at half the cover asked for.
 static const float kFoamWebCoarse[17] = {-1.7611f, -0.7273f, -0.5949f, -0.5062f, -0.4366f, -0.3785f, -0.3283f, -0.2835f, -0.2429f,
                                          -0.2055f, -0.1709f, -0.1386f, -0.1080f, -0.0791f, -0.0516f, -0.0247f, 0.0635f};
 static const float kFoamWebFine[17] = {-1.9822f, -0.8286f, -0.6938f, -0.6035f, -0.5334f, -0.4748f, -0.4240f, -0.3787f, -0.3377f,
                                        -0.2998f, -0.2641f, -0.2299f, -0.1962f, -0.1621f, -0.1256f, -0.0832f, 0.0595f};
-static const float kFoamDetailZ[17] = {-3.0890f, -1.5063f, -1.1640f, -0.9176f, -0.7104f, -0.5274f, -0.3553f, -0.1904f, -0.0277f,
-                                       0.1364f, 0.3047f, 0.4836f, 0.6801f, 0.9060f, 1.1827f, 1.5851f, 4.2297f};
-float OceanFoamQuantile(uint table, uint i) {
-    return table == 0u ? kFoamWebCoarse[i] : table == 1u ? kFoamWebFine[i] : kFoamDetailZ[i];
-}
-float OceanFoamRank(float v, uint table) {
+static const float kFoamDetailZ[65] = {
+    -3.6436f, -2.0306f, -1.7933f, -1.6331f, -1.5086f, -1.4035f, -1.3126f, -1.2311f, -1.1573f, -1.0884f, -1.0240f, -0.9641f, -0.9069f,
+    -0.8524f, -0.8001f, -0.7495f, -0.7008f, -0.6532f, -0.6068f, -0.5615f, -0.5169f, -0.4732f, -0.4302f, -0.3879f, -0.3461f, -0.3051f,
+    -0.2644f, -0.2238f, -0.1836f, -0.1433f, -0.1028f, -0.0628f, -0.0225f, 0.0182f, 0.0586f, 0.0991f, 0.1398f, 0.1811f, 0.2226f,
+    0.2648f, 0.3072f, 0.3503f, 0.3940f, 0.4384f, 0.4836f, 0.5300f, 0.5775f, 0.6266f, 0.6769f, 0.7294f, 0.7834f, 0.8399f, 0.8994f,
+    0.9617f, 1.0282f, 1.0983f, 1.1744f, 1.2575f, 1.3490f, 1.4523f, 1.5731f, 1.7203f, 1.9114f, 2.2040f, 4.5966f};
+float OceanFoamRank(float v, bool fine) {
     uint i = 0u;
     [unroll] for (uint step = 8u; step > 0u; step >>= 1u) {
-        if (i + step <= 16u && OceanFoamQuantile(table, i + step) <= v)
+        if (i + step <= 16u && (fine ? kFoamWebFine[i + step] : kFoamWebCoarse[i + step]) <= v)
             i += step;
     }
     i = min(i, 15u);
-    const float q0 = OceanFoamQuantile(table, i), q1 = OceanFoamQuantile(table, i + 1u);
+    const float q0 = fine ? kFoamWebFine[i] : kFoamWebCoarse[i];
+    const float q1 = fine ? kFoamWebFine[i + 1u] : kFoamWebCoarse[i + 1u];
     return saturate((float(i) + saturate((v - q0) / (q1 - q0))) / 16.0f);
+}
+float OceanFoamDetailRank(float v) {
+    uint i = 0u;
+    [unroll] for (uint step = 32u; step > 0u; step >>= 1u) {
+        if (i + step <= 64u && kFoamDetailZ[i + step] <= v)
+            i += step;
+    }
+    i = min(i, 63u);
+    return saturate((float(i) + saturate((v - kFoamDetailZ[i]) / (kFoamDetailZ[i + 1u] - kFoamDetailZ[i]))) / 64.0f);
 }
 
 // A lattice of domes: each unit cell holds one at a random place, a fifth to three quarters of a
@@ -360,22 +375,26 @@ float OceanFoamHollow(int2 cell, float2 f, uint seed, out float2 dome) {
     dome = hollow > 0.0f ? best : 0.0f;
     return hollow >= 0.0f ? hollow : exp(hollow) - 1.0f;
 }
-// The alpha map of a raft: where in it foam holds on longest. Foam is a pile of bubbles from a
+// The alpha map of the foam: where in it foam holds on longest. Foam is a pile of bubbles from a
 // millimetre to a few centimetres across, whipped by the breaking crest into clumps that are left
-// behind drawn out into streaks; as it thins, the middles of the biggest bubbles open first, then
-// whole bubbles and the gaps between the clumps, until only specks are left. Five lattices of domes
-// (OceanFoamHollow): bubbles in cells of 6, 3 and 1.3 cm, and clumps in cells of 12 and 30 cm three
-// times as long downwind, each drawn where the footprint resolves it, summed and standardised by the
-// spread of what was drawn, then mapped through the full sum's measured distribution so the alpha
-// map comes out uniform on [0, 1] (`detail`, high on the walls between bubbles, which hold on
-// longest). `detailed` is how much of it the footprint resolves. The slope of the domes is added to
-// `slope` as a height gradient in world xz. The bubbles are indexed from level 0's absolute texel,
-// so they are exact however far out the sea runs; `w` is in the frame of OceanFoamFrame, `wind` its
-// heading.
+// behind drawn out into streaks, and a trail breaks up into patches as it is stretched; as it thins,
+// the middles of the biggest bubbles open first, then whole bubbles and the gaps between the clumps
+// and patches, until only specks are left. Eight lattices of domes (OceanFoamHollow): bubbles in
+// cells of 6, 3 and 1.3 cm, and clumps and patches in cells of 12 and 30 cm and 0.8, 2.4 and 7.2 m,
+// three times as long downwind. Each is drawn where the footprint resolves it, so at every distance
+// the foam keeps the detail a pixel can hold rather than fading into a smooth wash; they are summed,
+// standardised by the spread of what was drawn, and mapped through the full sum's measured
+// distribution so the alpha map comes out uniform on [0, 1] (`detail`, high on the walls between
+// bubbles, which hold on longest). Cut at any share, it then lays down that share of foam: to half a
+// per cent while the clumps or patches are drawn (a million samples), and to five points with only
+// the coarsest left, a kilometre or so out. `detailed` is how much of it the footprint resolves. The
+// slope of the bubbles and clumps is added to `slope` as a height gradient in world xz. The bubbles
+// are indexed from level 0's absolute texel, so they are exact however far out the sea runs; `w` is
+// in the frame of OceanFoamFrame, `wind` its heading.
 static const uint kBubblesPerTexel[3] = {1u, 2u, 5u};
 static const float kBubbleWeight[3] = {0.9f, 0.9f, 0.8f};
-static const float kClumpCell[2] = {0.12f, 0.3f};
-static const float kClumpWeight[2] = {0.65f, 0.55f};
+static const float kClumpCell[5] = {0.12f, 0.3f, 0.8f, 2.4f, 7.2f};
+static const float kClumpWeight[5] = {0.65f, 0.55f, 0.5f, 0.45f, 0.4f};
 static const float OCEAN_CLUMP_STRETCH = 3.0f;
 static const float OCEAN_BUBBLE_DOME = 0.45f; // height gradient at a bubble's rim
 static const float OCEAN_CLUMP_DOME = 0.35f;  // and at a clump's
@@ -394,7 +413,7 @@ float OceanFoamDetail(float2 q, float2 w, float2 wind, float widthM, OceanParams
             slope += keep * OCEAN_BUBBLE_DOME * dome;
         }
     }
-    [unroll] for (uint c = 0u; c < 2u; ++c) {
+    [unroll] for (uint c = 0u; c < 5u; ++c) {
         const float keep = saturate(2.0f - 2.0f * widthM / kClumpCell[c]);
         if (keep > 0.0f) {
             const float2 p = float2(w.x / OCEAN_CLUMP_STRETCH, w.y) / kClumpCell[c];
@@ -403,35 +422,17 @@ float OceanFoamDetail(float2 q, float2 w, float2 wind, float widthM, OceanParams
             const float hollow = OceanFoamHollow(int2(i), p - i, 81u + c, dome);
             sum += keep * kClumpWeight[c] * (hollow - OCEAN_DOME_MEAN);
             drawn += keep * keep * kClumpWeight[c] * kClumpWeight[c];
-            const float2 g = keep * OCEAN_CLUMP_DOME * float2(dome.x / OCEAN_CLUMP_STRETCH, dome.y);
-            slope += g.x * wind + g.y * float2(-wind.y, wind.x);
+            if (c < 2u) {
+                const float2 g = keep * OCEAN_CLUMP_DOME * float2(dome.x / OCEAN_CLUMP_STRETCH, dome.y);
+                slope += g.x * wind + g.y * float2(-wind.y, wind.x);
+            }
         }
     }
     const float spread = sqrt(drawn);
-    // Resolved in full while the coarsest clumps are, fading out with them.
-    detailed = saturate(spread / (0.8f * kClumpWeight[1]));
-    return spread > 1e-4f ? OceanFoamRank(-sum / (OCEAN_DOME_STD * spread), 2u) : 0.5f;
+    // Resolved in full while the coarsest patches are, fading out with them.
+    detailed = saturate(spread / (0.8f * kClumpWeight[4]));
+    return spread > 1e-4f ? OceanFoamDetailRank(-sum / (OCEAN_DOME_STD * spread)) : 0.5f;
 }
-// How thick a trail's foam lies from place to place, one on average: the patches and streaks it
-// breaks up into as it is drawn out behind its crest, the same domes (OceanFoamHollow) in cells of
-// 0.8 and 2.4 m, three times as long downwind. Laid on the cover itself, so they carry to any
-// distance a footprint resolves them at. `w` is in the frame of OceanFoamFrame.
-static const float kPatchCell[2] = {0.8f, 2.4f};
-static const float kPatchStrength[2] = {0.45f, 0.4f};
-float OceanFoamPatches(float2 w, float widthM) {
-    float patches = 1.0f;
-    [unroll] for (uint l = 0u; l < 2u; ++l) {
-        const float keep = saturate(2.0f - 2.0f * widthM / kPatchCell[l]);
-        if (keep > 0.0f) {
-            const float2 p = float2(w.x / OCEAN_CLUMP_STRETCH, w.y) / kPatchCell[l];
-            const float2 i = floor(p);
-            float2 dome;
-            patches *= 1.0f + keep * kPatchStrength[l] * (OCEAN_DOME_MEAN - OceanFoamHollow(int2(i), p - i, 83u + l, dome));
-        }
-    }
-    return patches;
-}
-
 // Where a dissolving raft holds on longest, as u about uniform on [0, 1], at `w` in the frame of
 // OceanFoamFrame. A raft drains and bursts in holes that grow until they meet, so what is left is a
 // web along the walls between them: cells of about a metre, drawn out downwind and warped so no
@@ -455,13 +456,13 @@ float OceanFoamWeb(float2 w, float widthM, out float resolved, out float feather
     float2 q = p / OCEAN_FOAM_CELL;
     q += 0.45f * float2(OceanFoamGrad(q * 1.5f, 21u), OceanFoamGrad(q * 1.5f, 27u));
     const float walls = OceanFoamWalls(q, 41u) + 0.1f * OceanFoamGrad(q * 4.0f, 51u);
-    float u = OceanFoamRank(-walls, 0u);
+    float u = OceanFoamRank(-walls, false);
     const float perforated = saturate(2.0f - 4.0f * widthM / OCEAN_FOAM_PERFORATION);
     if (perforated > 0.0f) {
         float2 r = p / OCEAN_FOAM_PERFORATION;
         r += 0.45f * float2(OceanFoamGrad(r * 1.5f, 31u), OceanFoamGrad(r * 1.5f, 37u));
         const float holes = OceanFoamWalls(r, 43u) + 0.1f * OceanFoamGrad(r * 4.0f, 61u);
-        u = lerp(u, OceanFoamRank(-(walls + 0.3f * holes), 1u), perforated);
+        u = lerp(u, OceanFoamRank(-(walls + 0.3f * holes), true), perforated);
     }
     // u runs across its range over about half a cell, so a footprint spans about 2 / cell of it.
     feather = clamp(2.0f * widthM / OCEAN_FOAM_CELL, OCEAN_FOAM_FEATHER, 1.0f);
@@ -538,25 +539,27 @@ OceanFoam OceanFoamAt(float2 q, float widthM, float gain, OceanParamsGPU P) {
     // second or so of the crest running on - a tint round the fresh white, not a glow of its own.
     f.bubbles = smoothstep(0.35f, 0.9f, min(saturate(cloud) * rough, 1.0f));
 
-    // Up close, the cover is drawn as a raft that lays down exactly that much foam (OceanFoamRaft):
-    // the web of cells and strands it dissolves along (OceanFoamWeb) says how much of each place
-    // is foam, the bubbles and clumps it is made of (OceanFoamDetail) are the alpha map that says
-    // where, and the whole fades into the plain cover where the footprint outgrows the web. The
-    // position is rebuilt from the finest level's absolute texel index, as the simulation's is.
+    // The cover is drawn through the alpha map (OceanFoamDetail) at every distance, so the foam
+    // keeps the clumps and specks a pixel can hold instead of fading into a smooth wash. Up close
+    // it is drawn as a raft that lays down exactly that much foam (OceanFoamRaft): the web of cells
+    // and strands it dissolves along (OceanFoamWeb) says how much of each place is foam, the alpha
+    // map where. Further out, where the footprint outgrows the web, the cover itself is cut: pieces
+    // as white as a raft of that cover is on average, as many as it takes to lay the cover down, so
+    // thin foam stays a scatter of faint flecks rather than a few bright ones. The position is
+    // rebuilt from the finest level's absolute texel index, as the simulation's is.
     float2 domes = 0.0f;
     if (f.coverage > 0.0f) {
         const float2 world = q - P.foamLevel[0].xy + float2(P.foamCell[0].xy) * OCEAN_FOAM_TEXEL0;
         const float2 w = OceanFoamFrame(world, P.foamWind);
-        f.coverage = min(f.coverage * OceanFoamPatches(w, widthM), OCEAN_FOAM_DENSEST);
-        float resolved, feather;
+        float resolved, feather, detailed;
         const float u = OceanFoamWeb(w, widthM, resolved, feather);
-        if (resolved > 0.0f) {
-            float detailed;
-            const float detail = OceanFoamDetail(q, w, P.foamWind, widthM, P, domes, detailed);
-            f.coverage = lerp(f.coverage,
-                              OceanFoamRaft(u, OceanFoamAmount(f.coverage, feather), feather, detail, detailed), resolved);
-            domes *= resolved;
-        }
+        const float detail = OceanFoamDetail(q, w, P.foamWind, widthM, P, domes, detailed);
+        const float amount = OceanFoamAmount(f.coverage, feather);
+        const float piece = max(pow(amount, OCEAN_FOAM_DIM) * (1.0f - 0.5f * OCEAN_FOAM_GRAIN), f.coverage);
+        const float share = f.coverage / max(piece, 1e-4f);
+        const float far = lerp(share, OceanFoamCut(detail, share), detailed) * piece;
+        f.coverage = resolved > 0.0f ? lerp(far, OceanFoamRaft(u, amount, feather, detail, detailed), resolved) : far;
+        domes *= resolved;
     }
 
     // A raft is a lumpy pile of bubbles rather than a painted film: where the finest level resolves

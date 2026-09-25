@@ -159,6 +159,7 @@ void Pass_sharc_update_v8()
     float coneAngle  = 0.0f;
     float pathDist   = length(sd.x1 - InitOrigin());   // one training path stands for a tile of pixels
     bool waterDirectSegment = false;
+    bool sunOwnedSegment = false;   // a surface in the water sampled the sun for this specular chain
     bool waterMedium = (sd.flags & SD_FLAG_CAMERA_WATER) != 0u;
     bool waterScatterUsed = false;
     g_regularizeRoughness = 0.0f;
@@ -260,6 +261,7 @@ void Pass_sharc_update_v8()
                 uint2  trainingToken = 0u;
                 float  trainingReward = 0.0f;
                 bool   sampled = false;
+                OceanWaterSun waterSun = (OceanWaterSun)0;
 
                 // Only the sun is worth widening the water's lobe for, and only a picked GGX lobe
                 // widens; see PtInlineNee.
@@ -295,23 +297,40 @@ void Pass_sharc_update_v8()
                 else
                 {
                     float2 rSun = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
-                    const SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
-                    L = sun.direction;
-
-                    cosSurf = dot(ctx.hitNormal, L);
-                    if (cosSurf > 1e-6f && sun.pdf > 1e-20f)
+                    // A surface in the water takes the sun refracted by the surface; see PtInlineNee.
+                    if (waterMedium)
                     {
-                        sampled    = true;
-                        visTarget  = ctx.hitPos + sun.direction * RAY_TMAX_PLANET;
-                        visTargetN = -sun.direction;
-                        radiance   = sun.radiance;
-                        lightPdf   = sun.pdf;
+                        if (OceanSampleWaterSun(ctx.hitPos, rSun, waterSun))
+                        {
+                            L = waterSun.L;
+                            cosSurf = dot(ctx.hitNormal, L);
+                            sampled  = cosSurf > 1e-6f;
+                            radiance = waterSun.radiance;
+                            lightPdf = waterSun.pdf;
+                        }
+                    }
+                    else
+                    {
+                        const SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
+                        L = sun.direction;
+
+                        cosSurf = dot(ctx.hitNormal, L);
+                        if (cosSurf > 1e-6f && sun.pdf > 1e-20f)
+                        {
+                            sampled    = true;
+                            visTarget  = ctx.hitPos + sun.direction * RAY_TMAX_PLANET;
+                            visTargetN = -sun.direction;
+                            radiance   = sun.radiance;
+                            lightPdf   = sun.pdf;
+                        }
                     }
                 }
 
                 if (sampled)
                 {
-                    const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
+                    const bool waterSunTech = waterMedium && sunTech;
+                    const float3 visT = waterSunTech ? OceanWaterSunReach(ctx.hitPos, ctx.hitNormal, waterSun)
+                        : VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
                     if (any(visT > 0.0f))
                     {
                         const BrdfData lobe = EvaluateLobe(spPath, group, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir,
@@ -322,7 +341,7 @@ void Pass_sharc_update_v8()
                             trainingReward = dot(radiance*cosSurf*visT*LTC_TrainShare((float)ctx.hitLocalPr,ctx.matID,lobe.val,group == LOBE_GROUP_BROAD)/lightPdf,
                                 float3(0.2126f,0.7152f,0.0722f));
 
-                            const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
+                            const float  misWeight  = waterDirect || waterSunTech ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
                             const float3 lightScale = radiance * cosSurf * visT * (misWeight / (lightPdf * groupP));
                             directSum += lobe.val * lightScale;
 
@@ -411,6 +430,7 @@ void Pass_sharc_update_v8()
             rayDirPk           = PackNormal(-w.exitNormal);
             ps = (ps | PT_PS_SSS | PT_PS_SSS_EXIT) & ~PT_PS_DIFF_CACHED;
             waterDirectSegment = false;
+            sunOwnedSegment = false;
             ps += 1u << PT_PS_DEPTH_SHIFT;
             if (PtPsGuideDepth(ps) < 15u) ps += 1u << PT_PS_GUIDE_SHIFT;
             reorderHint = SharcReorderHint(ctx.instID, training.suffixLuma);
@@ -437,6 +457,8 @@ void Pass_sharc_update_v8()
             LoadKd_w(ctx.matID) < 1.0f - EPSILON;
         waterDirectSegment = OceanDirectLightingOwnsRay(waterDirect, dot(dir, ctx.hitNormal)) ||
             (waterDirectSegment && passThrough && LoadIsThinGlass(ctx.matID));
+        sunOwnedSegment = (waterMedium && neeTaken) || (sunOwnedSegment && LoadIsOceanMaterial(ctx.matID) &&
+            ctx.backface && !SharcScatterHasSpread(sampledStrategy, ctx.matID, ctx.hitLocalPr));
         const bool incomingWater = waterMedium;
         if (LoadIsOceanMaterial(ctx.matID) && !LoadIsThinGlass(ctx.matID))
             waterMedium = ctx.backface ? dot(dir,ctx.hitNormal) >= 0.0f : dot(dir,ctx.hitNormal) < 0.0f;
@@ -517,6 +539,7 @@ void Pass_sharc_update_v8()
                 waterScatterUsed = true;
                 volumeRedirected = true;
                 waterDirectSegment = false;
+                sunOwnedSegment = false;
                 ps |= PT_PS_MIS_NONE;
                 prev_pdf = 1.0f;
                 hit = OceanTracePathHitInMedium(rayB, true);
@@ -536,7 +559,7 @@ void Pass_sharc_update_v8()
         {
             SetSkyObserver((OCEAN_ENABLED ? rayB.Origin : InitOrigin()) + sceneOriginWorld);
             const bool underground = WorldPosIsUnderground(rayB.Origin + sceneOriginWorld);
-            const float  sunSAPdf   = underground || waterDirectSegment ? 0.0f : GetSunPdf(rayDir);
+            const float  sunSAPdf   = underground || waterDirectSegment || sunOwnedSegment ? 0.0f : GetSunPdf(rayDir);
             const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
             const float  sunMisBsdf = (sunSAPdf > 0.0f)
                 ? ((ps & PT_PS_MIS_NONE) != 0u ? 1.0f : prev_pdf / max(prev_pdf + sunSAPdf, EPSILON)) : 0.0f;

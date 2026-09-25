@@ -60,19 +60,20 @@ inline uint LT_PickAndRescale(float w0, float w1, float w2, float w3, uint n, fl
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
-// Bound each node by receiver, orientation, distance, and emitted power.
+// Bound each node by receiver, orientation, distance, and emitted power. A receiver without a
+// normal (n zero: a point in a participating medium) sees every direction alike.
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
     float3 bmin, float3 bmax,
     float3 axis, float cosTheta_o, float sinTheta_o,
     float power)
 {
-
+    const bool volume = dot(n, n) < 1e-6f;
     const float3 maxCorner = float3(
         (n.x >= 0.0f) ? bmax.x : bmin.x,
         (n.y >= 0.0f) ? bmax.y : bmin.y,
         (n.z >= 0.0f) ? bmax.z : bmin.z);
-    if (dot(maxCorner - x, n) <= 0.0f) return 0.0f;
+    if (!volume && dot(maxCorner - x, n) <= 0.0f) return 0.0f;
 
     const float3 c        = 0.5 * (bmin + bmax);
     const float3 e        = 0.5 * (bmax - bmin);
@@ -89,7 +90,7 @@ inline float LT_NodeImportance_Common(
 
     const float ci = dot(n, toCenterN);
     float cos_i_prime;
-    if (ci >= cosThetaU) {
+    if (volume || ci >= cosThetaU) {
         cos_i_prime = 1.0f;
     } else {
         const float si = sqrt(max(1.0f - ci * ci, 0.0f));
@@ -118,6 +119,7 @@ inline float LT_NodeImportance_Common(
 }
 
 float3 LT_LocalReceiverNormal(float3x4 worldToLocal,float3 normal) {
+    if(dot(normal,normal)<1e-6f) return 0.0f;   // a receiver in a medium stays one
     float3 a=worldToLocal[0].xyz,b=worldToLocal[1].xyz,c=worldToLocal[2].xyz;
     float3 cof0=cross(b,c),cof1=cross(c,a),cof2=cross(a,b);
     float3 pullback=float3(dot(cof0,normal),dot(cof1,normal),dot(cof2,normal));

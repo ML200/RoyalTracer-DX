@@ -38,7 +38,7 @@ struct PtVertexIO {
 #define PV_IN_WATER_DIRECT  (1u << 28u)  // water NEE already owns direct-light radiance on this segment
 #define PV_IN_WATER_MEDIUM  (1u << 29u)
 #define PV_IN_WATER_SCATTERED (1u << 30u)
-#define PV_IN_SUN_OWNED     (1u << 31u)  // a scattering event in the water sampled the sun for this specular chain
+#define PV_IN_SUN_OWNED     (1u << 31u)  // a surface in the water sampled the sun for this specular chain
 
 // Result flags (hit/miss shaders -> raygen).
 #define PV_RESULT_MASK      7u
@@ -90,9 +90,11 @@ uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
 // one. One light-tree pick and the sun, evaluated on the lobe group this sample picked,
 // divided by the probability of that pick, and MIS-weighted against the group's own density; the
 // pick also trains the light tree. liteBroadOnly restricts the reuse-suffix share to the broad
-// group, as at the parked vertex.
+// group, as at the parked vertex. A vertex in the water takes the sun refracted by the surface
+// (OceanSampleWaterSun) and owns it: the hits of its continuation out through the surface do not
+// count the sun again (PV_SUN_OWNED).
 void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, float3 rayDir, uint pathSeed,
-    uint depth, bool blue, uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath,
+    uint depth, bool blue, uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath, bool inWater,
     out float3 direct, out float3 liteDirect)
 {
     direct = 0.0f;
@@ -118,6 +120,7 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, flo
         float  lightPdf = 0.0f, cosSurf = 0.0f;
         uint2  token = 0u;
         bool   sampled = false;
+        OceanWaterSun waterSun = (OceanWaterSun)0;
         if (tech == 0u)
         {
             if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u || waterDirect) continue;
@@ -141,23 +144,39 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, flo
         {
             float2 rSun = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
             if (blue) rSun = PtBlue2(pixel, blueIndex, depth, BN_PAIR_SUN);
-            const SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
-            L = sun.direction;
-            cosSurf = dot(ctx.hitNormal, L);
-            if (cosSurf > 1e-6f && sun.pdf > 1e-20f)
+            if (inWater)
             {
-                sampled    = true;
-                visTarget  = ctx.hitPos + sun.direction * RAY_TMAX_PLANET;
-                visTargetN = -sun.direction;
-                radiance   = sun.radiance;
-                lightPdf   = sun.pdf;
+                if (OceanSampleWaterSun(ctx.hitPos, rSun, waterSun))
+                {
+                    L = waterSun.L;
+                    cosSurf = dot(ctx.hitNormal, L);
+                    sampled  = cosSurf > 1e-6f;
+                    radiance = waterSun.radiance;
+                    lightPdf = waterSun.pdf;
+                }
+            }
+            else
+            {
+                const SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
+                L = sun.direction;
+                cosSurf = dot(ctx.hitNormal, L);
+                if (cosSurf > 1e-6f && sun.pdf > 1e-20f)
+                {
+                    sampled    = true;
+                    visTarget  = ctx.hitPos + sun.direction * RAY_TMAX_PLANET;
+                    visTargetN = -sun.direction;
+                    radiance   = sun.radiance;
+                    lightPdf   = sun.pdf;
+                }
             }
         }
 
         float reward = 0.0f;
         if (sampled)
         {
-            const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
+            const bool waterSunTech = inWater && sunTech;
+            const float3 visT = waterSunTech ? OceanWaterSunReach(ctx.hitPos, ctx.hitNormal, waterSun)
+                : VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
             if (any(visT > 0.0f))
             {
                 const BrdfData lobe = EvaluateLobe(spPath, group, ctx.matID, ctx.hitNormal, ctx.hitNormal, L,
@@ -168,8 +187,9 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, flo
                     reward = dot(radiance * cosSurf * visT *
                         LTC_TrainShare((float)ctx.hitLocalPr, ctx.matID, lobe.val, group == LOBE_GROUP_BROAD) / lightPdf,
                         float3(0.2126f, 0.7152f, 0.0722f));
-                    // Water direct lighting has no BSDF-hit partner: continuation stays sharp.
-                    const float  misWeight  = waterDirect ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
+                    // Water direct lighting has no BSDF-hit partner: continuation stays sharp. Nor
+                    // has the sun of a vertex in the water, which its continuation leaves out.
+                    const float  misWeight  = waterDirect || waterSunTech ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
                     const float3 lightScale = radiance * cosSurf * visT * (misWeight / (lightPdf * groupP));
                     direct += lobe.val * lightScale;
                     if (litePath) liteDirect += (liteBroadOnly ? broad : lobe.val) * lightScale;
@@ -366,8 +386,8 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         else if (inlineNee)
         {
             PtInlineNee(ctx, spPath, group, groupP, rayDir, pathSeed, depth, blue, pixel, blueIndex,
-                liteX2 && cacheSurface, depth >= 2u && liteVertex, nee, neeLite);
-            res |= PV_NEE;
+                liteX2 && cacheSurface, depth >= 2u && liteVertex, inWater, nee, neeLite);
+            res |= PV_NEE | (inWater ? PV_SUN_OWNED : 0u);
         }
 
         if (budgetBreak)
@@ -440,9 +460,9 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
             if (OceanDirectLightingOwnsRay(waterDirect, dot(dir, n)) ||
                 (passThrough && LoadIsThinGlass(ctx.matID) && (inFlags & PV_IN_WATER_DIRECT) != 0u))
                 res |= PV_WATER_DIRECT;
-            // A scattering event in the water took its own sun sample (OceanVolumeSunNee), so the
-            // specular chain it continues on - out through the mirror-smooth underside of the
-            // surface, or turned back by it - must not find the sun a second time.
+            // A surface in the water took its own sun sample, so the specular chain it continues on
+            // - out through the mirror-smooth underside of the surface, or turned back by it - must
+            // not find the sun a second time.
             if ((inFlags & PV_IN_SUN_OWNED) != 0u && !wide && LoadIsOceanMaterial(ctx.matID) && ctx.backface)
                 res |= PV_SUN_OWNED;
 

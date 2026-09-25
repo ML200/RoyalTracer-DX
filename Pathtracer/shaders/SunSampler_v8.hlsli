@@ -992,6 +992,17 @@ float3 EvaluateSky(float3 rayDir)
     return EvaluateSkyBackground(rayDir);
 }
 
+// The sky's irradiance on a horizontal plane, the sun's disk left out, in the units of
+// EvaluateSkyBackground: the day sky summed over the bake (SkyBakeLoadIrradiance), handing over
+// to the night base through twilight as the background does. Stars are left out.
+float3 EvaluateSkyIrradiance()
+{
+    if (SkyObserverIsUnderground()) return float3(0.0f, 0.0f, 0.0f);
+    const SunState S = ComputeSunState();
+    const float tw = Smooth01(saturate((S.elevRad * RAD2DEG + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
+    return lerp(SKY_NIGHT_BASE * skyNightBaseIntensity * PI, SkyBakeLoadIrradiance() * SKY_INTENSITY, tw);
+}
+
 float3 EnvTailFinish(float3 cPartial, float3 s, float misPdf)
 {
     const float  sunSAPdf   = GetSunPdf(s);

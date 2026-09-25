@@ -35,4 +35,24 @@ void main(uint3 tid : SV_DispatchThreadID)
         hitPlanet = hit ? 1.0f : 0.0f;
     }
     SkyBakeStoreView(texel, scatter, viewTr, hitPlanet);
+
+    // The sky's irradiance on a horizontal plane, summed as the texels are baked (one atomic per
+    // wave and channel); the slot the next frame sums into is cleared now.
+    const uint frame = (uint)time;
+    if (i == 0u)
+    {
+        const uint next = SkyBakeIrradianceSlot(frame + 1u);
+        g_skyBake.Store<uint64_t>(next, 0u);
+        g_skyBake.Store<uint64_t>(next + 8u, 0u);
+        g_skyBake.Store<uint64_t>(next + 16u, 0u);
+    }
+    const float3 e = v.y > 0.0f ? scatter * v.y * SkyBakeTexelSolidAngle(texel.y) : 0.0f;
+    const float3 wave = WaveActiveSum(e);
+    if (WaveIsFirstLane())
+    {
+        const uint slot = SkyBakeIrradianceSlot(frame);
+        g_skyBake.InterlockedAdd64(slot, (uint64_t)(max(wave.x, 0.0f) * SKYBAKE_IRRADIANCE_SCALE + 0.5f));
+        g_skyBake.InterlockedAdd64(slot + 8u, (uint64_t)(max(wave.y, 0.0f) * SKYBAKE_IRRADIANCE_SCALE + 0.5f));
+        g_skyBake.InterlockedAdd64(slot + 16u, (uint64_t)(max(wave.z, 0.0f) * SKYBAKE_IRRADIANCE_SCALE + 0.5f));
+    }
 }

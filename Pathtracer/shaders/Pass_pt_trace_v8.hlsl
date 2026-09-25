@@ -1,6 +1,6 @@
 #include "Includes_v8.hlsli"
-#include "PtVertex_v8.hlsli"
 #include "OceanVolume.hlsli"
+#include "PtVertex_v8.hlsli"
 
 // Drive one sample of the pixel path. Every vertex is shaded after the reorder, the primary one
 // straight from the camera record without a trace; the path loop keeps the path state,
@@ -80,45 +80,36 @@ void Pass_pt_trace_v8()
         {
             hit = OceanTracePathHitInMedium(ray, (inFlags & PV_IN_WATER_MEDIUM) != 0u);
             if ((inFlags & PV_IN_WATER_MEDIUM) != 0u) {
+                // The water between here and the hit: the path goes on to the hit through the
+                // segment's transmittance, and what the water scatters towards it along the way is
+                // added here (OceanSegmentInScatter). The first water segment of the camera path -
+                // from the camera itself under water, or from the surface it looked through - takes
+                // a sample of the sun and the lights at one point on it; every later one the
+                // modelled diffuse field alone.
                 uint sVolume = RcBounceSeed(PtPathSeed(pixel, s), depth, 0x57415452u);
-                const OceanFlight flight = OceanSampleWaterSegment(ray.Origin,rayDir,
-                    hit.distance,
-                    (inFlags & PV_IN_WATER_SCATTERED) != 0u,sVolume);
-                throughput *= flight.weight;
-                if ((ps & PT_PS_LITE_VERTEX) != 0u) liteSuffix *= flight.weight;
+                const float segment = OceanBoundaryDistance(ray.Origin, rayDir, hit.distance);
+                const bool sampled = (inFlags & PV_IN_WATER_SCATTERED) == 0u && depth <= (cameraWater ? 1u : 2u);
+                const float3 inScatter = OceanSegmentInScatter(ray.Origin, rayDir, segment, sampled, sVolume);
+                gathered += throughput * inScatter;
+                if (depth >= 2u && (ps & PT_PS_LITE_VERTEX) != 0u) liteL += liteSuffix * inScatter;
+                float3 sigmaA, sigmaS; float phaseG;
+                OceanMediumCoefficients(sigmaA, sigmaS, phaseG);
+                const float3 segmentT = OceanMediumTransmittance(sigmaA + sigmaS, segment);
+                throughput *= segmentT;
+                if ((ps & PT_PS_LITE_VERTEX) != 0u) liteSuffix *= segmentT;
                 // A deferred emitter replay has no slot for segment attenuation.
                 // Resolve this endpoint in place using the now-attenuated throughput.
                 immediate = false;
                 inFlags &= ~PV_IN_IMMEDIATE;
+                inFlags |= PV_IN_WATER_SCATTERED;
                 if (!any(throughput > 0.0f)) break;
-                if (flight.scattered) {
-                    // Replace the endpoint with the volume vertex, then trace its
-                    // phase-sampled continuation. Only object/surface bounces consume
-                    // the surface-bounce budget; the scattered flag bounds this loop.
-                    pos = ray.Origin+rayDir*flight.distance;
-                    pathDist += flight.distance;
-                    // The sun is sampled here, through the surface above; the continuation keeps
-                    // the sky, emitters and everything it bounces off, but no longer counts the sun
-                    // along its specular chain out of the water.
-                    const float3 sunNee = OceanVolumeSunNee(pos, rayDir, sVolume);
-                    gathered += throughput * sunNee;
-                    if (depth >= 2u && (ps & PT_PS_LITE_VERTEX) != 0u) liteL += liteSuffix * sunNee;
-                    rayDir = OceanSampleScatterDirection(rayDir,sVolume);
-                    ray.Origin = pos; ray.Direction = rayDir;
-                    ray.TMin = 0.00001f; ray.TMax = RAY_TMAX_PLANET;
-                    ps |= PT_PS_MIS_NONE;
-                    inFlags = (inFlags | PV_IN_WATER_SCATTERED | PV_IN_MIS_NONE | PV_IN_SUN_OWNED) & ~PV_IN_WATER_DIRECT;
-                    // No surface MIS against the phase-sampled continuation.
-                    prev_pdf = 1.0f;
-                    continue;
-                }
             }
             if (hit.hit) reorderHint = hit.instance & 0xffu;
         }
         // The one reorder point, on the path of every iteration, the primary one sorted by the
         // instance of the camera record: with the reorder inside the trace branch (skipped on the
         // primary iteration) the device hung at random. Only a completed surface/miss endpoint
-        // reaches it; the volume continuation above carries ordinary data, never a live HitObject.
+        // reaches it; the water segment above works on ordinary data, never a live HitObject.
         // Paths past their deferred vertex sort apart from the ones before it, since the two shade
         // differently (a cache lookup against a capture). Pass median on bistro (RTX 5090, 1200
         // frames): 2.64 ms, against 2.75 ms on the instance alone; ten instance bits instead of
