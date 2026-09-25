@@ -4,6 +4,8 @@
 #include "../DXRHelper.h"
 #include <random>
 #include <bit>
+#include <execution>
+#include <numeric>
 
 namespace ocean {
 
@@ -11,6 +13,11 @@ namespace {
 
 constexpr uint32_t N = OCEAN_FFT_SIZE;
 constexpr double kEarthRadius = 6371000.0;
+
+// Standard deviations of its own elevation a single cascade is allowed to reach when bounding the
+// surface. A 512^2 field of Gaussian samples peaks near 5 sigma, and the bound sums every cascade
+// at that extreme at once, which no realised sea does.
+constexpr double kHeightQuantile = 6.0;
 
 // Deterministic hash so that the Gaussian draw at -k can be reproduced without depending on the
 // order the grid is visited. Both halves of a conjugate pair must agree exactly or the synthesised
@@ -35,6 +42,15 @@ void GaussianPair(uint32_t h, double& g0, double& g1) {
     const double theta = 6.283185307179586 * u2;
     g0 = r * std::cos(theta);
     g1 = r * std::sin(theta);
+}
+
+// Angular frequency of grid node (inx, inz) of cascade c, computed with exactly the float
+// operations the evolution kernel uses, so a phase epoch folded in here lands where the GPU
+// would have put it.
+double ModeOmega(int32_t inx, int32_t inz, uint32_t c) {
+    const float dk = 6.28318530717958f / (float)CascadeLengths()[c];
+    const float kx = (float)inx * dk, kz = (float)inz * dk;
+    return (double)std::sqrt(9.80665f * std::sqrt(kx * kx + kz * kz));
 }
 
 // Periodic value noise on an L x L lattice over the unit square, with its analytic derivative.
@@ -63,12 +79,12 @@ void PeriodicValueNoise(double x, double z, uint32_t L, uint32_t seed, double& v
 }
 
 ComPtr<ID3D12Resource> CreateTexArray(ID3D12Device* dev, DXGI_FORMAT fmt, uint32_t mips, const wchar_t* name,
-                                      bool unorderedAccess = true) {
+                                      bool unorderedAccess, uint32_t slices = OCEAN_CASCADES, uint32_t size = N) {
     D3D12_RESOURCE_DESC d = {};
     d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    d.Width = N;
-    d.Height = N;
-    d.DepthOrArraySize = OCEAN_CASCADES;
+    d.Width = size;
+    d.Height = size;
+    d.DepthOrArraySize = (UINT16)slices;
     d.MipLevels = (UINT16)mips;
     d.Format = fmt;
     d.SampleDesc.Count = 1;
@@ -95,10 +111,12 @@ void OceanSystem::Configure(const Params& p) {
                         p.windDirectionDeg != m_params.windDirectionDeg || p.swell != m_params.swell ||
                         p.windAlign != m_params.windAlign || p.amplitudeScale != m_params.amplitudeScale ||
                         p.shortWaveAmplitude != m_params.shortWaveAmplitude || p.turbulence != m_params.turbulence ||
-                        p.foamCoverage != m_params.foamCoverage || p.seaLevelY != m_params.seaLevelY || p.keepAboveZero != m_params.keepAboveZero || p.minClearance != m_params.minClearance || p.seed != m_params.seed || p.choppiness != m_params.choppiness ||
-                        p.significantHeight != m_params.significantHeight || p.peakPeriod != m_params.peakPeriod ||
-                        p.swellHeight != m_params.swellHeight || p.swellPeriod != m_params.swellPeriod ||
-                        p.swellDirectionDeg != m_params.swellDirectionDeg || p.swellSpreadDeg != m_params.swellSpreadDeg;
+                        p.seaLevelY != m_params.seaLevelY || p.keepAboveZero != m_params.keepAboveZero ||
+                        p.minClearance != m_params.minClearance || p.seed != m_params.seed ||
+                        p.choppiness != m_params.choppiness || p.significantHeight != m_params.significantHeight ||
+                        p.peakPeriod != m_params.peakPeriod || p.swellHeight != m_params.swellHeight ||
+                        p.swellPeriod != m_params.swellPeriod || p.swellDirectionDeg != m_params.swellDirectionDeg ||
+                        p.swellSpreadDeg != m_params.swellSpreadDeg;
     // The sea-state field is independent of the spectrum, so it rebuilds on its own controls only.
     const bool refield = !m_initialised || p.turbulenceVariation != m_params.turbulenceVariation ||
                          p.turbulencePeriod != m_params.turbulencePeriod || p.seed != m_params.seed;
@@ -142,7 +160,6 @@ Material OceanSystem::MakeMaterial(const Params& p) {
     m.normalTexID = -1;
     m.rmaTexID = -1;
     m.alphaThreshold = 1.0f;
-    (void)p;
     return m;
 }
 
@@ -153,14 +170,24 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
     m_ctx = ctx;
 
     m_h0 = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, L"OceanH0", false);
-    m_wave = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, L"OceanWaveData", false);
-    m_disp = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, OCEAN_MIP_LEVELS, L"OceanDisplacement");
-    m_deriv = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, OCEAN_MIP_LEVELS, L"OceanDerivatives");
-    m_moments = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, OCEAN_MIP_LEVELS, L"OceanRawMoments");
-    m_surface = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, OCEAN_MIP_LEVELS, L"OceanCoverageFreshness");
-    m_previousDisp = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, OCEAN_MIP_LEVELS, L"OceanPreviousDisplacement");
-    m_foam[0] = CreateTexArray(device, DXGI_FORMAT_R32G32_FLOAT, 1, L"OceanFoamA");
-    m_foam[1] = CreateTexArray(device, DXGI_FORMAT_R32G32_FLOAT, 1, L"OceanFoamB");
+    // The transform itself needs full precision; what it produces does not. Half-float fields
+    // hold a metre-scale displacement to a couple of millimetres, and halve what every hit and
+    // every vertex has to fetch.
+    m_fft = CreateTexArray(device, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, L"OceanFFT", true, OCEAN_CASCADES * 2);
+    m_disp[0] = CreateTexArray(device, DXGI_FORMAT_R16G16B16A16_FLOAT, OCEAN_MIP_LEVELS, L"OceanDisplacementA", true);
+    m_disp[1] = CreateTexArray(device, DXGI_FORMAT_R16G16B16A16_FLOAT, OCEAN_MIP_LEVELS, L"OceanDisplacementB", true);
+    m_deriv = CreateTexArray(device, DXGI_FORMAT_R16G16B16A16_FLOAT, OCEAN_MIP_LEVELS, L"OceanDerivatives", true);
+    m_foam[0] = CreateTexArray(device, DXGI_FORMAT_R16_FLOAT, OCEAN_FOAM_MIPS, L"OceanFoamA", true, OCEAN_FOAM_LEVELS,
+                               OCEAN_FOAM_SIZE);
+    m_foam[1] = CreateTexArray(device, DXGI_FORMAT_R16_FLOAT, OCEAN_FOAM_MIPS, L"OceanFoamB", true, OCEAN_FOAM_LEVELS,
+                               OCEAN_FOAM_SIZE);
+    // Committed memory starts zeroed: empty histograms, and a state the first update marks unset.
+    m_foamStats = planet::create_buffer(device, OCEAN_FOAM_STATS_BYTES, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, planet::HEAP_DEFAULT);
+    m_foamStats->SetName(L"OceanFoamStats");
+    static_assert(sizeof(OceanFoamState) <= OCEAN_FOAM_STATE_BYTES, "OceanFoamState outgrew its slot");
+    m_foamStatsReadback = planet::create_buffer(device, FRAME_COUNT * sizeof(OceanFoamState), D3D12_RESOURCE_FLAG_NONE,
+                                                D3D12_RESOURCE_STATE_COPY_DEST, planet::HEAP_READBACK);
 
     {
         // Kilometre-scale sea-state field: one small tiling texture, sampled once per surface
@@ -179,24 +206,6 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
         m_turbulence->SetName(L"OceanTurbulenceField");
     }
 
-    {
-        // Two packed complex fields per slice, two slices per cascade.
-        D3D12_RESOURCE_DESC d = {};
-        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        d.Width = N;
-        d.Height = N;
-        d.DepthOrArraySize = OCEAN_CASCADES * 2;
-        d.MipLevels = 1;
-        d.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-        d.SampleDesc.Count = 1;
-        d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
-        ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &d,
-                                                      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                                                      IID_PPV_ARGS(&m_fft)));
-        m_fft->SetName(L"OceanFFT");
-    }
-
     m_paramsBuffer = nv_helpers_dx12::CreateBuffer(device, sizeof(OceanParamsGPU), D3D12_RESOURCE_FLAG_NONE,
                                                    D3D12_RESOURCE_STATE_COMMON, nv_helpers_dx12::kDefaultHeapProps);
     m_paramsBuffer->SetName(L"OceanParams");
@@ -204,16 +213,6 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
         nv_helpers_dx12::CreateBuffer(device, sizeof(OceanTileGPU) * TileBudget(), D3D12_RESOURCE_FLAG_NONE,
                                       D3D12_RESOURCE_STATE_COMMON, nv_helpers_dx12::kDefaultHeapProps);
     m_tilesBuffer->SetName(L"OceanTiles");
-
-    m_statsBuffer = nv_helpers_dx12::CreateBuffer(
-        device, sizeof(XMFLOAT4) * OCEAN_CASCADES, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nv_helpers_dx12::kDefaultHeapProps);
-    m_statsBuffer->SetName(L"OceanStats");
-    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
-        m_statsReadback[i] =
-            nv_helpers_dx12::CreateBuffer(device, sizeof(XMFLOAT4) * OCEAN_CASCADES, D3D12_RESOURCE_FLAG_NONE,
-                                          D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kReadbackHeapProps);
-    }
 
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         m_paramsUpload[i] =
@@ -224,9 +223,8 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
                                           D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
     }
 
-    // One staging buffer large enough for both baked arrays.
-    const uint64_t bakeBytes = (uint64_t)N * N * OCEAN_CASCADES * sizeof(XMFLOAT4);
-    m_bakeUpload = nv_helpers_dx12::CreateBuffer(device, bakeBytes * 2, D3D12_RESOURCE_FLAG_NONE,
+    const uint64_t rowPitch = planet::align_up((uint64_t)N * sizeof(XMFLOAT4), D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+    m_bakeUpload = nv_helpers_dx12::CreateBuffer(device, rowPitch * N * OCEAN_CASCADES, D3D12_RESOURCE_FLAG_NONE,
                                                  D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
     m_bakeUpload->SetName(L"OceanBakeUpload");
 
@@ -244,8 +242,8 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in = {};
         in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-        // The surface is re-tessellated every frame, so build speed dominates trace speed here,
-        // and allowing refits turns most frames into a fraction of a full build.
+        // The surface moves every frame, so build speed dominates trace speed here, and allowing
+        // refits turns most frames into a fraction of a full build.
         in.Flags = (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)(
             D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD |
             D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE);
@@ -257,26 +255,25 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
         device->GetRaytracingAccelerationStructurePrebuildInfo(&in, &info);
         m_blasSlotSize = planet::align_up(info.ResultDataMaxSizeInBytes,
                                           D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
-        m_blasScratchSize = planet::align_up(info.ScratchDataSizeInBytes,
+        // One scratch range serves both a build and an update, so it is sized for the larger.
+        m_blasScratchSize = planet::align_up(std::max(info.ScratchDataSizeInBytes, info.UpdateScratchDataSizeInBytes),
                                              D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
-        m_blasUpdateScratchSize = planet::align_up(std::max<uint64_t>(info.UpdateScratchDataSizeInBytes, 256),
-                                                   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
 
         m_blasBuffer = planet::create_buffer(device, m_blasSlotSize * TileBudget(),
                                              D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                              D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
                                              planet::HEAP_DEFAULT);
         m_blasBuffer->SetName(L"OceanBlasPool");
-        m_blasScratch = planet::create_buffer(device, m_blasScratchSize * kScratchSlots,
+        m_blasScratch = planet::create_buffer(device, m_blasScratchSize * TileBudget(),
                                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS, planet::HEAP_DEFAULT);
         m_blasScratch->SetName(L"OceanBlasScratch");
 
         m_stats.blasBytes = m_blasSlotSize * TileBudget();
-        LOG(L"[ocean] tiles=" << TileBudget() << L" of " << OCEAN_MAX_TILES << L" tris/tile=" << OCEAN_TILE_TRIS << L" blas="
-                              << (m_blasSlotSize >> 10) << L" KiB each, pool " << (m_stats.blasBytes >> 20)
-                              << L" MiB; scratch " << (m_blasScratchSize >> 10) << L" KiB x " << kScratchSlots
-                              << L" = " << ((m_blasScratchSize * kScratchSlots) >> 20) << L" MiB");
+        LOG(L"[ocean] tiles=" << TileBudget() << L" of " << OCEAN_MAX_TILES << L" tris/tile=" << OCEAN_TILE_TRIS
+                              << L" blas=" << (m_blasSlotSize >> 10) << L" KiB each, pool "
+                              << (m_stats.blasBytes >> 20) << L" MiB; scratch " << (m_blasScratchSize >> 10)
+                              << L" KiB x " << TileBudget());
     }
 
     m_blasBuilt.assign(TileBudget(), 0);
@@ -316,47 +313,49 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
         ThrowIfFailed(device->CreateComputePipelineState(&d, IID_PPV_ARGS(&out)));
         out->SetName(entry);
     };
-    makePso(L"Ocean_Sim_v8.hlsl", L"OceanEvolve", m_psoEvolve);
     makePso(L"Ocean_Sim_v8.hlsl", L"OceanFftH", m_psoFftH);
     makePso(L"Ocean_Sim_v8.hlsl", L"OceanFftV", m_psoFftV);
-    makePso(L"Ocean_Sim_v8.hlsl", L"OceanAssemble", m_psoAssemble);
-    makePso(L"Ocean_Sim_v8.hlsl", L"OceanCondition", m_psoCondition);
-    makePso(L"Ocean_Sim_v8.hlsl", L"OceanFoam", m_psoFoam);
     makePso(L"Ocean_Sim_v8.hlsl", L"OceanMip", m_psoMip);
     makePso(L"Ocean_Tiles_v8.hlsl", L"OceanTiles", m_psoTiles);
+    makePso(L"Ocean_Tiles_v8.hlsl", L"OceanFoam", m_psoFoam);
+    makePso(L"Ocean_Tiles_v8.hlsl", L"OceanFoamMip", m_psoFoamMip);
+    makePso(L"Ocean_Tiles_v8.hlsl", L"OceanFoamStats", m_psoFoamStats);
 
     // Always timed, not only when a capture is asked for: this work sits on the streaming compute
     // queue that the graphics queue waits on, so it never appears in a per-pass profile of the
-    // render passes and there is otherwise nothing to attribute the wait to. Fourteen timestamps
-    // and a small readback buffer.
+    // render passes and there is otherwise nothing to attribute the wait to.
     {
         D3D12_QUERY_HEAP_DESC q{};
         q.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-        q.Count = FRAME_COUNT * 7;
+        q.Count = FRAME_COUNT * kTimestamps;
         ThrowIfFailed(device->CreateQueryHeap(&q, IID_PPV_ARGS(&m_timestamps)));
-        m_timestampReadback = planet::create_buffer(device, FRAME_COUNT * 7 * sizeof(uint64_t),
+        m_timestampReadback = planet::create_buffer(device, FRAME_COUNT * kTimestamps * sizeof(uint64_t),
             D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, planet::HEAP_READBACK);
         ThrowIfFailed(ctx->PlanetComputeQueue()->GetTimestampFrequency(&m_timestampFrequency));
     }
     if (const char* path = std::getenv("RT_OCEAN_PERF_CSV")) {
         m_profile.open(path);
-        m_profile << "frame,fft_ms,assemble_ms,foam_ms,mips_ms,mesh_ms,blas_ms,total_ms,tiles,triangles,allocated_bytes\n";
+        m_profile << "frame,fft_ms,mips_ms,mesh_ms,blas_ms,total_ms,tiles,triangles,allocated_bytes\n";
     }
     // Actual committed allocation sizes; global geometry's ocean reservation is added separately.
-    ID3D12Resource* resources[] = {m_h0.Get(),m_wave.Get(),m_fft.Get(),m_disp.Get(),m_deriv.Get(),
-        m_moments.Get(),m_surface.Get(),m_previousDisp.Get(),m_foam[0].Get(),m_foam[1].Get(),
-        m_bakeUpload.Get(),m_paramsBuffer.Get(),m_tilesBuffer.Get(),m_statsBuffer.Get(),
-        m_blasBuffer.Get(),m_blasScratch.Get(),m_timestampReadback.Get()};
+    ID3D12Resource* resources[] = {m_h0.Get(), m_fft.Get(), m_disp[0].Get(), m_disp[1].Get(), m_deriv.Get(), m_foam[0].Get(), m_foam[1].Get(),
+        m_foamStats.Get(), m_foamStatsReadback.Get(), m_turbulence.Get(), m_bakeUpload.Get(),
+        m_paramsBuffer.Get(), m_tilesBuffer.Get(), m_blasBuffer.Get(), m_blasScratch.Get(), m_timestampReadback.Get()};
     m_stats.resourceBytes = 0;
-    auto account = [&](ID3D12Resource* r) { if (r) { const auto d=r->GetDesc();
-        m_stats.resourceBytes += device->GetResourceAllocationInfo(0,1,&d).SizeInBytes; } };
+    auto account = [&](ID3D12Resource* r) {
+        if (r) {
+            const auto d = r->GetDesc();
+            m_stats.resourceBytes += device->GetResourceAllocationInfo(0, 1, &d).SizeInBytes;
+        }
+    };
     for (auto* r : resources) account(r);
-    for (uint32_t i=0;i<FRAME_COUNT;++i) {
-        account(m_paramsUpload[i].Get()); account(m_tilesUpload[i].Get()); account(m_statsReadback[i].Get());
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        account(m_paramsUpload[i].Get());
+        account(m_tilesUpload[i].Get());
     }
     const auto reservation = GetReservation();
-    m_stats.resourceBytes += uint64_t(reservation.vertexElems)*sizeof(BTriVertex) + uint64_t(reservation.indexElems)*4;
-    LOG(L"[ocean] resources including reserved geometry=" << m_stats.resourceBytes << L" bytes");
+    m_stats.resourceBytes += uint64_t(reservation.vertexElems) * sizeof(BTriVertex) + uint64_t(reservation.indexElems) * 4;
+    LOG(L"[ocean] resources including reserved geometry=" << (m_stats.resourceBytes >> 20) << L" MiB");
 
     m_initialised = true;
     Bake();
@@ -387,21 +386,21 @@ void OceanSystem::CreateDescriptors(ID3D12Device* device, ID3D12DescriptorHeap* 
         return CD3DX12_CPU_DESCRIPTOR_HANDLE(heap->GetCPUDescriptorHandleForHeapStart(), (INT)slot, inc);
     };
 
-    auto texSrv = [&](ID3D12Resource* res, uint32_t mips, uint32_t slot) {
+    auto texSrv = [&](ID3D12Resource* res, uint32_t mips, uint32_t slot, uint32_t slices = OCEAN_CASCADES) {
         D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
         s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         s.Format = res->GetDesc().Format;
         s.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         s.Texture2DArray.MipLevels = mips;
-        s.Texture2DArray.ArraySize = OCEAN_CASCADES;
+        s.Texture2DArray.ArraySize = slices;
         device->CreateShaderResourceView(res, &s, at(slot));
     };
-    auto texUav = [&](ID3D12Resource* res, uint32_t mip, uint32_t slot) {
+    auto texUav = [&](ID3D12Resource* res, uint32_t mip, uint32_t slot, uint32_t slices = OCEAN_CASCADES) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC u = {};
         u.Format = res->GetDesc().Format;
         u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
         u.Texture2DArray.MipSlice = mip;
-        u.Texture2DArray.ArraySize = OCEAN_CASCADES;
+        u.Texture2DArray.ArraySize = slices;
         device->CreateUnorderedAccessView(res, nullptr, &u, at(slot));
     };
     auto structuredSrv = [&](ID3D12Resource* res, uint32_t count, uint32_t stride, uint32_t slot) {
@@ -414,13 +413,12 @@ void OceanSystem::CreateDescriptors(ID3D12Device* device, ID3D12DescriptorHeap* 
         device->CreateShaderResourceView(res, &s, at(slot));
     };
 
-    texSrv(m_disp.Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_DISP);
+    texSrv(m_disp[0].Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_DISP0);
+    texSrv(m_disp[1].Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_DISP1);
     texSrv(m_deriv.Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_DERIV);
-    texSrv(m_moments.Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_MOMENTS);
-    texSrv(m_surface.Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_SURFACE);
-    texSrv(m_previousDisp.Get(), OCEAN_MIP_LEVELS, OCEAN_SRV_PREV_DISP);
+    texSrv(m_foam[0].Get(), OCEAN_FOAM_MIPS, OCEAN_SRV_FOAM0, OCEAN_FOAM_LEVELS);
+    texSrv(m_foam[1].Get(), OCEAN_FOAM_MIPS, OCEAN_SRV_FOAM1, OCEAN_FOAM_LEVELS);
     texSrv(m_h0.Get(), 1, OCEAN_SRV_H0);
-    texSrv(m_wave.Get(), 1, OCEAN_SRV_WAVE);
     {
         // The sea-state field is a plain 2D texture, not one slice per cascade.
         D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
@@ -433,40 +431,23 @@ void OceanSystem::CreateDescriptors(ID3D12Device* device, ID3D12DescriptorHeap* 
     structuredSrv(m_paramsBuffer.Get(), 1, sizeof(OceanParamsGPU), OCEAN_SRV_PARAMS);
     structuredSrv(m_tilesBuffer.Get(), TileBudget(), sizeof(OceanTileGPU), OCEAN_SRV_TILES);
 
-    const uint32_t vertexCount = VertexSpan();
-    structuredSrv(m_globalVertex, vertexCount, sizeof(BTriVertex), OCEAN_SRV_VERTS);
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
-        s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        s.Format = DXGI_FORMAT_R32_UINT;
-        s.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        s.Buffer.NumElements = m_indexBase + TileBudget() * OCEAN_TILE_INDICES;
-        device->CreateShaderResourceView(m_globalIndex, &s, at(OCEAN_SRV_INDICES));
-    }
-
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC u = {};
-        u.Format = DXGI_FORMAT_UNKNOWN;
-        u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-        u.Texture2DArray.ArraySize = OCEAN_CASCADES * 2;
-        u.Format = m_fft->GetDesc().Format;
-        device->CreateUnorderedAccessView(m_fft.Get(), nullptr, &u, at(OCEAN_UAV_FFT));
-    }
-    texUav(m_foam[0].Get(), 0, OCEAN_UAV_FOAM_A);
-    texUav(m_foam[1].Get(), 0, OCEAN_UAV_FOAM_B);
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC u = {};
-        u.Format = DXGI_FORMAT_UNKNOWN;
-        u.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        u.Buffer.NumElements = OCEAN_CASCADES;
-        u.Buffer.StructureByteStride = sizeof(XMFLOAT4);
-        device->CreateUnorderedAccessView(m_statsBuffer.Get(), nullptr, &u, at(OCEAN_UAV_STATS));
-    }
+    texUav(m_fft.Get(), 0, OCEAN_UAV_FFT, OCEAN_CASCADES * 2);
     for (uint32_t m = 0; m < OCEAN_MIP_LEVELS; ++m) {
-        texUav(m_disp.Get(), m, OCEAN_UAV_DISP_MIPS + m);
+        texUav(m_disp[0].Get(), m, OCEAN_UAV_DISP0_MIPS + m);
+        texUav(m_disp[1].Get(), m, OCEAN_UAV_DISP1_MIPS + m);
         texUav(m_deriv.Get(), m, OCEAN_UAV_DERIV_MIPS + m);
-        texUav(m_moments.Get(), m, OCEAN_UAV_MOMENT_MIPS + m);
-        texUav(m_surface.Get(), m, OCEAN_UAV_SURFACE_MIPS + m);
+    }
+    for (uint32_t m = 0; m < OCEAN_FOAM_MIPS; ++m) {
+        texUav(m_foam[0].Get(), m, OCEAN_UAV_FOAM0_MIPS + m, OCEAN_FOAM_LEVELS);
+        texUav(m_foam[1].Get(), m, OCEAN_UAV_FOAM1_MIPS + m, OCEAN_FOAM_LEVELS);
+    }
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC u = {};
+        u.Format = DXGI_FORMAT_R32_TYPELESS;
+        u.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        u.Buffer.NumElements = OCEAN_FOAM_STATS_BYTES / 4;
+        u.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        device->CreateUnorderedAccessView(m_foamStats.Get(), nullptr, &u, at(OCEAN_UAV_FOAM_STATS));
     }
 
     // The tessellator writes vertices straight into the scene's global buffer, addressing it with
@@ -475,7 +456,7 @@ void OceanSystem::CreateDescriptors(ID3D12Device* device, ID3D12DescriptorHeap* 
         D3D12_UNORDERED_ACCESS_VIEW_DESC u = {};
         u.Format = DXGI_FORMAT_UNKNOWN;
         u.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        u.Buffer.NumElements = vertexCount;
+        u.Buffer.NumElements = VertexSpan();
         u.Buffer.StructureByteStride = sizeof(BTriVertex);
         device->CreateUnorderedAccessView(m_globalVertex, nullptr, &u, at(OCEAN_UAV_VERTS));
     }
@@ -584,9 +565,11 @@ void OceanSystem::Bake() {
     const auto t0 = std::chrono::high_resolution_clock::now();
 
     m_spectrum.Init(m_params);
+    m_chopBand = ShortChopBand(m_spectrum.omegaP);
+    const ChopBand chopBand = m_chopBand;
+    const double shortChop = ShortWaveChop(m_params);
 
     m_h0Data.assign((size_t)N * N * OCEAN_CASCADES, XMFLOAT4{0, 0, 0, 0});
-    m_waveData.assign((size_t)N * N * OCEAN_CASCADES, XMFLOAT4{0, 0, 0, 0});
     for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
         m_cascadeVariance[c] = 0.0;
         m_cascadeMeanK[c] = 0.0;
@@ -596,120 +579,143 @@ void OceanSystem::Bake() {
     const double wc = std::cos(windRad), ws = std::sin(windRad);
     const double amp = std::max(0.0, (double)m_params.amplitudeScale);
 
-    double varAlong[OCEAN_CASCADES] = {};
-    double varCross[OCEAN_CASCADES] = {};
+    double sumAlong = 0.0, sumCross = 0.0;
     double elevationVar = 0.0;
+    double strainMs = 0.0;
     // Per-cascade elevation variance and the energy-weighted wavenumber that goes with it. The
     // crest sharpening is solved per band from these, so it can be retuned without a re-bake.
     double kEnergy[OCEAN_CASCADES] = {};
 
+    // Rows are independent, so they are baked in parallel - this runs every time a sea-state
+    // control is released - and their statistics summed afterwards in a fixed order, which keeps
+    // the result identical from run to run.
+    struct RowSums {
+        double power = 0.0, kEnergy = 0.0, along = 0.0, cross = 0.0, strain = 0.0;
+        double residual[OCEAN_ROUGHNESS_ENTRIES] = {};
+    };
+    std::vector<RowSums> rows((size_t)OCEAN_CASCADES * N);
+    std::vector<uint32_t> rowIndex(rows.size());
+    std::iota(rowIndex.begin(), rowIndex.end(), 0u);
+
     // Gaussian amplitudes use half sqrt(PSD * bin area); evolution preserves Hermitian pairs.
-    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+    std::for_each(std::execution::par, rowIndex.begin(), rowIndex.end(), [&](uint32_t row) {
+        const uint32_t c = row / N, m = row % N;
         const double L = CascadeLengths()[c];
         const double dk = 6.283185307179586 / L;
+        RowSums& sums = rows[row];
+        for (uint32_t n = 0; n < N; ++n) {
+            const int32_t inx = (int32_t)n - (int32_t)(N / 2);
+            const int32_t inz = (int32_t)m - (int32_t)(N / 2);
+            const double kx = (double)inx * dk;
+            const double kz = (double)inz * dk;
+            const double k = std::sqrt(kx * kx + kz * kz);
 
-        for (uint32_t m = 0; m < N; ++m) {
-            for (uint32_t n = 0; n < N; ++n) {
-                const int32_t inx = (int32_t)n - (int32_t)(N / 2);
-                const int32_t inz = (int32_t)m - (int32_t)(N / 2);
-                const double kx = (double)inx * dk;
-                const double kz = (double)inz * dk;
-                const double k = std::sqrt(kx * kx + kz * kz);
+            // DC and the ambiguous Nyquist row and column carry nothing.
+            if (k < 1e-6 || n == 0 || m == 0)
+                continue;
+            // Share of this wavelength that belongs to this cascade. Amplitude carries the
+            // square root because it is power that partitions.
+            const double weight = CascadeWeight((int)c, k);
+            if (weight <= 1e-6)
+                continue;
+            const double ampWeight = std::sqrt(weight);
 
-                const size_t idx = ((size_t)c * N + m) * N + n;
-                XMFLOAT4& wave = m_waveData[idx];
-                wave = XMFLOAT4{(float)kx, (float)kz, 0.0f, 0.0f};
+            // Rotate into the wind frame: the spectrum's direction is measured from the wind.
+            const double kxw = kx * ws + kz * wc;
+            const double kzw = kx * wc - kz * ws;
 
-                if (k < 1e-6 || n == 0 || m == 0)
-                    continue;
-                // Share of this wavelength that belongs to this cascade. Amplitude carries the
-                // square root because it is power that partitions.
-                const double weight = CascadeWeight((int)c, k);
-                if (weight <= 1e-6)
-                    continue;
-                const double ampWeight = std::sqrt(weight);
+            const double detailGain = ShortWaveAmplitude(m_params, k);
+            const double detailPower = detailGain * detailGain;
+            const double A = 0.5 * std::sqrt(std::max(0.0, detailPower * m_spectrum.S2D(kxw, kzw) +
+                SwellDensity(m_params, kx, kz)) * dk * dk) * amp * ampWeight;
+            double g0, g1;
+            GaussianPair(HashCoord(inx, inz, c, m_params.seed), g0, g1);
 
-                const double omega = std::sqrt(kGravity * k);
-                wave.z = (float)(1.0 / k);
-                wave.w = (float)omega;
+            const double An = 0.5 * std::sqrt(std::max(0.0, detailPower * m_spectrum.S2D(-kxw, -kzw) +
+                SwellDensity(m_params, -kx, -kz)) * dk * dk) * amp * ampWeight;
+            double h0, h1;
+            GaussianPair(HashCoord(-inx, -inz, c, m_params.seed), h0, h1);
 
-                // Rotate into the wind frame: the spectrum's direction is measured from the wind.
-                const double kxw = kx * ws + kz * wc;
-                const double kzw = kx * wc - kz * ws;
+            const size_t idx = ((size_t)c * N + m) * N + n;
+            m_h0Data[idx] = XMFLOAT4{(float)(A * g0), (float)(A * g1), (float)(An * h0), (float)(-An * h1)};
 
-                const double detailGain = ShortWaveAmplitude(m_params, k);
-                const double detailPower = detailGain * detailGain;
-                const double A = 0.5 * std::sqrt(std::max(0.0, detailPower * m_spectrum.S2D(kxw, kzw) +
-                    SwellDensity(m_params, kx, kz)) * dk * dk) * amp * ampWeight;
-                double g0, g1;
-                GaussianPair(HashCoord(inx, inz, c, m_params.seed), g0, g1);
+            // Expected power of this mode, and the slope and strain variance it carries.
+            const double power = 4.0 * A * A;
+            sums.power += power;
+            sums.kEnergy += power * k;
+            sums.along += kxw * kxw * power;
+            sums.cross += kzw * kzw * power;
+            // The strain tensor of one mode is k_a k_b / k times its chop-scaled height, so
+            // its squared Frobenius norm is k^2 times that height's power.
+            const double chop = ChopGainAt(k, chopBand, shortChop);
+            sums.strain += power * chop * chop * k * k;
+            // Slope variance this mode loses to a footprint of each tabulated width: the share a
+            // box of that width averages away, 1 - R^2 with R ~ exp(-k^2 w^2 / 24). The widths
+            // double from entry to entry, so each attenuation is the previous one to the fourth.
+            const double w0 = std::exp2((double)OCEAN_ROUGHNESS_OFFSET);
+            double kept = std::exp(-k * k * w0 * w0 / 12.0);
+            for (int i = 0; i < OCEAN_ROUGHNESS_ENTRIES; ++i) {
+                sums.residual[i] += power * k * k * (1.0 - kept);
+                kept *= kept;
+                kept *= kept;
+            }
+        }
+    });
+    double residual[OCEAN_ROUGHNESS_ENTRIES] = {};
+    for (size_t row = 0; row < rows.size(); ++row) {
+        const uint32_t c = (uint32_t)(row / N);
+        elevationVar += rows[row].power;
+        m_cascadeVariance[c] += rows[row].power;
+        kEnergy[c] += rows[row].kEnergy;
+        sumAlong += rows[row].along;
+        sumCross += rows[row].cross;
+        strainMs += rows[row].strain;
+        for (int i = 0; i < OCEAN_ROUGHNESS_ENTRIES; ++i)
+            residual[i] += rows[row].residual[i];
+    }
 
-                const double An = 0.5 * std::sqrt(std::max(0.0, detailPower * m_spectrum.S2D(-kxw, -kzw) +
-                    SwellDensity(m_params, -kx, -kz)) * dk * dk) * amp * ampWeight;
-                double h0, h1;
-                GaussianPair(HashCoord(-inx, -inz, c, m_params.seed), h0, h1);
-
-                m_h0Data[idx] = XMFLOAT4{(float)(A * g0), (float)(A * g1), (float)(An * h0), (float)(-An * h1)};
-
-                // Expected power of this mode, and the slope variance it carries.
-                const double power = 4.0 * A * A;
-                elevationVar += power;
-                m_cascadeVariance[c] += power;
-                kEnergy[c] += power * k;
-                varAlong[c] += kxw * kxw * power;
-                varCross[c] += kzw * kzw * power;
+    // The capillary-gravity tail past the finest cascade's Nyquist limit is in no texture, so it
+    // reaches the image only as roughness - and only once the footprint is wider than those
+    // ripples, with the same box attenuation as the resolved waves. Charging all of it at every
+    // width roughened the water beside the camera to alpha 0.08, where a real one is a mirror:
+    // there the camera resolves the ripples as sharp detail rather than blurring the reflection
+    // through them. Same wind spectrum, integrated radially up to the gravity-capillary
+    // crossover; the artistic short-wave gain stays out of it, this being measured microstructure.
+    {
+        const double k0 = CascadeNyquist(OCEAN_CASCADES - 1), k1 = 370.0;
+        const double dlog = std::max(0.0, std::log(k1 / k0)) / 256.0;
+        const double w0 = std::exp2((double)OCEAN_ROUGHNESS_OFFSET);
+        for (int i = 0; i < 256 && dlog > 0.0; ++i) {
+            const double k = k0 * std::exp((i + 0.5) * dlog);
+            double slope = 0.0;
+            for (int j = 0; j < 64; ++j) {
+                const double theta = (j + 0.5) * (6.283185307179586 / 64.0);
+                slope += m_spectrum.S2D(k * std::cos(theta), k * std::sin(theta)) * k * k * k * k * dlog *
+                         (6.283185307179586 / 64.0) * amp * amp;
+            }
+            double kept = std::exp(-k * k * w0 * w0 / 12.0);
+            for (int e = 0; e < OCEAN_ROUGHNESS_ENTRIES; ++e) {
+                residual[e] += slope * (1.0 - kept);
+                kept *= kept;
+                kept *= kept;
             }
         }
     }
+    for (int i = 0; i < OCEAN_ROUGHNESS_ENTRIES; ++i)
+        m_residualSlope[i] = (float)residual[i];
 
-    // The GPU bounds the actual bilinear map each frame before geometry or foam consumes it.
-    m_effectiveChoppiness = (float)EffectiveChoppiness(m_params);
+    m_strainRms = std::sqrt(strainMs);
     m_phaseEpoch = 0.0;
-    m_resetFoam = true;
+    // The field under the previous displacement array is a different sea now.
+    m_historyFrames = 0;
 
     double cmAlong = 0.0, cmCross = 0.0;
     CoxMunkSlopeVariance(m_params.windSpeed, cmAlong, cmCross);
-    double sumAlong = 0.0, sumCross = 0.0;
-    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
-        sumAlong += varAlong[c];
-        sumCross += varCross[c];
-    }
-
-    // Unrepresented high-frequency energy from the SAME wind spectrum, with an explicit
-    // gravity-wave validity cutoff. No subtraction from unrelated Cox-Munk totals.
-    // This bounded gravity tail is an approximation, not a capillary-wave spectrum.
-    double tailAlong = 0.0, tailCross = 0.0;
-    const double k0 = CascadeNyquist(OCEAN_CASCADES - 1);
-    const double k1 = 370.0; // rad/m; gravity/capillary crossover, deliberately no extrapolation above
-    const double dlog = std::max(0.0, std::log(k1 / k0)) / 512.0;
-    for (int i = 0; i < 512 && dlog > 0.0; ++i) {
-        const double k = k0 * std::exp((i + 0.5) * dlog);
-        for (int j = 0; j < 128; ++j) {
-            const double theta = (j + 0.5) * (6.283185307179586 / 128.0);
-            const double x = k * std::cos(theta), z = k * std::sin(theta);
-            const double detailGain = ShortWaveAmplitude(m_params, k);
-            const double power = m_spectrum.S2D(x, z) * k * k * dlog * (6.283185307179586 / 128.0) * amp * amp * detailGain * detailGain;
-            tailAlong += x * x * power;
-            tailCross += z * z * power;
-        }
-    }
-
-    m_gpuParams.slopeVarTailAlong = (float)tailAlong;
-    m_gpuParams.slopeVarTailCross = (float)tailCross;
-    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c)
         m_cascadeMeanK[c] = m_cascadeVariance[c] > 1e-12 ? kEnergy[c] / m_cascadeVariance[c] : 0.0;
-        double kMin, kMax;
-        CascadeBand((int)c, kMin, kMax);
-        ((float*)&m_gpuParams.cascadeLength)[c] = (float)CascadeLengths()[c];
-        ((float*)&m_gpuParams.cascadeKMin)[c] = (float)kMin;
-        ((float*)&m_gpuParams.cascadeKMax)[c] = (float)kMax;
-        ((float*)&m_gpuParams.slopeVarAlong)[c] = (float)varAlong[c];
-        ((float*)&m_gpuParams.slopeVarCross)[c] = (float)varCross[c];
-    }
 
     m_stats.slopeVarSpectrum = sumAlong + sumCross;
     m_stats.slopeVarCoxMunk = cmAlong + cmCross;
-    m_stats.whitecapCoverage = 0.0;
 
     // Taken from the analytic prediction rather than from the discrete sum above, so that a scene
     // can ask for the water line before the field is baked and get the same answer.
@@ -723,11 +729,16 @@ void OceanSystem::Bake() {
     LOG(L"[ocean] sea level " << m_surfaceY << L" m, deepest trough " << (m_surfaceY - m_waveDepth) << L" m");
     LOG(L"[ocean] wind=" << m_params.windSpeed << L" m/s fetch=" << (m_params.fetch / 1000.0f) << L" km Hs="
                          << m_stats.significantWaveHeight << L" m  slope var: spectrum="
-                         << m_stats.slopeVarSpectrum << L" Cox-Munk=" << m_stats.slopeVarCoxMunk << L" whitecap=" << (m_stats.whitecapCoverage * 100.0) << L"% tail="
-                         << (tailAlong + tailCross) << L" (bake " << m_stats.bakeMs << L" ms)");
+                         << m_stats.slopeVarSpectrum << L" Cox-Munk=" << m_stats.slopeVarCoxMunk << L" strain rms="
+                         << m_strainRms << L" (bake " << m_stats.bakeMs << L" ms)");
+    auto alphaAt = [&](int log2Width) { return std::sqrt(m_residualSlope[log2Width - OCEAN_ROUGHNESS_OFFSET]); };
+    LOG(L"[ocean] Tp=" << (6.283185307179586 / m_spectrum.omegaP) << L" s gamma=" << m_spectrum.gamma
+                       << L" footprint alpha: 1 mm " << alphaAt(-10) << L", 1 cm " << alphaAt(-7) << L", 12 cm "
+                       << alphaAt(-3) << L", 1 m "
+                       << alphaAt(0) << L", 8 m " << alphaAt(3) << L"; short-wave chop +" << ShortWaveChop(m_params)
+                       << L" from " << (6.283185307179586 / std::exp2(m_chopBand.lo)) << L" m waves");
 
     m_bakePending = false;
-    m_paramsDirty = true;
     m_h0Dirty = true;
 }
 
@@ -751,55 +762,73 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
     const double epoch = std::floor(m_time / 128.0) * 128.0;
     if (epoch != m_phaseEpoch) {
         const double elapsed = epoch - m_phaseEpoch;
-        for (size_t i = 0; i < m_h0Data.size(); ++i) {
-            auto& h = m_h0Data[i];
-            const double phase = std::remainder(double(m_waveData[i].w) * elapsed, 6.283185307179586);
-            const double c = std::cos(phase), s = std::sin(phase);
-            h = {(float)(h.x*c + h.y*s), (float)(h.y*c - h.x*s),
-                 (float)(h.z*c - h.w*s), (float)(h.w*c + h.z*s)};
+        for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+            for (uint32_t m = 0; m < N; ++m) {
+                for (uint32_t n = 0; n < N; ++n) {
+                    auto& h = m_h0Data[((size_t)c * N + m) * N + n];
+                    if (h.x == 0.0f && h.y == 0.0f && h.z == 0.0f && h.w == 0.0f)
+                        continue;
+                    const double omega = ModeOmega((int32_t)n - (int32_t)(N / 2), (int32_t)m - (int32_t)(N / 2), c);
+                    const double phase = std::remainder(omega * elapsed, 6.283185307179586);
+                    const double cs = std::cos(phase), sn = std::sin(phase);
+                    h = {(float)(h.x * cs + h.y * sn), (float)(h.y * cs - h.x * sn),
+                         (float)(h.z * cs - h.w * sn), (float)(h.w * cs + h.z * sn)};
+                }
+            }
         }
         m_phaseEpoch = epoch;
         m_h0Dirty = true;
     }
 
-    // Read deformation conditioning and timing statistics from the completed frame.
+    // Timing from the oldest frame in flight, once its work has retired.
     {
         const uint32_t slot = (m_frameIndex + 1u) % FRAME_COUNT;
-        if (m_statsReadback[slot] && m_statsFence[slot] != 0 &&
-            m_ctx->PlanetComputeCompleted() >= m_statsFence[slot]) {
-            if (m_timestamps) {
-                const uint64_t* ticks = nullptr;
-                const CD3DX12_RANGE range(slot*7*sizeof(uint64_t),(slot+1)*7*sizeof(uint64_t));
-                ThrowIfFailed(m_timestampReadback->Map(0,&range,(void**)&ticks));
-                ticks += slot*7;
-                const double toMs = 1000.0 / (double)std::max<uint64_t>(m_timestampFrequency, 1);
-                for (uint32_t i=1;i<7;++i)
-                    m_stats.gpuStageMs[i-1] = (float)(double(ticks[i]-ticks[i-1]) * toMs);
-                m_stats.gpuTotalMs = (float)(double(ticks[6]-ticks[0]) * toMs);
-                if (m_profile.is_open()) {
-                    m_profile << m_profileFrame++;
-                    for (uint32_t i=0;i<6;++i) m_profile << ',' << m_stats.gpuStageMs[i];
-                    m_profile << ',' << m_stats.gpuTotalMs << ','
-                        << m_stats.tiles << ',' << m_stats.triangles << ',' << m_stats.resourceBytes << '\n';
-                    m_profile.flush();
+        if (m_timestamps && m_timestampFence[slot] != 0 && m_ctx->PlanetComputeCompleted() >= m_timestampFence[slot]) {
+            const uint64_t* ticks = nullptr;
+            const CD3DX12_RANGE range(slot * kTimestamps * sizeof(uint64_t), (slot + 1) * kTimestamps * sizeof(uint64_t));
+            ThrowIfFailed(m_timestampReadback->Map(0, &range, (void**)&ticks));
+            ticks += slot * kTimestamps;
+            const double toMs = 1000.0 / (double)std::max<uint64_t>(m_timestampFrequency, 1);
+            for (uint32_t i = 1; i < kTimestamps; ++i)
+                m_stats.gpuStageMs[i - 1] = (float)(double(ticks[i] - ticks[i - 1]) * toMs);
+            m_stats.gpuTotalMs = (float)(double(ticks[kTimestamps - 1] - ticks[0]) * toMs);
+            const CD3DX12_RANGE none(0, 0);
+            m_timestampReadback->Unmap(0, &none);
+            // The foam state that frame left, copied out on the same queue.
+            const OceanFoamState* foam = nullptr;
+            const CD3DX12_RANGE foamRange(slot * sizeof(OceanFoamState), (slot + 1) * sizeof(OceanFoamState));
+            ThrowIfFailed(m_foamStatsReadback->Map(0, &foamRange, (void**)&foam));
+            foam += slot;
+            if (foam->valid != 0u) {
+                for (uint32_t l = 0; l < OCEAN_FOAM_LEVELS; ++l) {
+                    m_stats.foamCoverage[l] = foam->coverage[l];
+                    m_stats.foamThreshold[l] = foam->threshold[l];
+                    m_stats.foamMatch[l] = foam->match[l];
                 }
-                const CD3DX12_RANGE none(0,0); m_timestampReadback->Unmap(0,&none);
+                m_stats.foamWhite = foam->white;
+                m_stats.foamBreaking = foam->breaking;
             }
-            const XMFLOAT4* src = nullptr;
-            const CD3DX12_RANGE range(0, sizeof(XMFLOAT4) * OCEAN_CASCADES);
-            if (SUCCEEDED(m_statsReadback[slot]->Map(0, &range, (void**)&src)) && src) {
-                for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
-                    m_stats.conditioningGain = src[c].w;
-                }
-                const CD3DX12_RANGE none(0, 0);
-                m_statsReadback[slot]->Unmap(0, &none);
+            m_foamStatsReadback->Unmap(0, &none);
+            if (m_profile.is_open()) {
+                m_profile << m_profileFrame++;
+                for (uint32_t i = 0; i < kGpuStages; ++i) m_profile << ',' << m_stats.gpuStageMs[i];
+                m_profile << ',' << m_stats.gpuTotalMs << ',' << m_stats.tiles << ',' << m_stats.triangles << ','
+                          << m_stats.resourceBytes << '\n';
+                m_profile.flush();
             }
+            m_timestampFence[slot] = 0;
         }
     }
 
+    // Where the waves' silhouettes shrink below a pixel: a crest-to-trough of one significant
+    // height, against a pixel of a 1080-line image at this field of view. Past it the geometry
+    // can coarsen with distance without changing a single silhouette.
+    const double pixelAngle = std::max(1e-5, (double)cam.fov_y / 1080.0);
+    const double silhouette = std::max(0.02, m_stats.significantWaveHeight) / pixelAngle;
+
     Params selectParams = m_params;
     selectParams.seaLevelY = (float)m_surfaceY;
-    m_quadtree.Select(selectParams, cam, TileBudget(), m_coverage);
+    m_quadtree.Select(selectParams, cam, TileBudget(), m_coverage, silhouette);
 
     const auto& tiles = m_quadtree.Tiles();
     m_gpuTiles.clear();
@@ -823,8 +852,6 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
         m_gpuTiles.push_back(g);
     }
 
-    m_stats.whitecapMeasured = 0.0;
-
     m_stats.tiles = (uint32_t)m_gpuTiles.size();
     m_stats.leaves = m_quadtree.SelectedLeafCount();
     m_stats.dropped = m_quadtree.DroppedCount();
@@ -832,48 +859,134 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
 
     // Per-frame shader parameters.
     OceanParamsGPU& P = m_gpuParams;
-    const double windRad = (double)m_params.windDirectionDeg * 0.017453292519943295;
-    P.windDir = XMFLOAT2((float)std::sin(windRad), (float)std::cos(windRad));
     P.surfaceY = (float)(m_surfaceY - m_sceneOrigin.y);
-    P.choppiness = m_effectiveChoppiness;
-    P.displacementScale = 1.0f;
-    P.waveHeightScale = 1.0f;
     P.filterScale = m_params.filterScale;
-    // Retain the shared layout, but neither foam nor a roughness floor affects water shading.
-    P.foamCoverageScale = 0.0f;
-    P.foamRoughness = 0.0f;
     P.sunLobeRoughness = std::clamp(m_params.sunLobeRoughness, 0.0f, 1.0f);
-
-    P.upwelling = WaterUpwellingRGB(m_params.chlorophyll, m_params.turbidity);
-    P.bodyStrength = m_params.subsurfaceStrength;
-    P.foamAlbedo = XMFLOAT3(m_params.foamAlbedo, m_params.foamAlbedo, m_params.foamAlbedo);
-    P.invRadius = m_params.curvature ? float(1.0 / 6371000.0) : 0.0f;
+    P.invRadius = (float)invR;
     P.curveOrigin = {(float)m_sceneOrigin.x, (float)m_sceneOrigin.z};
     P.materialBase = m_materialIndex;
     P.originDelta = {(float)(m_sceneOrigin.x - m_previousOrigin.x), (float)(m_sceneOrigin.y - m_previousOrigin.y),
                      (float)(m_sceneOrigin.z - m_previousOrigin.z)};
-    P.historyValid = (!m_firstRecord && !m_resetFoam) ? 1.0f : 0.0f;
-    P.bodyWeight = std::clamp(m_params.bodyWeight, 0.0f, 1.0f);
+    P.historyValid = m_historyFrames > 0 ? 1.0f : 0.0f;
     P.halfExtent = std::max(64.0f, m_params.extent);
     P.debugMode = m_params.debugMode;
+    P.dispParity = m_parity;
+    P.pad = 0;
 
-    // Crest sharpening is solved from the baked per-cascade statistics rather than folded into the
-    // spectrum, so it can be retuned live without paying for a re-bake.
+    // The rule the tiles were just selected with, for the tessellator's per-point filter width.
+    // Width over distance sits a little under the quad size over distance, which ranges from half
+    // the ratio to the whole of it across a tile.
+    {
+        Params ruleParams = m_params;
+        ruleParams.lodFactor = (float)m_quadtree.EffectiveLodFactor();
+        const LodRule rule(ruleParams, cam, silhouette);
+        auto toF3 = [](const double* v) { return XMFLOAT3((float)v[0], (float)v[1], (float)v[2]); };
+        P.lodCamera = {(float)(cam.position_world.x - m_sceneOrigin.x), (float)(cam.position_world.y - m_sceneOrigin.y),
+                       (float)(cam.position_world.z - m_sceneOrigin.z)};
+        P.lodRatio = (float)(rule.ratio * 0.75 / OCEAN_TILE_GRID);
+        P.lodForward = toF3(rule.view.F);
+        P.lodRight = toF3(rule.view.R);
+        P.lodUp = toF3(rule.view.U);
+        P.lodTanH = (float)rule.view.tanH;
+        P.lodTanV = (float)rule.view.tanV;
+        P.lodOffscreen = (float)rule.offscreen;
+        P.lodNearKeep = (float)rule.nearKeep;
+        P.lodSilhouette = (float)rule.silhouette;
+        P.lodMinWidth = std::max(1.0f, m_params.minTileSize) / OCEAN_TILE_GRID;
+        P.lodPad = 0.0f;
+    }
+
+    for (int i = 0; i < OCEAN_ROUGHNESS_ENTRIES; ++i)
+        ((float*)&P.residualSlope[i / 4])[i % 4] = m_residualSlope[i];
+
+    // Whitecaps, simulated after Crest: where the composite surface is squeezed past breaking,
+    // foam gathers; everywhere it fades over its lifetime. Which crests break is the surface's -
+    // the ones squeezed hardest - and so is whether any can: none squeezed less than the breaking
+    // point does. How many break is steered on the GPU until their foam covers the whitecap cover
+    // measured at sea for this wind (WhitecapCover).
+    // Foam gathers at five rafts per second of full breaking: a crest that only grazes the
+    // breaking point, or runs across it in a moment, leaves a thin raft that is lace from the
+    // start, and one that keeps breaking builds a solid cap. Filling a raft in the tenth of a
+    // second a crest takes to cross a texel made every breaker the same solid white.
+    //
+    // The two world-space levels follow the camera in whole texels of absolute world XZ, so last
+    // frame's foam carries over at an exact texel offset.
+    {
+        const double decay = std::clamp((double)m_params.foamDecay, 0.01, 0.99);
+        P.foamDecayRate = (float)(-std::log(decay));
+        P.foamStrength = m_params.foamCoverage > 0.0f ? 1.0f : 0.0f;
+        P.foamCover = (float)WhitecapCover(m_params);
+        m_stats.foamTarget = P.foamCover;
+        P.foamBreakMax = (float)BreakingThreshold(m_params);
+        // The white cover follows a change of the share over about the white's lifetime, and
+        // roughly in proportion; steering at the rate fresh foam fades keeps it well damped
+        // against that lag.
+        P.foamSteer = P.foamDecayRate * OCEAN_FOAM_FRESH_DECAY;
+        P.foamRate = 5.0f;
+        P.frameIndex = m_frameCounter++;
+        P.foamParity = m_foamParity;
+        const double camWorld[2] = {cam.position_world.x, cam.position_world.z};
+        const double sceneOrigin[2] = {m_sceneOrigin.x, m_sceneOrigin.z};
+        bool history = m_foamHistory;
+        for (uint32_t l = 0; l < OCEAN_FOAM_LEVELS; ++l) {
+            const double texel = (double)OCEAN_FOAM_TEXEL0 * (double)(1u << l);
+            float origin[2], shift[2];
+            int32_t index[2];
+            for (int a = 0; a < 2; ++a) {
+                const int64_t cell = (int64_t)std::floor(camWorld[a] / texel) - OCEAN_FOAM_SIZE / 2;
+                const int64_t moved = cell - m_foamCell[l][a];
+                history = history && std::llabs(moved) < OCEAN_FOAM_SIZE;
+                shift[a] = (float)moved;
+                origin[a] = (float)((double)cell * texel - sceneOrigin[a]);
+                // The bubble cells hash the absolute texel index; 32 bits of it reach a hundred
+                // thousand kilometres even on the finest level.
+                index[a] = (int32_t)cell;
+                m_foamCell[l][a] = cell;
+            }
+            P.foamLevel[l] = {origin[0], origin[1], shift[0], shift[1]};
+            P.foamCell[l] = {index[0], index[1], 0, 0};
+        }
+        P.foamHistory = history ? 1u : 0u;
+        const double bearing = (double)m_params.windDirectionDeg * 0.017453292519943295;
+        P.foamWind = {(float)std::sin(bearing), (float)std::cos(bearing)};
+        const double shortChop = ShortWaveChop(m_params);
+        P.chopBand = {(float)m_chopBand.lo, (float)m_chopBand.hi, (float)m_chopBand.cut, (float)shortChop};
+    }
+
     P.turbulencePeriod = std::max(64.0f, m_params.turbulencePeriod);
     P.turbulenceStrength = std::clamp(m_params.turbulenceVariation, 0.0f, 0.9f) > 0.0f ? 1.0f : 0.0f;
-    P.turbulenceMaxGain = (float)TurbulenceMaxGain(m_params);
-    // The rough patches multiply the horizontal displacement too, so the share of the no-fold
-    // threshold the conditioning pass may spend comes down by the same factor.
-    P.deformationBudget = 0.85f / P.turbulenceMaxGain;
+    const double maxGain = TurbulenceMaxGain(m_params);
 
+    // Every wave keeps the physical first-order displacement; the short ones get their extra from
+    // chopBand. m_strainRms was baked with that same profile.
+    P.choppiness = std::max(0.0f, m_params.choppiness);
+    m_stats.horizontalGain = (float)(P.choppiness * (1.0 + ShortWaveChop(m_params)));
+    m_stats.crestStrain = (float)(P.choppiness * m_strainRms);
+
+    // Crest sharpening is solved from the baked per-cascade statistics rather than folded into the
+    // spectrum, so it can be retuned live without paying for a re-bake. The height bounds follow
+    // from the same numbers: the warp is increasing past its turn, so its extremes are at the
+    // extremes of the band's own elevation.
     m_stats.crestSteepness = 0.0;
+    double crest = 0.0, trough = 0.0;
     for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+        ((float*)&P.cascadeLength)[c] = (float)CascadeLengths()[c];
         const double sigma = std::sqrt(std::max(0.0, m_cascadeVariance[c]));
-        const double skew = CrestSkew(m_params, m_cascadeMeanK[c], sigma);
+        const double skew = CrestSkew(m_params, m_cascadeMeanK[c], sigma,
+                                      ChopGainAt(m_cascadeMeanK[c], m_chopBand, ShortWaveChop(m_params)));
         ((float*)&P.crestSkew)[c] = (float)skew;
         ((float*)&P.cascadeVariance)[c] = (float)m_cascadeVariance[c];
         m_stats.crestSteepness = std::max(m_stats.crestSteepness, skew * sigma);
+        const double e = kHeightQuantile * sigma * maxGain;
+        crest += e + skew * e * e;
+        trough += e + skew * m_cascadeVariance[c] * maxGain * maxGain;
     }
+    // Half-float storage and bilinear filtering stay inside the samples they interpolate; the
+    // margin only has to cover rounding.
+    P.crestHeight = (float)(crest * 1.01 + 0.01);
+    P.troughDepth = (float)(trough * 1.01 + 0.01);
+    m_stats.crestHeight = P.crestHeight;
+    m_stats.troughDepth = P.troughDepth;
 
     // Cascades tile in absolute world space; folding the floating origin in per cascade keeps the
     // waves pinned to the world while the shader's coordinates stay small.
@@ -929,61 +1042,64 @@ void OceanSystem::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12Gra
 
     Timestamp(computeList, 0);
     RecordSimulation(computeList);
+    RecordFoam(computeList);
     RecordTessellation(computeList);
-    Timestamp(computeList, 5);
+    Timestamp(computeList, 3);
     RecordAccelerationStructures(computeList);
-    Timestamp(computeList, 6);
-    if (m_timestamps) computeList->ResolveQueryData(m_timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-        m_frameIndex*7, 7, m_timestampReadback.Get(), m_frameIndex*7*sizeof(uint64_t));
+    Timestamp(computeList, 4);
+    if (m_timestamps)
+        computeList->ResolveQueryData(m_timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, m_frameIndex * kTimestamps,
+                                      kTimestamps, m_timestampReadback.Get(),
+                                      m_frameIndex * kTimestamps * sizeof(uint64_t));
+
+    // This frame's field is next frame's history, and so is its foam.
+    m_parity ^= 1u;
+    ++m_historyFrames;
+    m_foamParity ^= 1u;
+    m_foamHistory = true;
 }
 
 void OceanSystem::UploadBaked(ID3D12GraphicsCommandList* copyList) {
     const uint64_t rowBytes = (uint64_t)N * sizeof(XMFLOAT4);
     const uint64_t rowPitch = planet::align_up(rowBytes, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
     const uint64_t sliceBytes = rowPitch * N;
-    const uint64_t needed = sliceBytes * OCEAN_CASCADES * 2;
-
-    if (m_bakeUpload->GetDesc().Width < needed) {
-        m_bakeUpload = nv_helpers_dx12::CreateBuffer(m_device, needed, D3D12_RESOURCE_FLAG_NONE,
-                                                     D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                     nv_helpers_dx12::kUploadHeapProps);
-        m_bakeUpload->SetName(L"OceanBakeUpload");
-    }
 
     uint8_t* base = nullptr;
     const CD3DX12_RANGE none(0, 0);
     ThrowIfFailed(m_bakeUpload->Map(0, &none, (void**)&base));
-
-    auto stage = [&](const std::vector<XMFLOAT4>& src, uint64_t offset, ID3D12Resource* dstTex) {
-        for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
-            for (uint32_t row = 0; row < N; ++row) {
-                std::memcpy(base + offset + (uint64_t)c * sliceBytes + row * rowPitch,
-                            src.data() + ((size_t)c * N + row) * N, rowBytes);
-            }
-        }
-        for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
-            D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
-            dstLoc.pResource = dstTex;
-            dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            dstLoc.SubresourceIndex = c; // one mip level, so the slice index is the subresource
-
-            D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
-            srcLoc.pResource = m_bakeUpload.Get();
-            srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            srcLoc.PlacedFootprint.Offset = offset + (uint64_t)c * sliceBytes;
-            srcLoc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-            srcLoc.PlacedFootprint.Footprint.Width = N;
-            srcLoc.PlacedFootprint.Footprint.Height = N;
-            srcLoc.PlacedFootprint.Footprint.Depth = 1;
-            srcLoc.PlacedFootprint.Footprint.RowPitch = (UINT)rowPitch;
-            copyList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
-        }
-    };
-
-    stage(m_h0Data, 0, m_h0.Get());
-    stage(m_waveData, sliceBytes * OCEAN_CASCADES, m_wave.Get());
+    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c)
+        for (uint32_t row = 0; row < N; ++row)
+            std::memcpy(base + (uint64_t)c * sliceBytes + row * rowPitch,
+                        m_h0Data.data() + ((size_t)c * N + row) * N, rowBytes);
     m_bakeUpload->Unmap(0, nullptr);
+
+    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+        D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+        dstLoc.pResource = m_h0.Get();
+        dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dstLoc.SubresourceIndex = c; // one mip level, so the slice index is the subresource
+
+        D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+        srcLoc.pResource = m_bakeUpload.Get();
+        srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        srcLoc.PlacedFootprint.Offset = (uint64_t)c * sliceBytes;
+        srcLoc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        srcLoc.PlacedFootprint.Footprint.Width = N;
+        srcLoc.PlacedFootprint.Footprint.Height = N;
+        srcLoc.PlacedFootprint.Footprint.Depth = 1;
+        srcLoc.PlacedFootprint.Footprint.RowPitch = (UINT)rowPitch;
+        copyList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+    }
     m_h0Dirty = false;
+}
+
+void OceanSystem::Transition(ID3D12GraphicsCommandList* cl, ID3D12Resource* r, D3D12_RESOURCE_STATES& state,
+                             D3D12_RESOURCE_STATES next) {
+    if (state == next)
+        return;
+    const D3D12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(r, state, next);
+    cl->ResourceBarrier(1, &b);
+    state = next;
 }
 
 void OceanSystem::RecordSimulation(ID3D12GraphicsCommandList4* cl) {
@@ -994,137 +1110,95 @@ void OceanSystem::RecordSimulation(ID3D12GraphicsCommandList4* cl) {
 
     cl->SetComputeRootSignature(m_rootSig.Get());
 
-    auto uavBarrier = [&](ID3D12Resource* r) {
-        const D3D12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::UAV(r);
-        cl->ResourceBarrier(1, &b);
+    auto uavBarrier = [&](std::initializer_list<ID3D12Resource*> resources) {
+        D3D12_RESOURCE_BARRIER bs[3];
+        UINT n = 0;
+        for (ID3D12Resource* r : resources) bs[n++] = CD3DX12_RESOURCE_BARRIER::UAV(r);
+        cl->ResourceBarrier(n, bs);
     };
-    const uint32_t groups = (N + 7) / 8;
 
-    // The pyramids end each frame as shader resources for the tessellator and the path tracer;
-    // bring them back for writing. They are created in the unordered-access state, so the very
-    // first frame has nothing to undo.
-    if (!m_firstRecord) {
-        const D3D12_RESOURCE_BARRIER historyCopy[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(m_disp.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_previousDisp.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
-        };
-        cl->ResourceBarrier(2, historyCopy);
-        cl->CopyResource(m_previousDisp.Get(), m_disp.Get());
-        const D3D12_RESOURCE_BARRIER toWrite[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(m_previousDisp.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_disp.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_deriv.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_moments.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_surface.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-        };
-        cl->ResourceBarrier((UINT)std::size(toWrite), toWrite);
-    }
-    const bool firstRecord = m_firstRecord;
-    m_firstRecord = false;
-    m_resetFoam = false;
+    const uint32_t cur = m_parity;
+    ID3D12Resource* disp = m_disp[cur].Get();
+    // Whatever the tessellator and the path tracer read last frame goes back to being written.
+    Transition(cl, disp, m_dispState[cur], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(cl, m_deriv.Get(), m_derivState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     push.f0 = (float)(m_time - m_phaseEpoch);
     push.f1 = m_dt;
-    cl->SetPipelineState(m_psoEvolve.Get());
-    cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-    cl->Dispatch(groups, groups, OCEAN_CASCADES);
-    uavBarrier(m_fft.Get());
-
     cl->SetPipelineState(m_psoFftH.Get());
     cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-    cl->Dispatch(N, OCEAN_CASCADES * 2, 1);
-    uavBarrier(m_fft.Get());
+    cl->Dispatch(N, OCEAN_CASCADES, 1);
+    uavBarrier({m_fft.Get()});
 
     cl->SetPipelineState(m_psoFftV.Get());
-    cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-    cl->Dispatch(N, OCEAN_CASCADES * 2, 1);
-    uavBarrier(m_fft.Get());
-
-    cl->SetPipelineState(m_psoAssemble.Get());
+    cl->Dispatch(N, OCEAN_CASCADES, 1);
+    uavBarrier({disp, m_deriv.Get()});
     Timestamp(cl, 1);
-    cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-    cl->Dispatch(groups, groups, OCEAN_CASCADES);
-    uavBarrier(m_disp.Get());
-    uavBarrier(m_deriv.Get());
-    uavBarrier(m_moments.Get());
-    // Reduce raw moments and a maximum strain bound before conditioning the displacement.
+
     cl->SetPipelineState(m_psoMip.Get());
-    push.u0 = 2;
-    for (uint32_t level=1;level<OCEAN_MIP_LEVELS;++level) {
-        push.u1=level;
-        const uint32_t size=N>>level;
-        cl->SetComputeRoot32BitConstants(0,8,&push,0);
-        cl->Dispatch((size+7)/8,(size+7)/8,OCEAN_CASCADES);
-        uavBarrier(m_moments.Get());
+    push.u0 = cur;
+    for (uint32_t level = 1; level < OCEAN_MIP_LEVELS; ++level) {
+        const uint32_t size = std::max(1u, N >> level);
+        push.u1 = level;
+        cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
+        cl->Dispatch((size + 7) / 8, (size + 7) / 8, OCEAN_CASCADES);
+        uavBarrier({disp, m_deriv.Get()});
     }
-    cl->SetPipelineState(m_psoCondition.Get());
-    cl->Dispatch(groups,groups,OCEAN_CASCADES);
-    uavBarrier(m_disp.Get()); uavBarrier(m_deriv.Get());
     Timestamp(cl, 2);
 
-    // The legacy foam entry point now writes deformation diagnostics with zero foam channels.
+    // The tessellator and the path tracer sample these, so they leave the simulation as shader
+    // resources - including last frame's array, which motion vectors read as history. Both states
+    // are legal on a compute queue, which is what lets the whole ocean run off the graphics
+    // timeline.
+    Transition(cl, disp, m_dispState[cur], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(cl, m_deriv.Get(), m_derivState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(cl, m_disp[cur ^ 1u].Get(), m_dispState[cur ^ 1u], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+}
+
+// Whitecaps. Runs after the simulation, whose displacement and derivatives it samples as shader
+// resources; last frame's foam texture is read the same way while this frame's is written.
+void OceanSystem::RecordFoam(ID3D12GraphicsCommandList4* cl) {
+    struct Push {
+        uint32_t u0, u1, u2, u3;
+        float f0, f1, f2, f3;
+    } push{};
+    push.f0 = (float)m_time;
+    push.f1 = m_dt;
+    const uint32_t cur = m_foamParity, prev = m_foamParity ^ 1u;
+    Transition(cl, m_foam[prev].Get(), m_foamState[prev], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(cl, m_foam[cur].Get(), m_foamState[cur], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    cl->SetComputeRootSignature(m_rootSig.Get());
     cl->SetPipelineState(m_psoFoam.Get());
     cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-    cl->Dispatch(groups, groups, OCEAN_CASCADES);
-    uavBarrier(m_surface.Get());
-    Timestamp(cl, 3);
+    constexpr uint32_t groups = (OCEAN_FOAM_SIZE + 7) / 8;
+    cl->Dispatch(groups, groups, OCEAN_FOAM_LEVELS);
+    const D3D12_RESOURCE_BARRIER uav = CD3DX12_RESOURCE_BARRIER::UAV(m_foam[cur].Get());
+    cl->ResourceBarrier(1, &uav);
 
-    cl->SetPipelineState(m_psoMip.Get());
-    ID3D12Resource* pyramids[] = {m_disp.Get(), m_deriv.Get(), m_moments.Get(), m_surface.Get()};
-    for (uint32_t pyramid = 0; pyramid < 4; ++pyramid) {
-        if (pyramid == 2) continue; // raw moments already reduced for conditioning
-        for (uint32_t level = 1; level < OCEAN_MIP_LEVELS; ++level) {
-            const uint32_t size = std::max(1u, N >> level);
-            push.u0 = pyramid;
-            push.u1 = level;
-            cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-            cl->Dispatch((size + 7) / 8, (size + 7) / 8, OCEAN_CASCADES);
-            uavBarrier(pyramids[pyramid]);
-        }
+    cl->SetPipelineState(m_psoFoamMip.Get());
+    for (uint32_t level = 1; level < OCEAN_FOAM_MIPS; ++level) {
+        const uint32_t size = std::max(1u, (uint32_t)OCEAN_FOAM_SIZE >> level);
+        push.u1 = level;
+        cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
+        cl->Dispatch((size + 7) / 8, (size + 7) / 8, OCEAN_FOAM_LEVELS);
+        cl->ResourceBarrier(1, &uav);
     }
 
-    // Stage the coverage the pyramid just measured; BeginFrame picks it up once the fence for this
-    // slot retires, two frames later.
-    {
-        const D3D12_RESOURCE_BARRIER toCopy =
-            CD3DX12_RESOURCE_BARRIER::Transition(m_statsBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                 D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cl->ResourceBarrier(1, &toCopy);
-        cl->CopyResource(m_statsReadback[m_frameIndex].Get(), m_statsBuffer.Get());
-        const D3D12_RESOURCE_BARRIER back =
-            CD3DX12_RESOURCE_BARRIER::Transition(m_statsBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        cl->ResourceBarrier(1, &back);
-    }
+    // Next frame's breaking points, from this frame's histograms and the cover the mips just summed.
+    Transition(cl, m_foamStats.Get(), m_foamStatsState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    const D3D12_RESOURCE_BARRIER statsUav = CD3DX12_RESOURCE_BARRIER::UAV(m_foamStats.Get());
+    cl->ResourceBarrier(1, &statsUav);
+    cl->SetPipelineState(m_psoFoamStats.Get());
+    cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
+    cl->Dispatch(1, 1, 1);
+    cl->ResourceBarrier(1, &statsUav);
+    Transition(cl, m_foamStats.Get(), m_foamStatsState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    cl->CopyBufferRegion(m_foamStatsReadback.Get(), m_frameIndex * sizeof(OceanFoamState), m_foamStats.Get(),
+                         OCEAN_FOAM_STATE_OFFSET, sizeof(OceanFoamState));
+    Transition(cl, m_foamStats.Get(), m_foamStatsState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    // The tessellator and the path tracer sample these, so they leave the simulation as shader
-    // resources. Both states are legal on a compute queue, which is what lets the whole ocean run
-    // off the graphics timeline.
-    if (firstRecord) {
-        const D3D12_RESOURCE_BARRIER copy[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(m_disp.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_previousDisp.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
-        };
-        cl->ResourceBarrier(2, copy);
-        cl->CopyResource(m_previousDisp.Get(), m_disp.Get());
-        const D3D12_RESOURCE_BARRIER ready[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(m_disp.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_previousDisp.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-        };
-        cl->ResourceBarrier(2, ready);
-    }
-    const D3D12_RESOURCE_BARRIER toRead[] = {
-        CD3DX12_RESOURCE_BARRIER::Transition(m_disp.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_deriv.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_moments.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_surface.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-    };
-    cl->ResourceBarrier((UINT)std::size(toRead), toRead);
-    Timestamp(cl, 4);
+    Transition(cl, m_foam[cur].Get(), m_foamState[cur], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 
 void OceanSystem::RecordTessellation(ID3D12GraphicsCommandList4* cl) {
@@ -1140,14 +1214,13 @@ void OceanSystem::RecordTessellation(ID3D12GraphicsCommandList4* cl) {
         float f0, f1, f2, f3;
     } push{};
     push.u0 = (uint32_t)m_gpuTiles.size();
-    push.f0 = m_time;
+    push.f0 = (float)m_time;
     push.f1 = m_dt;
 
     cl->SetComputeRootSignature(m_rootSig.Get());
     cl->SetPipelineState(m_psoTiles.Get());
     cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-    const uint32_t g = (OCEAN_TILE_EDGE_VERTS + 7) / 8;
-    cl->Dispatch(g, g, (uint32_t)m_gpuTiles.size());
+    cl->Dispatch((OCEAN_TILE_VERTS + 63) / 64, (uint32_t)m_gpuTiles.size(), 1);
 
     const D3D12_RESOURCE_BARRIER toRead = CD3DX12_RESOURCE_BARRIER::Transition(
         m_globalVertex, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1195,13 +1268,8 @@ void OceanSystem::RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl) {
         // A tile that held the same square of ocean last frame keeps its topology: only the
         // vertices moved, so a refit is valid and costs a fraction of a build. Refitting for ever
         // lets the tree the structure was built around decay as the waves travel through it, so a
-        // rebuild has to come round - but only occasionally, because the vertices stay inside a
-        // bounded envelope and a heightfield degrades slowly.
-        //
-        // This was every eighth frame, which is seven rebuilds a second at sixty and thirty at
-        // two hundred and forty: the faster the machine, the more it spent on the same waves.
-        // Timing it makes the cost the same at any frame rate, and the per-slot phase spreads the
-        // rebuilds across the interval instead of letting them all fall due on one frame.
+        // rebuild has to come round - timed rather than counted in frames so the cost is the same
+        // at any frame rate, with a per-slot phase that spreads the rebuilds across the interval.
         const double age = m_time - m_blasRebuiltAt[t.slot];
         const double due = kBlasRebuildSeconds * (0.75 + 0.5 * (double)(t.slot % 64u) / 64.0);
         const bool stale = age >= due;
@@ -1216,16 +1284,11 @@ void OceanSystem::RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl) {
             ++m_stats.builds;
         }
 
-        const uint32_t scratchSlot = (uint32_t)(i % kScratchSlots);
+        // Every build has a scratch range of its own, so no barrier separates any two of them and
+        // the whole frame's refits can run at once. They are small and latency-bound: fenced into
+        // laps, their fixed cost per build was most of what the ocean spent on structures.
         d.ScratchAccelerationStructureData =
-            m_blasScratch->GetGPUVirtualAddress() + (uint64_t)scratchSlot * m_blasScratchSize;
-
-        // Scratch is reused round-robin; a barrier once per lap is enough to keep two builds from
-        // sharing a range.
-        if (scratchSlot == 0 && i > 0) {
-            const D3D12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::UAV(m_blasScratch.Get());
-            cl->ResourceBarrier(1, &b);
-        }
+            m_blasScratch->GetGPUVirtualAddress() + (uint64_t)i * m_blasScratchSize;
 
         cl->BuildRaytracingAccelerationStructure(&d, 0, nullptr);
         m_blasBuilt[t.slot] = 1;
@@ -1233,11 +1296,11 @@ void OceanSystem::RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl) {
 
     const D3D12_RESOURCE_BARRIER done = CD3DX12_RESOURCE_BARRIER::UAV(m_blasBuffer.Get());
     cl->ResourceBarrier(1, &done);
-    ++m_frameCounter;
 }
 
 void OceanSystem::append_instances(planet::TlasBuilder& tlas, InstanceProperties* props,
                                    const planet::DVec3& sceneOrigin, uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) {
+    (void)forceRebuild;
     if (!m_initialised || !m_params.enabled || m_gpuTiles.empty())
         return;
 
@@ -1284,8 +1347,8 @@ void OceanSystem::append_instances(planet::TlasBuilder& tlas, InstanceProperties
 
 void OceanSystem::on_submitted(uint64_t copyFence, uint64_t computeFence) {
     (void)copyFence;
-    // Records when this frame's coverage readback becomes safe to map.
-    m_statsFence[m_frameIndex] = computeFence;
+    // Records when this frame's timestamps become safe to map.
+    m_timestampFence[m_frameIndex] = computeFence;
 }
 
 } // namespace ocean

@@ -1,12 +1,13 @@
 #pragma once
 #include "OceanLayout.h"
 
-// Sharp gravity-wave crests need horizontal displacement, but centimetre ripples must not
-// dominate the global no-fold bound and flatten every larger crest. This rolls off horizontal
-// chop below 0.5 m while preserving vertical displacement and its normal-map derivatives.
-float OceanChopGain(float k) {
-    const float ratio = k / 12.56637061436f;
-    return rcp(1.0f + ratio * ratio * ratio * ratio);
+// Horizontal displacement gain of a wave of wavenumber k: one, the physical first-order sea, plus
+// the short waves' extra that points their crests (ocean::ShortWaveChop). `band` is (log2 k where
+// the extra starts, log2 k where it is full, log2 k above which it fades over an octave, extra).
+// Must match ocean::ChopGainAt.
+float OceanChopGain(float k, float4 band) {
+    const float l = log2(max(k, 1e-9f));
+    return 1.0f + band.w * smoothstep(band.x, band.y, l) * (1.0f - smoothstep(band.z, band.z + 1.0f, l));
 }
 
 // Second-order Stokes crest sharpening.
@@ -19,8 +20,8 @@ float OceanChopGain(float k) {
 // it was, and a is the band's skew coefficient, equal to its wavenumber for a physical Stokes
 // wave and clamped on the host so the warp stays monotonic over the sea it is applied to.
 //
-// Unlike horizontal chop this costs nothing against the no-fold bound, because it never moves a
-// sample sideways - it is the only way this surface reaches a genuinely sharp crest.
+// It never moves a sample sideways, so it lifts and narrows a crest without folding the surface;
+// the horizontal chop does the rest of the sharpening (ocean::ShortWaveChop).
 float OceanSkewTurn(float a) {
     // Below -1/(2a) the parabola turns and would lift the trough back up. Any coefficient the
     // host allows puts that past four standard deviations, so holding the warp flat there costs

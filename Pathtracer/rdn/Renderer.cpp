@@ -212,7 +212,7 @@ void Renderer::InitSceneGPU() {
         if (m_ocean.Enabled()) {
             const auto orv = m_ocean.GetReservation();
             m_scene.ReserveOcean(orv.vertexElems, orv.indexElems, orv.matIDElems, orv.instanceSlots,
-                                 ocean::OceanSystem::MakeMaterial(m_ocean.GetParams()));
+                                 ocean::OceanSystem::MakeMaterial(m_ocean.GetParams()), m_ocean.GetParams().foamAlbedo);
         }
 
         m_scene.BuildGlobalMeshBuffers(m_ctx.Device(), m_ctx.CmdList());
@@ -460,16 +460,16 @@ void Renderer::UpdateRenderer(float dt) {
             m_scene.materials.sssRadius[base] != water.sssRadius ||
             m_scene.materials.sssPhaseG[base] != water.sssPhaseG ||
             m_scene.materials.sssWeight[base] != water.sssWeight ||
-            m_scene.materials.sssEnable[base] != water.sssEnable) {
+            m_scene.materials.sssEnable[base] != water.sssEnable ||
+            m_scene.materials.Kd[base + OCEAN_FOAM_STEPS - 1].x != std::clamp(m_ocean.GetParams().foamAlbedo, 0.0f, 1.0f)) {
             for (UINT i=0;i<OCEAN_MATERIAL_COUNT;++i) {
-                const float coverage = float(i % OCEAN_MATERIAL_LEVELS) / (OCEAN_MATERIAL_LEVELS-1);
-                m_scene.materials.Kd[base+i].w = water.Kd.w + (1.0f-water.Kd.w)*coverage;
                 m_scene.materials.Tf[base+i] = water.Tf;
                 m_scene.materials.sssAlbedo[base+i] = water.sssAlbedo;
                 m_scene.materials.sssRadius[base+i] = water.sssRadius;
                 m_scene.materials.sssPhaseG[base+i] = water.sssPhaseG;
-                m_scene.materials.sssWeight[base+i] = water.sssWeight * (1.0f-coverage);
-                m_scene.materials.sssEnable[base+i] = coverage < 1.0f ? water.sssEnable : 0u;
+                ocean::WriteMaterialSlot(i, water.Kd, water.Tf, water.sssWeight, water.sssEnable, m_ocean.GetParams().foamAlbedo,
+                                         m_scene.materials.Kd[base+i], m_scene.materials.sssWeight[base+i],
+                                         m_scene.materials.sssEnable[base+i]);
             }
             m_scene.materialsDirty = true;
         }
@@ -1276,8 +1276,15 @@ void Renderer::RenderFrame() {
             const auto& os = m_ocean.GetStats();
             std::wcout << L"[ocean] tiles=" << os.tiles << L"/" << os.leaves << L" dropped=" << os.dropped
                        << L" tris=" << (os.triangles / 1000) << L"k blas[build=" << os.builds << L" refit="
-                       << os.refits << L"] Hs=" << os.significantWaveHeight << L" m whitecap=" << (os.whitecapMeasured * 100.0) << L"%/" << (os.whitecapCoverage * 100.0) << L"% slopeVar=" << os.slopeVarSpectrum
-                       << L"/" << os.slopeVarCoxMunk << L" chopGain=" << os.conditioningGain << std::endl;
+                       << os.refits << L"] gpu=" << os.gpuTotalMs << L" ms Hs=" << os.significantWaveHeight
+                       << L" m slopeVar=" << os.slopeVarSpectrum << L"/" << os.slopeVarCoxMunk
+                       << L" chop=" << os.horizontalGain << L" strain=" << os.crestStrain << L" foam="
+                       << os.foamWhite * 100.0f << L"% white of "
+                       << os.foamTarget * 100.0f << L"% breaking=" << os.foamBreaking * 100.0f << L"% levels";
+            for (uint32_t l = 0; l < OCEAN_FOAM_LEVELS; ++l)
+                std::wcout << L" [" << os.foamCoverage[l] * 100.0f << L"% J<" << os.foamThreshold[l] << L" x"
+                           << os.foamMatch[l] << L"]";
+            std::wcout << std::endl;
         }
 
         const auto& ps = m_planet.stats();
@@ -1670,7 +1677,7 @@ void Renderer::PopulateCommandList() {
     rsConsts[27] = (UINT)std::clamp(rs.sharcMinSamples, 8, 256);
     rsConsts[28] = (UINT)std::clamp(rs.sharcHistoryFrames, 8, 256);
     rsConsts[29] = (UINT)std::clamp(rs.sharcMaxAge, 32, 4096);
-    setFloat(30, std::clamp(rs.sharcQueryFootprint, 0.5f, 8.0f));
+    setFloat(30, std::clamp(rs.sharcQueryFootprint, 0.5f, 16.0f));
     rsConsts[31] = (UINT)rs.sharcTrainBounces;
     rsConsts[32] = (UINT)std::clamp(rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
 
@@ -1685,6 +1692,7 @@ void Renderer::PopulateCommandList() {
         ((UINT)rs.sharcGuideDepth << GUIDE_PARAM_DEPTH_SHIFT);
     rsConsts[34] = LT_BUFFER_OFFSET;
     rsConsts[35] = (UINT)std::clamp(rs.sharcUpdateStride, 2, 8);
+    setFloat(36, std::clamp(rs.sharcConvergenceThreshold, 0.0f, 1.0f));
     if (useSharc)
         m_sharcResetPending = false;
 

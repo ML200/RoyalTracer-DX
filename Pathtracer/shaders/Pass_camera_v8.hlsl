@@ -36,9 +36,11 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
 
     // Save correspondence only. Evaluate previous geometry in the existing motion compute pass,
     // avoiding a large texture-sampling expansion in the ray-generation program.
-    if (hinfo.isOcean)
+    if (hinfo.isOcean) {
         gScratchPing[uint3(pixel, OCEAN_PREVIOUS_POSITION_SLOT)] =
             float4(attr.barycentrics, asfloat(primID), asfloat(instID));
+        gScratchPing[uint3(pixel, OCEAN_GUIDE_SLOT)] = float4(hinfo.oceanFoam, hinfo.oceanBubbles, 0.0f, 0.0f);
+    }
 
     // --- the material: written out, then dead ---
     uint mediumMatID;

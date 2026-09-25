@@ -43,6 +43,7 @@ cbuffer Push : register(b1)
     uint  guide_params;
     uint  lt_bufferBase;        // byte offset of the light-learning region in the cache buffer
     uint  sharc_updateStride;   // training tile width
+    float sharc_convergenceThreshold;   // cells less converged than this never end a path (SharcConvergence)
 };
 
 #define CLAMP_EMITTERS_MODE ((rs_flags & RS_FLAG_CLAMP_EMITTERS) != 0u)

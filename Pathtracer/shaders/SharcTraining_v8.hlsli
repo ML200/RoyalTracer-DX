@@ -110,6 +110,18 @@ void SharcTrainingAdvance(inout SharcTrainingState state, float3 full, float3 di
     state.fresh = SHARC_INVALID;
 }
 
+// A specular reflection (a pick without spread: a mirror, smooth metal or coat, the reflection of
+// glass or water) ends what the registered vertices learn from this path. The light found past it
+// comes as rare bright samples that no light sample can find (caustics), and a cell that learned
+// one flashed for every path ending in it, most of all in small closed cavities where cells get few
+// samples. Transmission is exempt: light samples already see through glass, and skylight reaches
+// the rooms behind windows only along such paths. Vertices registered past the bounce learn as usual.
+void SharcTrainingSpecular(inout SharcTrainingState state)
+{
+    [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
+        if (i < state.count) SharcTrainingSetWeight(state, i, 0.0f);
+}
+
 void SharcTrainingCommit(SharcTrainingState state)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)

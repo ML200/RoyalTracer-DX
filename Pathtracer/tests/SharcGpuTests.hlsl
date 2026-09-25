@@ -9,6 +9,7 @@ cbuffer TestConstants : register(b0)
     uint testIndex;
     uint guide_params;
     uint3 testPad;
+    float sharc_convergenceThreshold;
 };
 float3 InitOrigin() { return testCamera; }
 float Luma(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
@@ -17,6 +18,7 @@ float Luma(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
 #define IMG_W 53u
 #define IMG_H 45u
 #define PI 3.1415926535
+#define INV_PI 0.3183098861
 #define RAY_TMAX_PLANET 1e9f
 globallycoherent RWByteAddressBuffer g_sharc : register(u27);
 RWByteAddressBuffer g_pathStateBuffer : register(u10);
@@ -112,6 +114,19 @@ void fill(uint3 tid : SV_DispatchThreadID)
         SharcTrainingCommit(state);
         return;
     }
+    if (testMode == 42u)
+    {
+        // A specular reflection past the registered vertex: what the path finds beyond it stays out.
+        SharcTrainingState state;
+        SharcTrainingInit(state, tid.x);
+        SharcTrainingVertex(state, s, 1.0f, Hash32(seed));
+        SharcTrainingScatter(state, 0.5f);
+        SharcTrainingRadiance(state, 4.0f);
+        SharcTrainingSpecular(state);
+        SharcTrainingRadiance(state, 1000.0f);
+        SharcTrainingCommit(state);
+        return;
+    }
     if (testMode == 14u)
     {
         s.geometricNormal = s.normal = normalize(float3(1, 1, 0));
@@ -131,6 +146,9 @@ void fill(uint3 tid : SV_DispatchThreadID)
     float3 value = testMode == 0u ? 100.0f : 0.001f;
     if (testMode == 3u) value = 0.0f;
     if (testMode == 11u) value = 2.0f;
+    // A light of the radiance in testPad.x, steady (40) or with +-50% uniform noise (41).
+    if (testMode == 40u || testMode == 41u)
+        value = asfloat(testPad.x) * (testMode == 41u ? 0.5f + RandomFloatSingle(seed) : 1.0f);
     if (testMode == 4u)
     {
         s.position.xz = float2(RandomFloatSingle(seed), RandomFloatSingle(seed)) - 0.5f;
@@ -170,6 +188,22 @@ void query(uint3 tid : SV_DispatchThreadID)
         return;
     }
     if (tid.x >= 64u) return;
+    if (testMode == 40u)
+    {
+        // The path tracer's two queries, and the convergence of the nearest record with its flag.
+        SharcSurface s = Surface(0u);
+        uint seed = Hash32(tid.x ^ 0x40u);
+        float3 forced, drawn;
+        const bool forcedHit = SharcQueryForced(s, seed, forced);
+        const bool drawnHit = SharcQuery(s, 100.0f, seed, drawn);
+        const uint a = SharcDebugLookup(s, 0u).address;
+        const float convergence = a == SHARC_INVALID ? -1.0f : asfloat(g_sharc.Load(a + SHARC_CONVERGENCE));
+        const float flagged = a == SHARC_INVALID ? -1.0f
+            : ((g_sharc.Load(a + SHARC_QUERY + 16u) & SHARC_QUERY_UNCONVERGED) != 0u ? 1.0f : 0.0f);
+        results.Store4(tid.x * 32u, asuint(float4(forced, forcedHit ? 1.0f : 0.0f)));
+        results.Store4(tid.x * 32u + 16u, asuint(float4(convergence, flagged, Luma(drawn), drawnHit ? 1.0f : 0.0f)));
+        return;
+    }
     if (testMode == 31u)
     {
         SharcDebugSample cell = SharcDebugLookup(Surface(0u), 0u);

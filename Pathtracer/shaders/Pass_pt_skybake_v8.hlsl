@@ -9,7 +9,16 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint i = tid.x;
     if (i >= SKYBAKE_LUT_W * SKYBAKE_LUT_H) return;
 
-    SetSkyObserver(InitOrigin() + sceneOriginWorld);
+    // A camera in the sea can be well below the ground plane - the sea is lifted only until its
+    // troughs clear it, and the water runs on down past it - while every ray that reaches the sky
+    // leaves through the surface above the plane. Baked from the camera itself, the sky came out
+    // black for the whole frame as soon as it dived a metre too deep, and the underside of the
+    // surface with it. So with a sea the bake is taken from no lower than the plane; a ray that
+    // really starts underground is still blacked out on its own where it escapes.
+    float3 observer = InitOrigin() + sceneOriginWorld;
+    if (OCEAN_ENABLED)
+        observer.y = max(observer.y, SKY_GROUND_Y);
+    SetSkyObserver(observer);
     const SunState S = ComputeSunStateInline();
     if (i == 0u) SkyBakeStoreSunState(S);
 

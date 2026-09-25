@@ -70,7 +70,7 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            {"twr.glb",
+            {"newportnews.glb",
              XMMatrixIdentity(), "Modern Tank Garage"},
             /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
@@ -95,12 +95,12 @@ class MainScene : public SceneDefinition {
         //m_emissiveCubes.Init(cubes, sm, r);
 
         Ocean::Params sea;
-        sea.enabled = false;      // water surface on or off for this scene
+        sea.enabled = true;      // water surface on or off for this scene
         sea.windSpeed = 11.0f;   // m/s at 10 m: Beaufort 6, a working sea with whitecaps
         sea.fetch = 250000.0f;   // m, effectively open ocean
         sea.windDirectionDeg = 35.0f;
         sea.swell = 0.15f;       // mostly wind sea; higher values comb it into parallel crests
-        sea.swellHeight = 1.2f;  // independent incoming swell, metres Hm0
+        sea.swellHeight = 0.0f;  // independent incoming swell, metres Hm0; 0 lets the wind drive the whole sea
         sea.swellPeriod = 11.0f;
         sea.swellDirectionDeg = 100.0f;
         sea.chlorophyll = 0.05f; // mg/m^3: clear deep water, so the body reads indigo
@@ -115,6 +115,7 @@ class MainScene : public SceneDefinition {
             else if (name == "rough") { sea.windSpeed=17; sea.significantHeight=4.5f; sea.peakPeriod=9; sea.swellHeight=2; }
             else if (name == "flat") { sea.significantHeight=0; sea.swellHeight=0; sea.foamCoverage=0; }
             else throw std::invalid_argument("Unknown RT_OCEAN_FIXTURE (calm, mixed, rough, flat)");
+            sea.enabled = true; // a fixture is a request for the sea, whatever the scene default
             sea.fixedTimeStep = 1.0f / 60.0f;
             LOG(L"[ocean fixture] " << std::wstring(name.begin(),name.end()) << L" seed=" << sea.seed
                 << L" Hm0=" << sea.significantHeight << L" Tp=" << sea.peakPeriod << L" swell=" << sea.swellHeight);

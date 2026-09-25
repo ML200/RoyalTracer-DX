@@ -2,13 +2,14 @@
 #include "OceanLayout.h"
 #include "OceanOptics.hlsli"
 
-// Only the editable water material uses this adapter; diagnostic palette entries and
-// unrelated glass keep their original closures and proposal probabilities.
+// The water and every whitecap step of its ramp use this adapter - a foamy hit is still the sea's
+// surface, and a ray refracted through it still enters the sea. The diagnostic slot and unrelated
+// glass keep their original closures and proposal probabilities.
 inline bool LoadIsOceanMaterial(uint matID)
 {
     [branch] if (!OCEAN_ENABLED) return false;
     StructuredBuffer<OceanParamsGPU> ocean = ResourceDescriptorHeap[OCEAN_SRV_PARAMS];
-    return matID == ocean[0].materialBase;
+    return matID - ocean[0].materialBase < (uint)OCEAN_MATERIAL_LEVELS;
 }
 
 // Lobe width the sun sampler and NEE widen the water surface to; see OceanHighlightRoughness.

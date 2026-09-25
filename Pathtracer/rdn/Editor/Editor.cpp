@@ -28,27 +28,22 @@ const char* BeaufortName(int force) {
     return kNames[std::clamp(force, 0, 12)];
 }
 
-// The ocean owns one block of material slots: a whitecap-coverage ramp crossed with the anisotropy
-// and direction axes the shader picks from. An edit that reached only the first slot would change
-// one level out of four thousand, so every edit is broadcast across the block exactly as the
-// generated path writes it, leaving the per-slot anisotropy axes alone.
-void BroadcastWaterMaterial(Scene& scene, UINT base) {
+// The ocean owns one block of material slots: whitecap-coverage ramps from the water to solid
+// foam, one per density of the bubble cloud under it, then the opaque slot its diagnostic views
+// shade with. Edits land on the water and are broadcast across the block exactly as the generated
+// path writes it, so no step of the ramps disagrees about the optics.
+void BroadcastWaterMaterial(Scene& scene, UINT base, float foamAlbedo) {
     auto& m = scene.materials;
     if ((size_t)base + OCEAN_MATERIAL_COUNT > m.size() || m.sssEnable.size() < m.size())
         return;
-    const XMFLOAT4 kd = m.Kd[base];
-    const float weight = m.sssWeight[base];
-    const uint8_t enable = m.sssEnable[base];
     for (UINT i = 1; i < OCEAN_MATERIAL_COUNT; ++i) {
-        const float coverage = float(i % OCEAN_MATERIAL_LEVELS) / float(OCEAN_MATERIAL_LEVELS - 1);
-        m.Kd[base + i] = XMFLOAT4{kd.x, kd.y, kd.z, kd.w + (1.0f - kd.w) * coverage};
         m.Ni[base + i] = m.Ni[base];
         m.Tf[base + i] = m.Tf[base];
         m.sssAlbedo[base + i] = m.sssAlbedo[base];
         m.sssRadius[base + i] = m.sssRadius[base];
         m.sssPhaseG[base + i] = m.sssPhaseG[base];
-        m.sssWeight[base + i] = weight * (1.0f - coverage);
-        m.sssEnable[base + i] = coverage < 1.0f ? enable : uint8_t(0u);
+        ocean::WriteMaterialSlot(i, m.Kd[base], m.Tf[base], m.sssWeight[base], m.sssEnable[base], foamAlbedo,
+                                 m.Kd[base + i], m.sssWeight[base + i], m.sssEnable[base + i]);
     }
 }
 }
@@ -299,7 +294,7 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
                                    "before it traces. A profiler that times the render passes cannot see it:\n"
                                    "it turns up as the gap between the passes and the frame's GPU wait.");
             ImGui::Separator();
-            for (int i = 0; i < 6; ++i) {
+            for (uint32_t i = 0; i < ocean::OceanSystem::kGpuStages; ++i) {
                 char name[32];
                 const wchar_t* w = ocean::OceanSystem::kGpuStageNames[i];
                 size_t n = 0;
@@ -312,9 +307,10 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
         // can do something about. Every resident tile is rebuilt or refitted every frame, its
         // vertices having moved, so this triangle count is paid in full each time.
         ImGui::TextDisabled("  tessellation %.2f ms + structures %.2f ms: %.2fM triangles every frame",
-                            st.gpuStageMs[4], st.gpuStageMs[5], (double)st.triangles / 1.0e6);
+                            st.gpuStageMs[2], st.gpuStageMs[3], (double)st.triangles / 1.0e6);
         ImGui::SetItemTooltip("Tiles times %u triangles each (OCEAN_TILE_GRID is %u quads per edge).\n"
-                              "Halving the grid quarters this; halving the tile budget halves it.",
+                              "The count goes with the inverse square of the detail ratios under Detail;\n"
+                              "the Geometry LOD debug view shows where it is spent.",
                               (uint32_t)OCEAN_TILE_TRIS, (uint32_t)OCEAN_TILE_GRID);
         ImGui::TextDisabled("  %u refits + %u rebuilds this frame", st.refits, st.builds);
         ImGui::SetItemTooltip("A refit keeps the tree the structure was built around and only moves its\n"
@@ -338,9 +334,9 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
 
     ImGui::SeparatorText("Wind");
     respec |= ImGui::SliderFloat("Speed (m/s)", &p.windSpeed, 0.0f, 32.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("Wind at 10 m. It sets the wave height through the JONSWAP spectrum and, with the\n"
-                          "turbulence below, how hard the crests are whipped over - the same turbulence\n"
-                          "setting reads far calmer in a breeze than in a gale.");
+    ImGui::SetItemTooltip("Wind at 10 m. It sets the wave height and length through the JONSWAP spectrum and\n"
+                          "how much of the sea the whitecaps cover, and with the turbulence below, how hard\n"
+                          "the short crests are pulled into points.");
     respec |=
         ImGui::SliderFloat("Direction (deg)", &p.windDirectionDeg, 0.0f, 360.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Bearing the wind blows towards, clockwise from +Z.");
@@ -382,11 +378,11 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
 
     ImGui::SeparatorText("Turbulence");
     respec |= ImGui::SliderFloat("Turbulence", &p.turbulence, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("How whipped the water is, on top of the height the wind already gives it. It drives\n"
-                          "the horizontal displacement that pulls crests into peaks, the gain on the short wind\n"
-                          "waves and the crest sharpening below, so the small detail runs from rounded swell at\n"
-                          "0 to a hard broken chop at 2. Wind speed carries part of it on its own, so a gale is\n"
-                          "whipped harder than a breeze at the same setting.");
+    ImGui::SetItemTooltip("How hard a gusty, veering wind whips the short waves riding the big ones. It pulls\n"
+                          "their crests into points and scatters the waves off the wind's heading into a\n"
+                          "confused, short-crested sea. Wave height and length stay the wind's, and so does\n"
+                          "how much of the sea is white. 0 leaves every crest rounded and the waves marching\n"
+                          "one way; 3 is a hard, confused sea.");
     cheap |= ImGui::SliderFloat("Crest sharpening", &p.crestSharpening, 0.0f, 8.0f, "%.2f",
                                 ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Second-order Stokes sharpening, as a multiple of the physical bound harmonic. A\n"
@@ -394,19 +390,20 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
                           "which is what makes an FFT sea read as rolling rather than as a real one. This pulls\n"
                           "each band's crests into narrow peaks and leaves long shallow troughs behind them.\n"
                           "0 is the symmetric sea, 1 the physical wave; past that each band runs up against its\n"
-                          "own steepness limit and stops. It costs nothing against the no-fold bound, so it is\n"
-                          "what buys a sharp crest once the horizontal displacement has saturated.");
+                          "own steepness limit and stops. It never moves the surface sideways, so it lifts a\n"
+                          "crest without folding it.");
     // The wind's own contribution is invisible in the slider values, so show what the sea gets.
-    ImGui::TextDisabled("in use: crest displacement x%.2f, short-wave gain x%.2f", ocean::EffectiveChoppiness(p),
-                        ocean::ShortWaveAmplitude(p, 6.283185307179586 / 2.0));
-    ImGui::TextDisabled("crest steepness %.3f of %.2f%s | no-fold gain %.3f", st.crestSteepness,
+    ImGui::TextDisabled("in use: short waves x%.2f sideways, crest strain %.2f, spread x%.2f", st.horizontalGain,
+                        st.crestStrain, 1.0 / ocean::DirectionalFocus(p));
+    ImGui::SetItemTooltip("The short waves' horizontal displacement gain (the long ones keep the physical 1),\n"
+                          "and the spread of the surface's compression it gives: the higher, the more crests\n"
+                          "are squeezed into points and past breaking. Spread is the width of the wind sea's\n"
+                          "directional lobe against the calibrated one.");
+    ImGui::TextDisabled("crest steepness %.3f of %.2f%s | short-wave gain x%.2f", st.crestSteepness,
                         ocean::kMaxSkewSteepness,
                         st.crestSteepness >= ocean::kMaxSkewSteepness * 0.999 ? " (at the limit)" : "",
-                        st.conditioningGain);
-    ImGui::SetItemTooltip("The sharpest band's skew against the point where its troughs would turn back up, and\n"
-                          "the uniform gain the GPU applies to the horizontal displacement to keep the surface\n"
-                          "from folding into itself. A no-fold gain well below 1 means the chop is already\n"
-                          "saturated and more choppiness buys nothing - reach for crest sharpening instead.");
+                        ocean::ShortWaveAmplitude(p, 6.283185307179586 / 2.0));
+    ImGui::SetItemTooltip("The sharpest band's skew against the point where its troughs would turn back up.");
 
     respec |= ImGui::SliderFloat("Patch variation", &p.turbulenceVariation, 0.0f, 0.9f, "%.2f",
                                  ImGuiSliderFlags_AlwaysClamp);
@@ -428,8 +425,8 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
     if (ImGui::CollapsingHeader("Turbulence detail")) {
         respec |= ImGui::SliderFloat("Crest displacement", &p.choppiness, 0.0f, 2.0f, "%.2f",
                                      ImGuiSliderFlags_AlwaysClamp);
-        ImGui::SetItemTooltip("Base horizontal displacement gain, before turbulence and wind scale it. The GPU\n"
-                              "still bounds the composite deformation each frame, so this is a request.");
+        ImGui::SetItemTooltip("Horizontal displacement gain on every wave: 1 is the physical first-order sea, 0 a\n"
+                              "purely vertical, rounded one. The short waves' extra from turbulence comes on top.");
         respec |= ImGui::SliderFloat("Short-wave amplitude", &p.shortWaveAmplitude, 0.0f, 3.0f, "%.2f",
                                      ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetItemTooltip("Base gain on wind waves shorter than 8 m, reaching full gain below 2 m. The long\n"
@@ -454,6 +451,29 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
                                  ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Suppresses waves travelling into the wind; higher values make the crests more\n"
                           "parallel to each other.");
+
+    ImGui::SeparatorText("Whitecaps");
+    cheap |= ImGui::SliderFloat("Whitecaps", &p.foamCoverage, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Whitecaps are simulated: foam gathers where the surface is squeezed past breaking\n"
+                          "and fades after it, so it sits on the crests the waves actually point. How many of\n"
+                          "them break is set so the white covers a third of what is measured at sea for this\n"
+                          "wind (Monahan) - the lace it leaves comes on top - and a rougher patch of sea gets\n"
+                          "more. 1 is that cover, 2 twice it and lets gentler crests break too, 0 switches foam\n"
+                          "off. Never more than 3%% of the sea is white, whatever the wind or this setting.");
+    ImGui::TextDisabled("foam covers %.2f%% of the sea, aiming for %.2f%%; breaking below %.0f%% of rest area",
+                        st.foamWhite * 100.0, ocean::WhitecapCover(p) * 100.0,
+                        st.foamThreshold[OCEAN_FOAM_REFERENCE_LEVEL] * 100.0);
+    ImGui::SetItemTooltip("Measured around the camera. It falls short of the aim when the sea cannot break\n"
+                          "that much: no crest squeezed to more than %.0f%% of its rest area breaks.",
+                          ocean::BreakingThreshold(p) * 100.0);
+    cheap |= ImGui::SliderFloat("Foam lifetime", &p.foamDecay, 0.05f, 0.95f, "%.2f survives each second",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How much of the lace a whitecap dissolves into is left a second later; the white\n"
+                          "cap itself fades five times as fast. Longer-lived lace leaves the streaks of an\n"
+                          "older, wind-worked sea behind the breaking crests.");
+    cheap |= ImGui::SliderFloat("Foam albedo", &p.foamAlbedo, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Reflectance of solid foam. Real whitecaps are 0.4-0.7; coverage is handled\n"
+                          "separately, so this should not be lowered to make thin foam look thin.");
 
     ImGui::SeparatorText("Water body");
     cheap |= ImGui::SliderFloat("Chlorophyll (mg/m^3)", &p.chlorophyll, 0.001f, 10.0f, "%.3f",
@@ -496,7 +516,7 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
                 mats.sssPhaseG[i] = generated.sssPhaseG;
                 mats.sssWeight[i] = generated.sssWeight;
                 mats.sssEnable[i] = generated.sssEnable;
-                BroadcastWaterMaterial(scene, (UINT)i);
+                BroadcastWaterMaterial(scene, (UINT)i, p.foamAlbedo);
                 scene.oceanMaterialEdited = false;
                 scene.MarkMaterialsDirty();
             }
@@ -533,36 +553,45 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
 
         if (matChanged) {
             scene.oceanMaterialEdited = true;
-            BroadcastWaterMaterial(scene, (UINT)i);
+            BroadcastWaterMaterial(scene, (UINT)i, p.foamAlbedo);
             scene.MarkMaterialsDirty();
         }
     }
 
     ImGui::SeparatorText("Detail");
     ImGui::TextDisabled("tile budget %u of %u (restart to change)", p.maxTiles, (uint32_t)OCEAN_MAX_TILES);
-    ImGui::SetItemTooltip("Tiles the surface may keep resident. Every one is an acceleration structure the\n"
-                          "GPU rebuilds or refits each frame and an extra instance in the scene's top level,\n"
-                          "so this is what the ocean costs in both time and memory. It sizes the geometry\n"
+    ImGui::SetItemTooltip("Ceiling on the tiles the surface may keep resident. Every one is an acceleration\n"
+                          "structure refitted each frame and an instance in the scene's top level. Selection\n"
+                          "coarsens until the sea fits, so the default sea uses far fewer. It sizes the geometry\n"
                           "buffers at load, which is why it cannot move now - set it on the scene's sea state.");
     cheap |= ImGui::SliderFloat("Tile size / distance", &p.lodFactor, 0.05f, 2.0f, "%.3f",
                                 ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("Tile edge as a fraction of the distance to the camera. Lower is finer and costs\n"
-                          "proportionally more acceleration-structure builds.");
+    ImGui::SetItemTooltip("Tile edge as a fraction of the distance to the camera, for water in view. Quads\n"
+                          "come out at this / %u of their distance. Lower is finer; the triangle count goes\n"
+                          "with the inverse square. Geometry only carries silhouettes and hit positions - the\n"
+                          "wave normal is sampled at full resolution on every hit whatever this is.",
+                          (uint32_t)OCEAN_TILE_GRID);
+    cheap |= ImGui::SliderFloat("Off-screen coarsening", &p.offscreenLodScale, 1.0f, 16.0f, "x%.1f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("The ratio above is multiplied by this outside the view. That water is still in the\n"
+                          "scene for reflections, shadows and refraction, but secondary rays see it blurred and\n"
+                          "never along a silhouette. 1 makes the detail independent of where the camera looks.");
     cheap |= ImGui::SliderFloat("Smallest tile (m)", &p.minTileSize, 1.0f, 256.0f, "%.0f",
                                 ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("Every tile carries the same fixed grid, so this is really the size of the quads the\n"
-                          "surface is built from - and the number of tiles it takes to cover the near field,\n"
-                          "which is what traversal pays for. Waves shorter than a couple of quads are carried\n"
-                          "by the BRDF anyway, so there is nothing to gain below that.");
+    ImGui::SetItemTooltip("Every tile carries the same fixed grid, so this sets the finest quads the surface is\n"
+                          "built from, right beside the camera. Waves shorter than a couple of quads live in the\n"
+                          "normal, so there is little to gain below that.");
     ImGui::TextDisabled("%.1f cm quads, %u triangles per tile", p.minTileSize / OCEAN_TILE_GRID * 100.0f,
                         (uint32_t)OCEAN_TILE_TRIS);
-    cheap |= ImGui::SliderFloat("Near keep radius (m)", &p.nearKeepRadius, 0.0f, 4000.0f, "%.0f",
-                                ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("Tiles nearer than this survive the frustum cull, so reflections and shadows of\n"
-                          "nearby waves stay correct.");
-    cheap |= ImGui::SliderFloat("Ray footprint", &p.filterScale, 0.1f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("Scales the footprint that splits wave detail between geometry and the BRDF. Raise\n"
-                          "it if the horizon shimmers, lower it if the near surface looks over-smoothed.");
+    cheap |= ImGui::SliderFloat("Near keep radius (m)", &p.nearKeepRadius, 0.0f, 1000.0f, "%.0f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Water nearer than this keeps the in-view detail wherever the camera looks, so\n"
+                          "reflections and shadows of the waves right beside it stay as sharp as those ahead.");
+    cheap |= ImGui::SliderFloat("Distance smoothing", &p.filterScale, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How far each hit averages the wave normal over its ray footprint, turning the ripples\n"
+                          "it averages away into roughness. 0 (default) keeps full-resolution normals and a mirror\n"
+                          "surface at every distance and lets the denoiser build the distant sheen from the sharp\n"
+                          "facets; 1 filters to the pixel footprint, steadier but rough and plastic-looking far out.");
     cheap |= ImGui::SliderFloat("Sun highlight roughness", &p.sunLobeRoughness, 0.0f, 0.5f, "%.3f",
                                 ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Lobe width the sun sampler and next-event estimation widen the water to, and nothing\n"
@@ -589,13 +618,16 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
         respec = true;
     }
     ImGui::SetItemTooltip("Picks a different realisation of the same sea state.");
-    static const char* kDebugModes[] = {"Beauty",    "Normals",   "Compression",  "Covariance",
-                                        "Roughness", "Foam", "Mip level"};
-    int debug = (int)std::min<uint32_t>(p.debugMode, 6u);
+    static const char* kDebugModes[] = {"Beauty",     "Normals", "Compression", "Geometry LOD",
+                                        "Filter mip", "Foam",    "Roughness"};
+    static_assert(IM_ARRAYSIZE(kDebugModes) == OCEAN_DEBUG_COUNT, "Water debug view names out of step");
+    int debug = (int)std::min<uint32_t>(p.debugMode, OCEAN_DEBUG_COUNT - 1u);
     if (ImGui::Combo("Debug view", &debug, kDebugModes, IM_ARRAYSIZE(kDebugModes))) {
-        p.debugMode = (uint32_t)std::clamp(debug, 0, 6);
+        p.debugMode = (uint32_t)std::clamp(debug, 0, (int)OCEAN_DEBUG_COUNT - 1);
         cheap = true;
     }
+    ImGui::SetItemTooltip("Geometry LOD colours each tile by its size, darkens quad edges and whitens tile\n"
+                          "edges: exactly what the acceleration structures hold.");
 
     if (ImGui::CollapsingHeader("Statistics")) {
         ImGui::Text("tiles %u of %u leaves, %u dropped", st.tiles, st.leaves, st.dropped);
@@ -605,10 +637,13 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
         ImGui::Text("slope variance: spectrum %.4f, Cox-Munk %.4f", st.slopeVarSpectrum, st.slopeVarCoxMunk);
         ImGui::SetItemTooltip("The synthesised spectrum is calibrated against the measured Cox & Munk totals;\n"
                               "the gap is the energy above the finest cascade's Nyquist limit.");
-        ImGui::Text("conditioning gain %.3f | bake %.0f ms", st.conditioningGain, st.bakeMs);
+        ImGui::Text("horizontal gain %.2f | bake %.0f ms", st.horizontalGain, st.bakeMs);
+        ImGui::Text("surface bounds +%.2f / -%.2f m", st.crestHeight, st.troughDepth);
+        ImGui::SetItemTooltip("Conservative reach of the crests and troughs about the mean level. Shadow rays\n"
+                              "and the camera test skip the height field wherever they lie outside it.");
     }
 
-    // Respectral changes re-bake four 1024^2 cascades on the CPU, so they are staged while a
+    // Respectral changes re-bake four 512^2 cascades on the CPU, so they are staged while a
     // widget is held and committed once it is let go. The cheap ones land the same frame.
     if (m_waterRespecPending || respec) {
         m_waterRespecPending = true;
@@ -1272,8 +1307,7 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
     }
 
     // The ocean's block of materials is generated, not authored: it is edited from the water panel
-    // (Experimental > Water), which broadcasts every change across the block. Listing 4096
-    // near-identical slots here would only get in the way.
+    // (Experimental > Water), which mirrors every change across the block.
     const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
         ? (int)scene.oceanMatIndex : -1;
     if (waterMat >= 0 && m_selectedMat >= waterMat && m_selectedMat < waterMat + OCEAN_MATERIAL_COUNT)
@@ -1553,9 +1587,14 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
         ImGui::SliderInt("Minimum samples", &rs.sharcMinSamples, 8, 256);
         ImGui::SliderInt("History length", &rs.sharcHistoryFrames, 8, 256);
         ImGui::SliderInt("Retention (frames)", &rs.sharcMaxAge, 32, 4096);
-        ImGui::SliderFloat("Query footprint", &rs.sharcQueryFootprint, 0.5f, 8.0f, "%.1f");
+        ImGui::SliderFloat("Query footprint", &rs.sharcQueryFootprint, 0.5f, 16.0f, "%.1f");
         ImGui::SetItemTooltip("How many cache cells the lobe that reaches a surface must span (by solid angle) before "
                               "the cache may answer there. Higher values trace further.");
+        ImGui::SliderFloat("Convergence threshold", &rs.sharcConvergenceThreshold, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Paths never end in a cell whose recent training samples disagree with its history "
+                              "by more than their noise explains, as after a light change the history has not caught "
+                              "up with yet. Higher values trace more often while the cache adapts; 0 turns the gate "
+                              "off.");
     }
     if (rs.sharcGuideEnabled && ImGui::CollapsingHeader("Guiding tuning")) {
         ImGui::SliderFloat("Maximum guide probability", &rs.sharcGuideMax, 0.0f, 0.9f, "%.2f");

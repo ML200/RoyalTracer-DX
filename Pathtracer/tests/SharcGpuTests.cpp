@@ -32,7 +32,7 @@ struct Runner {
     ComPtr<ID3D12Resource> cache, output, readback, pathState;
     ComPtr<ID3D12Fence> fence;
     std::array<ComPtr<ID3D12PipelineState>, 13> psos;
-    std::array<uint32_t, 20> constants = {1, 0, 32, 64, 120, 0};
+    std::array<uint32_t, 21> constants = {1, 0, 32, 64, 120, 0};
     uint64_t serial = 0;
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     ~Runner() { CloseHandle(event); }
@@ -60,7 +60,7 @@ struct Runner {
         Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
         D3D12_ROOT_PARAMETER params[4]{};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants = {0, 0, 20};
+        params[0].Constants = {0, 0, 21};
         params[1].ParameterType = params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
         params[1].Descriptor.ShaderRegister = 27;
         params[2].Descriptor.ShaderRegister = 0;
@@ -85,6 +85,7 @@ struct Runner {
         pathState = Buffer(uint64_t(PS_PATH_STATE_BYTES) * 2688u + uint64_t(SHARC_CAPACITY) * 48u, D3D12_HEAP_TYPE_DEFAULT);
         readback = Buffer(2048, D3D12_HEAP_TYPE_READBACK);
         constants[6] = Bits(0.125f); constants[7] = Bits(0.01f); constants[8] = Bits(3.0f);
+        constants[20] = Bits(0.5f);
         constants[16] = GUIDE_PARAM_ENABLED | (255u << GUIDE_PARAM_QMAX_SHIFT) | (3u << GUIDE_PARAM_LEVEL_SHIFT) |
             (31u << GUIDE_PARAM_FRESHNESS_SHIFT) | GUIDE_PARAM_TRAIN | (2u << GUIDE_PARAM_DEPTH_SHIFT);
     }
@@ -97,7 +98,7 @@ struct Runner {
     }
     void Dispatch(int pso, uint32_t groups) {
         commands->SetPipelineState(psos[pso].Get());
-        commands->SetComputeRoot32BitConstants(0, 20, constants.data(), 0);
+        commands->SetComputeRoot32BitConstants(0, 21, constants.data(), 0);
         commands->Dispatch(groups, 1, 1);
         D3D12_RESOURCE_BARRIER barrier{}; barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         commands->ResourceBarrier(1, &barrier);
@@ -348,6 +349,11 @@ int main(int argc, char** argv) try {
                 "Compact suffix propagation or per-vertex demodulation is incorrect");
     }
     std::cout << "PASS: compact multi-vertex suffix propagation and colored demodulation\n";
+    r.Reset(); r.Train({42});
+    auto mirrored = r.Query(42);
+    Require(mirrored[3] > 0.8f && std::abs(mirrored[0] - 2.0f) < 0.002f,
+        "The cache learned light found past a specular reflection");
+    std::cout << "PASS: light past a specular reflection stays out of the registered vertex's label\n";
     r.Reset();
     r.constants[12] = Bits(0.04f - 12.5f * std::sqrt(2.0f));
     r.constants[14] = Bits(0.04f);
@@ -391,6 +397,54 @@ int main(int argc, char** argv) try {
     r.Reset(); r.Train({13}, 1);
     Require(r.Query(20)[3] == 0, "Invalid training position populated the cache");
     std::cout << "PASS: sparse 60-frame revisits accumulate evidence, poisoned history repairs, invalid input rejected\n";
+    {
+        // A light going out: no path may end in the old light, and the history must follow within
+        // a few updates (a plain 64-update history would still hold 94% of it after four).
+        auto light = [&](float radiance, int frames, uint32_t mode = 40u) {
+            r.constants[17] = Bits(radiance); r.Train({mode}, frames);
+        };
+        r.Reset(); light(100.0f, 40);
+        auto lit = r.Query(40);
+        // The query record holds the mean as half floats: one step at 100 is 0.0625.
+        for (int i = 0; i < 64; ++i)
+            Require(lit[i * 8 + 3] == 1 && std::abs(lit[i * 8] - 100.0f) < 0.5f, "A steady light was not cached");
+        Require(lit[4] > 0.999f && lit[5] == 0, "A steady light was not converged");
+        light(1.0f, 1);
+        auto dark = r.Query(40);
+        int gated = 0;
+        for (int i = 0; i < 64; ++i) {
+            gated += dark[i * 8 + 3] == 0 ? 1 : 0;
+            Require(dark[i * 8 + 3] == 0 || dark[i * 8] < 10.0f, "A path ended in a light that went out");
+            Require(dark[i * 8 + 7] == 0, "A confidence-drawn query ended in a light that went out");
+        }
+        Require(dark[4] < 0.5f && dark[5] == 1, "The gate did not flag a history behind the lighting");
+        light(1.0f, 3);
+        auto caught = r.Query(40);
+        for (int i = 0; i < 64; ++i)
+            Require(caught[i * 8 + 3] == 1 && std::abs(caught[i * 8] - 1.0f) < 0.05f && caught[i * 8 + 5] == 0,
+                "The history did not follow a light that went out");
+        r.constants[20] = Bits(0.0f);
+        r.Reset(); light(100.0f, 40); light(1.0f, 1);
+        auto ungated = r.Query(40);
+        for (int i = 0; i < 64; ++i)
+            Require(ungated[i * 8 + 3] == 1 && ungated[i * 8] < 10.0f && ungated[i * 8 + 5] == 0,
+                "Threshold 0 still gated, or the history kept the old light");
+        r.constants[20] = Bits(0.5f);
+        r.Reset();
+        int noisyGated = 0;
+        float lowest = 1.0f;
+        for (int frame = 0; frame < 48; ++frame) {
+            light(10.0f, 1, 41u);
+            if (frame < 4) continue;
+            auto noisy = r.Query(40);
+            for (int i = 0; i < 64; ++i) noisyGated += noisy[i * 8 + 3] == 0 ? 1 : 0;
+            lowest = std::min(lowest, noisy[4]);
+        }
+        Require(noisyGated == 0 && lowest > 0.9f, "A steady noisy light was taken for a light change");
+        r.constants[17] = 0;
+        std::cout << "PASS: light going out gated on " << gated << "/64 lanes, history followed within 4 updates; "
+                     "steady noisy light never gated (lowest convergence " << lowest << ")\n";
+    }
 
     {
         auto cap = r.Query(4, 7);

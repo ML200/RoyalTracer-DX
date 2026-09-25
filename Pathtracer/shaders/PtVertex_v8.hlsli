@@ -38,6 +38,7 @@ struct PtVertexIO {
 #define PV_IN_WATER_DIRECT  (1u << 28u)  // water NEE already owns direct-light radiance on this segment
 #define PV_IN_WATER_MEDIUM  (1u << 29u)
 #define PV_IN_WATER_SCATTERED (1u << 30u)
+#define PV_IN_SUN_OWNED     (1u << 31u)  // a scattering event in the water sampled the sun for this specular chain
 
 // Result flags (hit/miss shaders -> raygen).
 #define PV_RESULT_MASK      7u
@@ -63,6 +64,7 @@ struct PtVertexIO {
 #define PV_WATER_MEDIUM     (1u << 19u)
 #define PV_WATER_SCATTERED  (1u << 20u)
 #define PV_LITE_NEE         (1u << 21u)  // the deferred primary feeds the reuse reservoir (DVF_LITE_NEE)
+#define PV_SUN_OWNED        (1u << 22u)
 
 // The cone of the lobes picked so far (SharcLobeConeAngle), as two halves: its width at the
 // current vertex and its full angle, by which the width grows per unit of distance.
@@ -416,7 +418,9 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
             res |= strategy << PV_STRATEGY_SHIFT;
             if (!freeBounce) res |= PV_DIFF_INC;
             if (wide) res |= PV_SPREAD;
-            cone.y += SharcLobeConeAngle(strategy, ctx.matID, ctx.hitLocalPr, abs(dot(n, rayDir)));
+            const bool passThrough = strategy == 1u && dot(dir, n) < 0.0f && LoadKd_w(ctx.matID) < 1.0f - EPSILON;
+            cone.y += SharcLobeConeAngle(strategy, ctx.matID, ctx.hitLocalPr, abs(dot(n, rayDir)),
+                passThrough && !LoadIsThinGlass(ctx.matID) ? (float)ctx.iors.x / (float)ctx.iors.y : 0.0f);
 
             // The group's density, with the guide mixed in, times the probability of the pick. The
             // deferred vertex needs the density only (its value is the material pass's), so it
@@ -433,10 +437,14 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                     ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
             const float pdfTotal = groupP * (guideQ > 0.0f ? max(lerp(lobe.pdf, guidePdf, guideQ), 0.0f) : lobe.pdf);
             const bool  valid    = dot(dir, dir) > 1e-12f && pdfTotal > 1e-6f;
-            const bool  passThrough = strategy == 1u && dot(dir, n) < 0.0f && LoadKd_w(ctx.matID) < 1.0f - EPSILON;
             if (OceanDirectLightingOwnsRay(waterDirect, dot(dir, n)) ||
                 (passThrough && LoadIsThinGlass(ctx.matID) && (inFlags & PV_IN_WATER_DIRECT) != 0u))
                 res |= PV_WATER_DIRECT;
+            // A scattering event in the water took its own sun sample (OceanVolumeSunNee), so the
+            // specular chain it continues on - out through the mirror-smooth underside of the
+            // surface, or turned back by it - must not find the sun a second time.
+            if ((inFlags & PV_IN_SUN_OWNED) != 0u && !wide && LoadIsOceanMaterial(ctx.matID) && ctx.backface)
+                res |= PV_SUN_OWNED;
 
             if (capture)
             {
@@ -663,7 +671,7 @@ void PtShadeMiss(inout PtVertexIO io, float3 rayOrigin, float3 rayDir)
     // A camera below sea level can be underground to the atmosphere model even
     // after its path exits water. Query the sky from the escaped ray's origin.
     SetSkyObserver((OCEAN_ENABLED ? rayOrigin : InitOrigin()) + sceneOriginWorld);
-    const bool waterDirect = (io.flags & PV_IN_WATER_DIRECT) != 0u;
+    const bool waterDirect = (io.flags & (PV_IN_WATER_DIRECT | PV_IN_SUN_OWNED)) != 0u;
     const float  sunSAPdf   = underground || waterDirect ? 0.0f : GetSunPdf(rayDir);
     const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
     const float  sunMisBsdf = (sunSAPdf > 0.0f)

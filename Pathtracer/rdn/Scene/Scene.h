@@ -229,7 +229,8 @@ struct Scene {
 
     // Reserves the ocean's geometry and instance ranges. Its instance records come last, which is
     // what lets the shader recognise an ocean hit from a single threshold comparison.
-    void ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, const Material& mat);
+    void ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, const Material& mat,
+                      float foamAlbedo);
 
     void BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
     void CreateInstancePropertiesBuffer(ID3D12Device* device);

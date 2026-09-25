@@ -451,7 +451,8 @@ void Pass_sharc_update_v8()
         else ps |= PT_PS_MIS_NONE;
         const bool spread = SharcScatterHasSpread(sampledStrategy, ctx.matID, ctx.hitLocalPr);
         ps = PtPsWith(ps, PT_PS_SPREAD, spread);
-        coneAngle += SharcLobeConeAngle(sampledStrategy, ctx.matID, ctx.hitLocalPr, abs(dot(ctx.hitNormal, rayDir)));
+        coneAngle += SharcLobeConeAngle(sampledStrategy, ctx.matID, ctx.hitLocalPr, abs(dot(ctx.hitNormal, rayDir)),
+            passThrough && !LoadIsThinGlass(ctx.matID) ? (float)ctx.iors.x / (float)ctx.iors.y : 0.0f);
         if (spread && PtPsGuideDepth(ps) < 15u) ps += 1u << PT_PS_GUIDE_SHIFT;
         rayDir   = dir;
         rayDirPk = PackNormal(dir);
@@ -474,6 +475,7 @@ void Pass_sharc_update_v8()
             rrWeight = rcp(survivalProb);
         }
         SharcTrainingAdvance(training, updateWeight, updateWeightBroad, rrWeight);
+        if (!spread && !passThrough) SharcTrainingSpecular(training);
 
         GuideRootsScale(GuideLane(), PtPsRoots(ps) & ~(guideRoot < GUIDE_ROOTS ? 1u << guideRoot : 0u),
             updateWeight * rrWeight);
@@ -489,7 +491,7 @@ void Pass_sharc_update_v8()
         rayB.TMax      = RAY_TMAX_PLANET;
         if (!IsRayDescValid(rayB))
             break;
-        OceanPathHit hit = OceanTracePathHit(rayB);
+        OceanPathHit hit = OceanTracePathHitInMedium(rayB, waterMedium);
 
         bool volumeRedirected = false;
         bool waterAbsorbed = false;
@@ -517,7 +519,7 @@ void Pass_sharc_update_v8()
                 waterDirectSegment = false;
                 ps |= PT_PS_MIS_NONE;
                 prev_pdf = 1.0f;
-                hit = OceanTracePathHit(rayB);
+                hit = OceanTracePathHitInMedium(rayB, true);
             }
         }
         if (waterAbsorbed) break;

@@ -52,6 +52,10 @@ struct HitInfo {
     float3 oceanKd;
     float  oceanPr;
     uint   oceanMaterialOffset;
+    // The foam cover and bubble-cloud density the material step is dithered from (OceanSurface),
+    // for the reconstruction's albedo guide.
+    float  oceanFoam;
+    float  oceanBubbles;
 };
 
 uint ResolveSurfaceMaterial(uint matID, HitInfo hit)
@@ -229,21 +233,21 @@ float3 OceanVertexMotion(uint instID, float2 uv) {
     const float size = asfloat(instanceProps[instID]._pad[1]);
     const uint stitch = instanceProps[instID]._pad[0];
     const uint2 ij = (uint2)round(uv * OCEAN_TILE_GRID);
-    const bool xEdge = (ij.x == 0 && (stitch & OCEAN_EDGE_NEG_X)) ||
-                       (ij.x == OCEAN_TILE_GRID && (stitch & OCEAN_EDGE_POS_X));
-    const bool zEdge = (ij.y == 0 && (stitch & OCEAN_EDGE_NEG_Z)) ||
-                       (ij.y == OCEAN_TILE_GRID && (stitch & OCEAN_EDGE_POS_Z));
-    const bool collapse = xEdge ? ((ij.y & 1u) != 0) : zEdge && ((ij.x & 1u) != 0);
+    const OceanVertexSource src = OceanStitchSource(ij.x, ij.y, stitch);
     const float step = size / OCEAN_TILE_GRID;
-    const float width = step * ((xEdge || zEdge) ? 2.0f : 1.0f);
-    const float2 q = float2(instanceProps[instID].objectToWorld[0][3], instanceProps[instID].objectToWorld[2][3]) + uv * size;
-    const float2 offset = collapse ? (xEdge ? float2(0,step) : float2(step,0)) : 0.0f;
-    float3 delta = 0.0f;
-    [unroll] for (uint i = 0; i < 2; ++i) {
-        const float2 p = q + (i == 0 ? -offset : offset);
-        delta += OceanDisplacementFrom(p, width, OCEAN_SRV_PREV_DISP) - OceanDisplacement(p, width);
+    const float2 origin = float2(instanceProps[instID].objectToWorld[0][3], instanceProps[instID].objectToWorld[2][3]);
+    const OceanParamsGPU P = OceanParams();
+    const uint current = OceanDispSlot(P), previous = OceanPrevDispSlot(P);
+    // Built from the same grid points and widths as the vertex itself (Ocean_Tiles_v8.hlsl).
+    const float2 qLo = origin + float2(src.lo) * step;
+    const float wLo = OceanGeometryWidth(qLo, P);
+    float3 delta = OceanDisplacementFrom(qLo, wLo, previous) - OceanDisplacementFrom(qLo, wLo, current);
+    if (src.w > 0.0f) {
+        const float2 qHi = origin + float2(src.hi) * step;
+        const float wHi = OceanGeometryWidth(qHi, P);
+        delta = lerp(delta, OceanDisplacementFrom(qHi, wHi, previous) - OceanDisplacementFrom(qHi, wHi, current), src.w);
     }
-    return delta * 0.5f;
+    return delta;
 }
 float3 OceanPreviousHit(uint instID, uint primID, float2 bary, float3 hitPos) {
     const uint base = instanceProps[instID].indexBase + 3u * primID;
@@ -459,8 +463,9 @@ inline void RefetchMaterialUV(uint matID, float2 uv, out float3 localKd, out flo
 }
 
 // Beauty water uses the editable scene material, like other surfaces. Procedural ocean
-// evaluation supplies its full-resolution wave normal. Direct lights filter their
-// own highlight lobe; that filter must not enter the continuation or guide roughness.
+// evaluation supplies the wave normal averaged over the ray footprint and, as a floor on the
+// authored roughness, the spread of the ripples that average removed. Direct lights widen their
+// own highlight lobe on top of that; that widening stays out of continuation and guides.
 inline void RefetchMaterial(uint matID, HitInfo hit, out float3 localKd, out float localPr, out float localPm)
 {
     [branch]
@@ -473,6 +478,9 @@ inline void RefetchMaterial(uint matID, HitInfo hit, out float3 localKd, out flo
             localPm = 0.0f;
             return;
         }
+        RefetchMaterialUV(matID, hit.uv, localKd, localPr, localPm, hit.uvFootprint);
+        localPr = max(localPr, hit.oceanPr);
+        return;
     }
     RefetchMaterialUV(matID, hit.uv, localKd, localPr, localPm, hit.uvFootprint);
 }
@@ -659,7 +667,7 @@ HitInfo EvalSurfaceStateImpl(
         const float2 tileOrigin = float2(instanceProps[instID].objectToWorld[0][3],
                                          instanceProps[instID].objectToWorld[2][3]);
         const float2 oceanPosition = tileOrigin + uv * tileSize;
-        const OceanSurface sea = OceanEvalSurface(oceanPosition, width);
+        const OceanSurface sea = OceanEvalSurface(oceanPosition, width, uv, tileSize);
 
         normW = sea.normal;
         // Keep the shading normal on the visible side of the triangle the ray actually hit: the
@@ -672,6 +680,8 @@ HitInfo EvalSurfaceStateImpl(
         hit.oceanKd = sea.albedo;
         hit.oceanPr = sea.roughness;
         hit.oceanMaterialOffset = sea.materialOffset;
+        hit.oceanFoam = sea.foam;
+        hit.oceanBubbles = sea.bubbles;
     }
 
     const int normalTexID = LoadNormalTexID(materialID);

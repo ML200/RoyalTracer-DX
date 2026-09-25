@@ -10,6 +10,29 @@ bool SharcScatterHasSpread(uint strategy, uint matID, half roughness)
     return false;
 }
 
+// The solid angle of a GGX refraction lobe into or out of solid glass (SharcLobeConeAngle), eta the
+// IOR ratio etai / etat across the surface. Snell turns a microfacet's tilt into (1 - eta) of it in
+// deviation where a reflection turns it into twice it, so head-on the lobe is 3% of the reflection
+// lobe entering glass and 6% leaving it, more toward grazing views. Smooth glass maps the normals'
+// lobe (3 pi alpha^2) through the Jacobian of Snell's law at the macro normal; rough glass
+// saturates at a size set by |1 - eta| alone (a lobe and its reverse are the same size) that halves
+// toward grazing. A fit to the numerically integrated VNDF refraction lobe, given that the sampler
+// refracted, over roughness 0.06 to 1, all views and eta 1/2.4 to 2.4: within 16% rms and never
+// over by more than 1.63x; at grazing views it comes out up to 1.9x small, the side on which the
+// cache answers later. Leaving glass past the critical angle, where only steep microfacets refract,
+// it is mostly small too and at most 2x large. The reflection lobe used for refractions before was
+// 27x too large rms, up to 484x, and let the cache answer right behind frosted glass.
+float SharcRefractionSolidAngle(half roughness, float cosView, float eta)
+{
+    const float a = max((float)roughness * (float)roughness, 1e-3f);
+    const float cosT = sqrt(max(1.0f - eta * eta * (1.0f - cosView * cosView), 0.34f * 0.34f));
+    const float jacobian = (eta * cosView - cosT) * (eta * cosView - cosT) / cosT;
+    const float smooth = jacobian * 3.0f * PI * a * a;
+    const float rough = max(5.6f * pow(1.0f - min(eta, rcp(eta)), 1.7f), 1e-6f) *
+        (0.5f + 0.5f * pow(cosView, 5.0f));
+    return smooth * pow(1.0f + pow(smooth / rough, 1.5f), -1.0f / 1.5f);
+}
+
 // The cone of a picked lobe for the cache test (SharcConeRamp): the solid angle the lobe actually
 // covers, one definition for every lobe, 1 / integral(p^2) with p its density over the directions
 // it can reach, normalized to one (the inverse of the density a direction drawn from it expects).
@@ -19,15 +42,19 @@ bool SharcScatterHasSpread(uint strategy, uint matID, half roughness)
 // grazing, about with the cosine of the view down to a floor the horizon sets; a rough one hardly
 // does. The GGX size is a fit to the numerically integrated VNDF reflection lobe, within 13% rms
 // over roughness 0.1 to 1 and all views: 12 pi alpha^2 at a glossy lobe, 2 pi at roughness 1. The
-// sheen fit is within 23%. Taken from the lobe itself, never from the density of the one direction
-// drawn from it. Returned as the full angle of the circular cone with that solid angle
-// (pi/4 angle^2), so the cones of successive lobes add up along the path.
-float SharcLobeConeAngle(uint strategy, uint matID, half roughness, float cosView)
+// sheen fit is within 23%. A refraction into or out of solid glass (refractEta, the IOR ratio
+// across the surface, 0 otherwise) has a lobe of its own (SharcRefractionSolidAngle); thin glass
+// transmits the mirrored reflection lobe. Taken from the lobe itself, never from the density of
+// the one direction drawn from it. Returned as the full angle of the circular cone with that solid
+// angle (pi/4 angle^2), so the cones of successive lobes add up along the path.
+float SharcLobeConeAngle(uint strategy, uint matID, half roughness, float cosView, float refractEta = 0.0f)
 {
     if (strategy == 0u) return SHARC_DIFFUSE_CONE;
     float solidAngle;
     if (strategy == 3u)
         solidAngle = 3.1f + 5.6f * cosView * (1.0f - cosView);
+    else if (refractEta > 0.0f)
+        solidAngle = SharcRefractionSolidAngle(roughness, cosView, refractEta);
     else
     {
         const float r = strategy == 2u ? LoadPcr(matID) : (float)roughness;

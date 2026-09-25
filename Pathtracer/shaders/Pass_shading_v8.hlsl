@@ -216,6 +216,28 @@ OceanBelow ResolveOceanBelow(SurfaceVertex sv, float3 transmitted, float3 camPos
     return b;
 }
 
+// The diffuse albedo a whitecap's dithered material step averages to: the foam and bubble steps
+// `foam` and `bubbles` fall between (OceanSurface.foam, .bubbles) are each drawn with the odds
+// their fraction gives, so the mean is the bilinear blend of the four slots' diffuse share. The
+// step a frame happens to draw differs from its neighbours by up to a quarter of white in the
+// bubble cloud, and a guide taken from it flickered with the draw; the reconstruction took thin
+// foam for noise and filled the fade in white.
+float3 OceanGuideAlbedo(float foam, float bubbles)
+{
+    const uint base = OceanParams().materialBase;
+    const float fx = saturate(foam) * (OCEAN_FOAM_STEPS - 1), fy = saturate(bubbles) * (OCEAN_BUBBLE_STEPS - 1);
+    const uint f0 = min((uint)fx, (uint)OCEAN_FOAM_STEPS - 1u), b0 = min((uint)fy, (uint)OCEAN_BUBBLE_STEPS - 1u);
+    const uint f1 = min(f0 + 1u, (uint)OCEAN_FOAM_STEPS - 1u), b1 = min(b0 + 1u, (uint)OCEAN_BUBBLE_STEPS - 1u);
+    const float tf = fx - float(f0), tb = fy - float(b0);
+    float3 albedo = 0.0f;
+    [unroll] for (uint k = 0u; k < 4u; ++k) {
+        const uint slot = base + ((k & 1u) != 0u ? f1 : f0) + OCEAN_FOAM_STEPS * ((k & 2u) != 0u ? b1 : b0);
+        const float w = ((k & 1u) != 0u ? tf : 1.0f - tf) * ((k & 2u) != 0u ? tb : 1.0f - tb);
+        albedo += w * LoadKd_rgb(slot) * LoadKd_w(slot);
+    }
+    return albedo;
+}
+
 void WriteOceanGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out DlssGuides g)
 {
     const uint instID = load_instID(g_sample_current, pixelIdx);
@@ -229,10 +251,19 @@ void WriteOceanGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out D
     // The surface's own diffuse share, plus whatever it is transmitting from below. Depth, normal
     // and motion stay the interface's own: it deforms every frame and is not a rigid mirror onto
     // what is behind it, which is why they are not replaced the way a specular probe would.
+    //
+    // Whitecaps are a dithered step of the sea's material block, drawn afresh every frame; the
+    // albedo is the one the step averages to, from the foam it was drawn from (OceanGuideAlbedo),
+    // so it carries every strand and bubble of it and holds still. The diagnostic views' opaque
+    // slot is not dithered and keeps its own.
     const float3 below = 1.0f - fresnel;
     const OceanBelow bed = ResolveOceanBelow(sv, below, camPos);
-    g.diffuseAlbedo = float4(sv.Kd * LoadKd_w(sv.matID) * (1.0f - sv.Pm) * below
-                                 + bed.albedo * bed.weight, 1.0f);
+    float3 own = sv.Kd * LoadKd_w(sv.matID);
+    if (sv.matID - OceanParams().materialBase < (uint)OCEAN_MATERIAL_LEVELS) {
+        const float4 foam = gScratchPing[uint3(px, OCEAN_GUIDE_SLOT)];
+        own = OceanGuideAlbedo(foam.x, foam.y);
+    }
+    g.diffuseAlbedo = float4(own * (1.0f - sv.Pm) * below + bed.albedo * bed.weight, 1.0f);
     g.mv = SurfaceMotionVector(px, dims, sv.x, instID);
     g.specMv = g.mv;
     g.specHitDist = 0.0f;
@@ -242,6 +273,43 @@ void WriteOceanGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out D
 
 // Guides before primary surface replacement: everything describes the reflector, except that
 // thin glass takes depth, motion and albedo from the surface behind it.
+// A camera inside the water sees mostly the water itself: the light it scatters towards the eye
+// along the whole ray, and whatever the ray hits only through the water in front of it. Handing
+// the reconstruction the hit's guides alone, as for a camera in air, split the image at the
+// horizon: rays climbing to the underside of the surface carried its guides, rays sinking into
+// the open depths the sky's colour and depth, and a smooth haze in the path-traced image came out
+// of the denoiser with a dark seam where the two met. The hit's guides are faded by the
+// transmittance to it into those of the medium - its scattering colour, a surface facing the
+// camera at the depth where the water has swallowed the view, fixed to the camera the way
+// homogeneous fog is - so nothing changes across the horizon but what the water really does.
+void BlendUnderwaterGuides(uint2 px, float2 dims, float3 camPos, uint primaryInst, uint pixelIdx, inout DlssGuides g)
+{
+    float3 sigmaA, sigmaS; float phaseG;
+    OceanMediumCoefficients(sigmaA, sigmaS, phaseG);
+    const float3 sigmaT = sigmaA + sigmaS;
+    const float3 vdir = PixelViewDir(px, dims);
+    const bool hasHit = primaryInst != 0xFFFFFFFFu;
+    const float hitDist = hasHit ? length(load_x1(g_sample_current, pixelIdx) - camPos) : 1e30f;
+    // Measured in the channel the water passes best: clear water has taken the red and most of the
+    // green within ten metres, but a surface twenty metres up is still plainly visible in blue, and
+    // weighting by luminance handed the denoiser a fog there that it smeared the surface into.
+    // fogDist is where even that channel is down to a twentieth.
+    const float clearest = max(min(sigmaT.x, min(sigmaT.y, sigmaT.z)), 1e-4f);
+    const float fogDist = 3.0f / clearest;
+    const float t = hasHit ? exp(-clearest * hitDist) : 0.0f;
+
+    const float3 color = saturate(sigmaS / max(max(sigmaS.x, max(sigmaS.y, sigmaS.z)), 1e-6f));
+    g.diffuseAlbedo = float4(lerp(color, g.diffuseAlbedo.rgb, t), 1.0f);
+    g.specularAlbedo *= t;
+    g.roughness = lerp(1.0f, g.roughness, t);
+    g.n = normalize(lerp(-vdir, hasHit ? g.n : -vdir, t));
+    g.depth = DLSS_GuideDepthFromWorldPos(camPos + vdir * min(hitDist, fogDist));
+    // Faded like the rest, since a switch at any one distance draws an arc across the view.
+    g.mv = lerp(SkyMotionVector(px, dims), hasHit ? g.mv : 0.0f, t);
+    g.specMv = lerp(g.mv, hasHit ? g.specMv : 0.0f, t);
+    g.specHitDist *= t;
+}
+
 void WriteLegacyGuides(uint2 px, uint pixelIdx, float2 dims, float3 camPos, out DlssGuides g)
 {
     const uint   sInstID = load_instID(g_sample_current, pixelIdx);
@@ -595,6 +663,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     }
+
+    if ((load_flagsWord(g_sample_current, pixelIdx) & SD_FLAG_CAMERA_WATER) != 0u)
+        BlendUnderwaterGuides(DTid.xy, dims, camPosWorld, primaryInst, pixelIdx, g);
 
     float normalW = g.roughness;
     if ((rs_flags & RS_FLAG_GUIDE_OFF_ANY) != 0u)

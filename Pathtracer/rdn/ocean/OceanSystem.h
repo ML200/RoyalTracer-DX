@@ -14,6 +14,10 @@ namespace ocean {
 // top-level acceleration structure as the rest of the scene, and the graphics queue waits on that
 // queue before tracing. The geometry lives in the renderer's global vertex and index buffers, so
 // the hit evaluator reaches ocean triangles exactly as it reaches any other mesh.
+//
+// That wait is on the critical path of every frame - the CPU has already waited for the previous
+// frame's graphics work before this is submitted - so everything recorded here is paid for in
+// full, before a single ray is traced.
 class OceanSystem : public planet::IExternalStream {
   public:
     ~OceanSystem() override = default;
@@ -59,6 +63,7 @@ class OceanSystem : public planet::IExternalStream {
     // Clear dielectric surface with separate absorption and single-scattering volume controls.
     static Material MakeMaterial(const Params& p);
 
+    static constexpr uint32_t kGpuStages = 4;
     struct Stats {
         uint32_t tiles = 0;
         uint32_t leaves = 0;
@@ -68,31 +73,48 @@ class OceanSystem : public planet::IExternalStream {
         uint64_t triangles = 0;
         uint64_t blasBytes = 0;
         uint64_t resourceBytes = 0;
-        float conditioningGain = 1.0f;
+        // Horizontal gain the short waves get (ocean::ShortWaveChop, on top of the choppiness), and
+        // the spread of the surface's Jacobian that results: how pointed the crests are, and so how
+        // many of them break.
+        float horizontalGain = 1.0f;
+        float crestStrain = 0.0f;
         float bakeMs = 0.0f;
         double slopeVarSpectrum = 0.0;
         double slopeVarCoxMunk = 0.0;
         double significantWaveHeight = 0.0;
-        double whitecapCoverage = 0.0;
-        double whitecapMeasured = 0.0;
         double surfaceY = 0.0;
         // Steepest crest sharpening any cascade carries, as a*sigma. Saturated at
         // ocean::kMaxSkewSteepness the band is as peaked as it can get without its troughs
         // turning back up.
         double crestSteepness = 0.0;
+        // Bounds on the displaced surface about the mean level, metres.
+        double crestHeight = 0.0;
+        double troughDepth = 0.0;
 
         // What the ocean costs the GPU each frame, by stage, in milliseconds. This work is
         // recorded on the streaming compute queue, which the graphics queue waits on before it
         // traces - so it lands in the frame's wait rather than in any of the render passes, and
         // is invisible to a per-pass profiler even while it dominates.
-        float gpuStageMs[6] = {};   // spectrum, assemble, surface, mips, tessellation, structures
+        float gpuStageMs[kGpuStages] = {}; // spectrum, mips, tessellation, structures
         float gpuTotalMs = 0.0f;
+
+        // Whitecaps as the simulation last measured them (OceanFoamState): the share of the sea
+        // under foam over each foam level's own ground - OCEAN_FOAM_REFERENCE_LEVEL's is the one
+        // steered to foamTarget - the share breaking, and the Jacobian each level breaks below.
+        float foamCoverage[OCEAN_FOAM_LEVELS] = {};
+        float foamWhite = 0.0f; // share of the reference level plainly white: what foamTarget is met in
+        float foamBreaking = 0.0f;
+        float foamThreshold[OCEAN_FOAM_LEVELS] = {};
+        float foamMatch[OCEAN_FOAM_LEVELS] = {};
+        float foamTarget = 0.0f; // the cover asked for (ocean::WhitecapCover)
     };
-    static constexpr const wchar_t* kGpuStageNames[6] = {L"spectrum", L"assemble", L"surface",
-                                                         L"mips", L"tessellation", L"structures"};
+    static constexpr const wchar_t* kGpuStageNames[kGpuStages] = {L"spectrum", L"mips", L"tessellation",
+                                                                  L"structures"};
     const Stats& GetStats() const { return m_stats; }
 
   private:
+    static constexpr uint32_t kTimestamps = kGpuStages + 1;
+
     // Tiles this ocean may keep resident, which is what its per-frame acceleration-structure work
     // and its memory both scale with. Read wherever a buffer is sized, so it stays consistent with
     // what GetReservation asked the scene for.
@@ -110,15 +132,18 @@ class OceanSystem : public planet::IExternalStream {
     void UploadBaked(ID3D12GraphicsCommandList* copyList);
     void UploadTurbulence(ID3D12GraphicsCommandList* copyList);
     void RecordSimulation(ID3D12GraphicsCommandList4* cl);
+    void RecordFoam(ID3D12GraphicsCommandList4* cl);
     void RecordTessellation(ID3D12GraphicsCommandList4* cl);
     void RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl);
+    void Transition(ID3D12GraphicsCommandList* cl, ID3D12Resource* r, D3D12_RESOURCE_STATES& state,
+                    D3D12_RESOURCE_STATES next);
     void Timestamp(ID3D12GraphicsCommandList* cl, uint32_t point) {
-        if (m_timestamps) cl->EndQuery(m_timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, m_frameIndex * 7 + point);
+        if (m_timestamps)
+            cl->EndQuery(m_timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, m_frameIndex * kTimestamps + point);
     }
 
     Params m_params;
     const ICoverage* m_coverage = nullptr;
-    bool m_paramsDirty = true;
     bool m_initialised = false;
 
     ID3D12Device5* m_device = nullptr;
@@ -137,54 +162,53 @@ class OceanSystem : public planet::IExternalStream {
     uint32_t m_propsBase = 0;
     uint32_t m_materialIndex = 0;
 
-    // Simulation resources
+    // Simulation resources. The displacement pair ping-pongs: the array written this frame is
+    // the current surface, the other one last frame's, which is all motion vectors need.
     ComPtr<ID3D12Resource> m_h0;
-    ComPtr<ID3D12Resource> m_wave;
     ComPtr<ID3D12Resource> m_fft;
-    ComPtr<ID3D12Resource> m_disp;
+    ComPtr<ID3D12Resource> m_disp[2];
     ComPtr<ID3D12Resource> m_deriv;
-    ComPtr<ID3D12Resource> m_moments;
-    ComPtr<ID3D12Resource> m_surface;
-    ComPtr<ID3D12Resource> m_previousDisp;
+    D3D12_RESOURCE_STATES m_dispState[2] = {D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+    D3D12_RESOURCE_STATES m_derivState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    // World-space whitecap foam (OCEAN_SRV_FOAM0/1): two camera-centred levels per texture, and two
+    // textures that ping-pong so last frame's foam is read while this frame's is written.
     ComPtr<ID3D12Resource> m_foam[2];
+    D3D12_RESOURCE_STATES m_foamState[2] = {D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+    uint32_t m_foamParity = 0;
+    // Where each level sat last frame, in whole texels of absolute world XZ, and whether that
+    // frame's foam can be carried over at all.
+    int64_t m_foamCell[OCEAN_FOAM_LEVELS][2] = {};
+    bool m_foamHistory = false;
+    // Breaking-point histograms and the state set from them (OCEAN_UAV_FOAM_STATS), and a copy of
+    // the state per frame in flight for the readouts.
+    ComPtr<ID3D12Resource> m_foamStats;
+    D3D12_RESOURCE_STATES m_foamStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    ComPtr<ID3D12Resource> m_foamStatsReadback;
     ComPtr<ID3D12Resource> m_bakeUpload;
     ComPtr<ID3D12Resource> m_turbulence;
     ComPtr<ID3D12Resource> m_turbulenceUpload;
 
     ComPtr<ID3D12Resource> m_paramsBuffer;
     ComPtr<ID3D12Resource> m_tilesBuffer;
-    ComPtr<ID3D12Resource> m_statsBuffer;
-    ComPtr<ID3D12Resource> m_statsReadback[FRAME_COUNT];
-    uint64_t m_statsFence[FRAME_COUNT] = {};
     ComPtr<ID3D12Resource> m_paramsUpload[FRAME_COUNT];
     ComPtr<ID3D12Resource> m_tilesUpload[FRAME_COUNT];
+    uint64_t m_timestampFence[FRAME_COUNT] = {};
 
     ComPtr<ID3D12Resource> m_blasBuffer;
     ComPtr<ID3D12Resource> m_blasScratch;
     uint64_t m_blasSlotSize = 0;
-    uint64_t m_blasScratchSize = 0;
-    uint64_t m_blasUpdateScratchSize = 0;
-    static constexpr uint32_t kScratchSlots = 24;
+    uint64_t m_blasScratchSize = 0; // per tile; the pool holds one range for every slot of the budget
 
     ComPtr<ID3D12RootSignature> m_rootSig;
-    ComPtr<ID3D12PipelineState> m_psoEvolve;
     ComPtr<ID3D12PipelineState> m_psoFftH;
     ComPtr<ID3D12PipelineState> m_psoFftV;
-    ComPtr<ID3D12PipelineState> m_psoAssemble;
-    ComPtr<ID3D12PipelineState> m_psoCondition;
-    ComPtr<ID3D12PipelineState> m_psoFoam;
     ComPtr<ID3D12PipelineState> m_psoMip;
     ComPtr<ID3D12PipelineState> m_psoTiles;
-
-    // Folding threshold control. The baked z-score sets the instantaneous folding fraction, but
-    // foam persists and drifts for seconds afterwards, so the coverage that actually reaches the
-    // image is several times larger and depends on the decay and drift settings. Rather than fold
-    // a fudge factor into the calibration, the measured coverage steers a per-cascade offset.
-    double m_foamZBase = 0.0;
-    double m_foamZOffset[OCEAN_CASCADES] = {};
-    double m_foamSigmaJ[OCEAN_CASCADES] = {};
-    double m_foamTargetPerCascade = 0.0;
-    double m_foamMeasured[OCEAN_CASCADES] = {};
+    ComPtr<ID3D12PipelineState> m_psoFoam;
+    ComPtr<ID3D12PipelineState> m_psoFoamMip;
+    ComPtr<ID3D12PipelineState> m_psoFoamStats;
 
     // Mean sea level actually used, and how far the deepest trough reaches below it.
     double m_surfaceY = 0.0;
@@ -194,10 +218,17 @@ class OceanSystem : public planet::IExternalStream {
     // sharpening is solved from these every frame, so it needs no re-bake of its own.
     double m_cascadeVariance[OCEAN_CASCADES] = {};
     double m_cascadeMeanK[OCEAN_CASCADES] = {};
+    // RMS of the horizontal strain tensor's norm per unit choppiness, summed over every cascade:
+    // the spread of the surface's Jacobian, which is how pointed its crests are.
+    double m_strainRms = 0.0;
+    // Which waves take the short-wave chop (OceanParamsGPU.chopBand); follows the spectral peak.
+    ChopBand m_chopBand;
+    // OceanParamsGPU.residualSlope, solved with the spectrum.
+    float m_residualSlope[OCEAN_ROUGHNESS_ENTRIES] = {};
+    uint32_t m_frameCounter = 0;
 
-    // Baked spectrum, CPU side. The same samples produce the textures and the slope variances.
+    // Baked spectrum, CPU side. The same samples produce the texture and the statistics.
     std::vector<XMFLOAT4> m_h0Data;
-    std::vector<XMFLOAT4> m_waveData;
     // Kilometre-scale sea-state field, (gain, d/dx, d/dz). Independent of the spectrum, so it is
     // rebuilt only when its own controls move rather than on every re-bake.
     std::vector<XMFLOAT4> m_turbulenceData;
@@ -214,16 +245,15 @@ class OceanSystem : public planet::IExternalStream {
 
     double m_time = 0.0;
     double m_phaseEpoch = 0.0;
-    float m_effectiveChoppiness = 0.0f;
-    bool m_resetFoam = true;
     planet::DVec3 m_previousOrigin{};
     float m_dt = 0.0f;
     uint32_t m_frameIndex = 0;
-    uint32_t m_frameCounter = 0;
-    uint32_t m_foamParity = 0;
+    // Frames simulated since the field last changed underneath its history (a re-bake). Motion
+    // vectors need one completed frame to difference against.
+    uint32_t m_historyFrames = 0;
+    uint32_t m_parity = 0;
     bool m_bakePending = true;
     bool m_h0Dirty = true;
-    bool m_firstRecord = true;
     planet::DVec3 m_sceneOrigin{};
 
     Stats m_stats;
@@ -235,4 +265,3 @@ class OceanSystem : public planet::IExternalStream {
 };
 
 } // namespace ocean
-

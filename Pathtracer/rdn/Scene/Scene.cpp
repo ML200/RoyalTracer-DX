@@ -1,7 +1,7 @@
 #include "../stdafx.h"
 #include <fstream>
 #include "Scene.h"
-#include "../../shaders/OceanLayout.h"
+#include "../ocean/OceanCommon.h"
 #include "../DXRHelper.h"
 
 void MeshGPU::CreateBlasBuildInputs(ID3D12Device* device) {
@@ -85,7 +85,7 @@ void Scene::ReserveTerrain(UINT vertexElems, UINT indexElems, UINT matIDElems, U
 }
 
 void Scene::ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots,
-                         const Material& mat) {
+                         const Material& mat, float foamAlbedo) {
     // Read the count while the ocean's own slots are still zero, so the ocean lands after every
     // other range. The shader relies on that ordering to identify an ocean hit by index alone.
     oceanPropsBase = instancePropsCount();
@@ -96,18 +96,12 @@ void Scene::ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UIN
 
     oceanMatIndex = (UINT)materials.size();
     oceanMaterialEdited = false;
-    // Coverage survives the deferred path and denoiser records as an ordinary material ID.
-    // Clear water transmits; increasingly dense whitecaps replace transmission with diffuse light.
+    // Whitecap-coverage ramps from the water to solid foam, one for each density of the bubble cloud
+    // under the foam, then the diagnostic slot.
     for (uint32_t i = 0; i < OCEAN_MATERIAL_COUNT; ++i) {
         Material layer = mat;
-        const float foam = float(i % OCEAN_MATERIAL_LEVELS) / float(OCEAN_MATERIAL_LEVELS - 1);
-        layer.Kd.w = mat.Kd.w + (1.0f - mat.Kd.w) * foam;
-        layer.sssWeight = mat.sssWeight * (1.0f - foam);
-        layer.sssEnable = layer.sssWeight > 0.0f ? mat.sssEnable : 0u;
-        layer.Pcr_aniso_anisor.y = 0.8f * float((i / OCEAN_MATERIAL_LEVELS) % OCEAN_ANISO_LEVELS) /
-            float(OCEAN_ANISO_LEVELS - 1);
-        layer.Pcr_aniso_anisor.z = float(i / (OCEAN_MATERIAL_LEVELS * OCEAN_ANISO_LEVELS)) /
-            float(OCEAN_DIRECTION_LEVELS);
+        ocean::WriteMaterialSlot(i, mat.Kd, mat.Tf, mat.sssWeight, mat.sssEnable, foamAlbedo, layer.Kd,
+                                 layer.sssWeight, layer.sssEnable);
         materials.push_back(layer);
     }
     materialNames.resize(materials.size());

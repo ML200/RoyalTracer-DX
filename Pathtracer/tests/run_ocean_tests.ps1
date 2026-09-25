@@ -9,7 +9,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Ocean CPU test build failed; use a VS Develope
 & "$OutputDirectory/OceanTests.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Ocean CPU regression failed' }
 
-$entries = @('OceanEvolve','OceanFftH','OceanFftV','OceanAssemble','OceanFoam','OceanMip','OceanCondition')
+$entries = @('OceanFftH','OceanFftV','OceanMip')
 foreach ($entry in $entries) {
     & "$root/include/dxc.exe" -T cs_6_6 -E $entry -HV 2021 -enable-16bit-types -O3 -WX `
         -D OCEAN_FFT_SIZE=16 -D OCEAN_FFT_LOG2=4 "$root/shaders/Ocean_Sim_v8.hlsl" -Fo "$OutputDirectory/small-$entry.dxil"

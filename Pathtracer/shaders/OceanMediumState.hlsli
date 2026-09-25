@@ -17,23 +17,31 @@ void OceanMediumCoefficients(out float3 sigmaA, out float3 sigmaS, out float g) 
 // follows actual triangle crossings, including total internal reflection.
 float OceanHeight(float2 xz) {
     const OceanParamsGPU p = OceanParams();
+    // Newton on the horizontal map: find the undisplaced point whose displacement lands on xz.
+    // Each step takes its residual and its Jacobian from one fused sample, and the last sample is
+    // the height itself.
     float2 q = xz;
-    [unroll] for (uint i=0u; i<4u; ++i) {
-        const float3 d = OceanDisplacement(q, 0.0f);
-        float2 gradient; float3 stretch;
-        OceanDerivatives(q, 0.0f, gradient, stretch);
-        const float2 residual = q + d.xz - xz;
-        q -= clamp(float2(stretch.y*residual.x-stretch.z*residual.y,
-                          stretch.x*residual.y-stretch.z*residual.x) /
-                   max(stretch.x*stretch.y-stretch.z*stretch.z, 0.0225f), -8.0f, 8.0f);
+    OceanSample s = OceanSampleSurface(q, 0.0f);
+    [unroll] for (uint i=0u; i<3u; ++i) {
+        const float3 A = s.stretch;
+        const float2 residual = q + s.displacement.xz - xz;
+        q -= clamp(float2(A.y*residual.x-A.z*residual.y, A.x*residual.y-A.z*residual.x) /
+                   max(A.x*A.y-A.z*A.z, 0.0225f), -8.0f, 8.0f);
+        s = OceanSampleSurface(q, 0.0f);
     }
     const float2 absoluteQ = q + p.curveOrigin;
-    return p.surfaceY + OceanDisplacement(q, 0.0f).y - 0.5f*dot(absoluteQ,absoluteQ)*p.invRadius;
+    return p.surfaceY + s.displacement.y - 0.5f*dot(absoluteQ,absoluteQ)*p.invRadius;
 }
 bool OceanPointInside(float3 pos) {
     if (!OceanMediumEnabled()) return false;
     const OceanParamsGPU p = OceanParams();
-    return all(abs(pos.xz+p.curveOrigin) < p.halfExtent) && pos.y < OceanHeight(pos.xz);
+    const float2 absoluteXZ = pos.xz+p.curveOrigin;
+    if (any(abs(absoluteXZ) >= p.halfExtent)) return false;
+    // Clear of every crest, or below every trough: no need to find the surface.
+    const float meanLevel = p.surfaceY - 0.5f*dot(absoluteXZ,absoluteXZ)*p.invRadius;
+    if (pos.y > meanLevel + p.crestHeight) return false;
+    if (pos.y < meanLevel - p.troughDepth) return true;
+    return pos.y < OceanHeight(pos.xz);
 }
 float OceanBoundaryDistance(float3 pos, float3 dir, float distanceM) {
     const OceanParamsGPU p = OceanParams();
@@ -53,6 +61,11 @@ float3 OceanShadowTransmittance(float3 a, float3 b) {
     const float3 span = b-a;
     const float distanceM = length(span);
     if (distanceM < 1e-5f) return 1.0f;
+    // Curvature only ever lowers the sea, so a segment whose ends both clear the highest crest
+    // cannot touch water. That is nearly every shadow ray in a scene with a sea in it, and the
+    // height solve below is the most expensive thing on this path.
+    const OceanParamsGPU p = OceanParams();
+    if (min(a.y, b.y) > p.surfaceY + p.crestHeight) return 1.0f;
     const float3 dir = span/distanceM;
     const float h = OceanHeight(a.xz);
     float begin = 0.0f, end = distanceM;

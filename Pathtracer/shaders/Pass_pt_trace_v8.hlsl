@@ -78,7 +78,7 @@ void Pass_pt_trace_v8()
             reorderHint = load_instID(g_sample_current, pixelIdx) & 0xffu;
         else
         {
-            hit = OceanTracePathHit(ray);
+            hit = OceanTracePathHitInMedium(ray, (inFlags & PV_IN_WATER_MEDIUM) != 0u);
             if ((inFlags & PV_IN_WATER_MEDIUM) != 0u) {
                 uint sVolume = RcBounceSeed(PtPathSeed(pixel, s), depth, 0x57415452u);
                 const OceanFlight flight = OceanSampleWaterSegment(ray.Origin,rayDir,
@@ -97,13 +97,18 @@ void Pass_pt_trace_v8()
                     // the surface-bounce budget; the scattered flag bounds this loop.
                     pos = ray.Origin+rayDir*flight.distance;
                     pathDist += flight.distance;
+                    // The sun is sampled here, through the surface above; the continuation keeps
+                    // the sky, emitters and everything it bounces off, but no longer counts the sun
+                    // along its specular chain out of the water.
+                    const float3 sunNee = OceanVolumeSunNee(pos, rayDir, sVolume);
+                    gathered += throughput * sunNee;
+                    if (depth >= 2u && (ps & PT_PS_LITE_VERTEX) != 0u) liteL += liteSuffix * sunNee;
                     rayDir = OceanSampleScatterDirection(rayDir,sVolume);
                     ray.Origin = pos; ray.Direction = rayDir;
                     ray.TMin = 0.00001f; ray.TMax = RAY_TMAX_PLANET;
                     ps |= PT_PS_MIS_NONE;
-                    inFlags = (inFlags | PV_IN_WATER_SCATTERED | PV_IN_MIS_NONE) & ~PV_IN_WATER_DIRECT;
-                    // There is no NEE partner at a volume vertex. Preserve emission
-                    // and sky reached by this new path, and don't apply surface MIS.
+                    inFlags = (inFlags | PV_IN_WATER_SCATTERED | PV_IN_MIS_NONE | PV_IN_SUN_OWNED) & ~PV_IN_WATER_DIRECT;
+                    // No surface MIS against the phase-sampled continuation.
                     prev_pdf = 1.0f;
                     continue;
                 }
@@ -283,6 +288,7 @@ void Pass_pt_trace_v8()
         inFlags |= (io.flags & PV_WATER_DIRECT) != 0u ? PV_IN_WATER_DIRECT : 0u;
         inFlags |= (io.flags & PV_WATER_MEDIUM) != 0u ? PV_IN_WATER_MEDIUM : 0u;
         inFlags |= (io.flags & PV_WATER_SCATTERED) != 0u ? PV_IN_WATER_SCATTERED : 0u;
+        inFlags |= (io.flags & PV_SUN_OWNED) != 0u ? PV_IN_SUN_OWNED : 0u;
     }
 
     if (!pending)
