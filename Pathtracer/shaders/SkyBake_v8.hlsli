@@ -65,8 +65,7 @@ void SkyBakeLoadView(float3 v, out float3 scatter, out float3 viewTr, out float 
     hitPlanet = lerp(lerp(h00, h10, wx), lerp(h01, h11, wx), wy);
 }
 
-// Solid angle of a bake texel: azimuth in even steps, elevation as the square of the row's
-// signed distance from the horizon (SkyBakeDirFromUv).
+// Matches the mapping in SkyBakeDirFromUv.
 float SkyBakeTexelSolidAngle(uint row)
 {
     const float x  = ((float)row + 0.5f) / (float)SKYBAKE_LUT_H * 2.0f - 1.0f;
@@ -77,8 +76,7 @@ uint SkyBakeIrradianceSlot(uint frame)
 {
     return SKYBAKE_IRRADIANCE_OFFSET + (frame & 1u) * SKYBAKE_IRRADIANCE_SLOT_BYTES;
 }
-// The sky's irradiance on a horizontal plane this frame (SKYBAKE_IRRADIANCE_OFFSET), for any pass
-// after the bake.
+// Horizontal-plane sky irradiance; valid after the bake.
 float3 SkyBakeLoadIrradiance()
 {
     const uint a = SkyBakeIrradianceSlot((uint)time);

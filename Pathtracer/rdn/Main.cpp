@@ -16,7 +16,6 @@
 #include "../engine/Scene/Ocean.h"
 #define ENABLE_D3D12_DIAGNOSTICS 1
 #include "Diagnostics.h"
-#include <comdef.h>
 
 class EnvTestHooks {
   public:
@@ -95,19 +94,19 @@ class MainScene : public SceneDefinition {
         //m_emissiveCubes.Init(cubes, sm, r);
 
         Ocean::Params sea;
-        sea.enabled = true;      // water surface on or off for this scene
-        sea.windSpeed = 11.0f;   // m/s at 10 m: Beaufort 6, a working sea with whitecaps
-        sea.fetch = 250000.0f;   // m, effectively open ocean
+        sea.enabled = true;
+        sea.windSpeed = 11.0f;   // m/s at 10 m
+        sea.fetch = 250000.0f;   // m
         sea.windDirectionDeg = 35.0f;
-        sea.swell = 0.15f;       // mostly wind sea; higher values comb it into parallel crests
-        sea.swellHeight = 0.0f;  // independent incoming swell, metres Hm0; 0 lets the wind drive the whole sea
+        sea.swell = 0.15f;       // mostly wind sea
+        sea.swellHeight = 0.0f;  // m Hm0; 0 = wind sea only
         sea.swellPeriod = 11.0f;
         sea.swellDirectionDeg = 100.0f;
-        sea.chlorophyll = 0.05f; // mg/m^3: clear deep water, so the body reads indigo
-        sea.extent = 60000.0f;   // m half-extent; the horizon cull trims what is not visible
+        sea.chlorophyll = 0.05f; // mg/m^3, clear deep water
+        sea.extent = 60000.0f;   // m, half-extent
         sea.minTileSize = 8.0f;
-        sea.seaLevelY = 5.7f;    // m: the ship's water line; a Minecraft world's is the top of its water, about 63
-        // Opt-in ocean fixtures leave production lighting, exposure and tracing settings alone.
+        sea.seaLevelY = 5.7f;    // m: ship's water line; Minecraft ~63
+        // Test fixtures change only sea parameters.
         char fixture[64] = {};
         if (GetEnvironmentVariableA("RT_OCEAN_FIXTURE", fixture, sizeof(fixture))) {
             const std::string name(fixture);
@@ -116,7 +115,7 @@ class MainScene : public SceneDefinition {
             else if (name == "rough") { sea.windSpeed=17; sea.significantHeight=4.5f; sea.peakPeriod=9; sea.swellHeight=2; }
             else if (name == "flat") { sea.significantHeight=0; sea.swellHeight=0; sea.foamCoverage=0; }
             else throw std::invalid_argument("Unknown RT_OCEAN_FIXTURE (calm, mixed, rough, flat)");
-            sea.enabled = true; // a fixture is a request for the sea, whatever the scene default
+            sea.enabled = true; // overrides the scene default
             sea.fixedTimeStep = 1.0f / 60.0f;
             LOG(L"[ocean fixture] " << std::wstring(name.begin(),name.end()) << L" seed=" << sea.seed
                 << L" Hm0=" << sea.significantHeight << L" Tp=" << sea.peakPeriod << L" swell=" << sea.swellHeight);
@@ -127,9 +126,6 @@ class MainScene : public SceneDefinition {
             sea.debugMode = uint32_t(std::stoul(debugMode));
         m_ocean.Init(sea, r);
 
-        // Framing for a sea, hundreds of metres of it, so it only belongs to a scene that has one.
-        // Anything else keeps whatever camera it was given, which for a room-sized model is a good
-        // deal closer than this.
         if (sea.enabled && GetEnvironmentVariableA("RT_MC_CAMERA", nullptr, 0) == 0) {
             const float waterLine = m_ocean.SurfaceLevel();
             nv_helpers_dx12::CameraManip.setLookat({0.0f, waterLine + 28.0f, 150.0f},

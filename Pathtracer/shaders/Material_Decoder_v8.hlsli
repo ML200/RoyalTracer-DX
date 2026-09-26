@@ -2,9 +2,7 @@
 #include "OceanLayout.h"
 #include "OceanOptics.hlsli"
 
-// The water and every whitecap step of its ramp use this adapter - a foamy hit is still the sea's
-// surface, and a ray refracted through it still enters the sea. The diagnostic slot and unrelated
-// glass keep their original closures and proposal probabilities.
+// The sea and every whitecap step of its ramp.
 inline bool LoadIsOceanMaterial(uint matID)
 {
     [branch] if (!OCEAN_ENABLED) return false;
@@ -12,7 +10,7 @@ inline bool LoadIsOceanMaterial(uint matID)
     return matID - ocean[0].materialBase < (uint)OCEAN_MATERIAL_LEVELS;
 }
 
-// Lobe width the sun sampler and NEE widen the water surface to; see OceanHighlightRoughness.
+// Widened water lobe for sun sampling and NEE; see OceanHighlightRoughness.
 inline float LoadOceanSunLobeRoughness()
 {
     [branch] if (!OCEAN_ENABLED) return 0.0f;
@@ -20,7 +18,6 @@ inline float LoadOceanSunLobeRoughness()
     return ocean[0].sunLobeRoughness;
 }
 
-// Volume controls never change the surface opacity or its Fresnel energy split.
 inline float3 LoadKd_rgb(uint matID)
 {
     return UnpackRGB9E5(g_mat[matID].Kd_rgb);
@@ -32,7 +29,6 @@ inline float LoadKd_w(uint matID)
     return f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
 }
 
-// Decode base color and material flags from packed storage.
 inline float4 LoadKd(uint matID)
 {
     return float4(LoadKd_rgb(matID), LoadKd_w(matID));
@@ -43,7 +39,7 @@ inline float LoadNi(uint matID)
     return FORCE_DIFFUSE ? 1.0f : f16tof32(g_mat[matID].w_Ni >> 16);
 }
 
-// Decode roughness, metalness, sheen, and coat parameters.
+// Roughness, metalness, sheen, coat.
 inline float4 LoadPrPmPsPc(uint matID)
 {
     if (FORCE_DIFFUSE) return float4(1.0f, 0.0f, 0.0f, 0.0f);
@@ -168,7 +164,7 @@ inline float2 LoadRmaUVScale(uint matID)
 inline bool LoadIsSSS(uint matID)
 {
     if (FORCE_DIFFUSE || (g_mat[matID].texIDs_2 & (1u << 17)) == 0u) return false;
-    // Water's controls drive segment volume transport, never the solid-object walk.
+    // Water uses volume transport, not the SSS walk.
     return !LoadIsOceanMaterial(matID);
 }
 

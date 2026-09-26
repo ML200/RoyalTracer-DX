@@ -5,7 +5,6 @@
 
 namespace planet {
 
-// Replaces one leaf with its four contiguous children.
 void RestrictedQuadtree::do_split(const QuadNode& n, std::vector<uint64_t>& record,
                                   uint32_t& leaf_count) {
     m_set.erase(pack_node_id(n));
@@ -27,7 +26,6 @@ void RestrictedQuadtree::ensure_lod(const QuadNode& region, uint8_t target,
     }
 }
 
-// Refines neighboring leaves before splitting to preserve balance.
 void RestrictedQuadtree::balanced_split(const QuadNode& N, std::vector<uint64_t>& record,
                                         uint32_t& leaf_count) {
     for (int e = 0; e < 4; ++e)
@@ -35,7 +33,6 @@ void RestrictedQuadtree::balanced_split(const QuadNode& N, std::vector<uint64_t>
     do_split(N, record, leaf_count);
 }
 
-// Greedily refines visible leaves, then balances adjacent detail levels.
 void RestrictedQuadtree::select(const QuadtreeParams& params, const CameraView& cam,
                                 const IHeightmapSource* heightmap) {
     QuadtreeParams p = params;
@@ -136,7 +133,7 @@ bool RestrictedQuadtree::covering_leaf(const QuadNode& m, QuadNode& out) const {
     }
 }
 
-// Refines coarse neighbors until adjacent levels differ by at most one.
+// Adjacent leaves differ by at most one level.
 void RestrictedQuadtree::balance() {
     std::vector<uint64_t> work(m_set.begin(), m_set.end());
 

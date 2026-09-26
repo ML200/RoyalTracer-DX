@@ -60,14 +60,7 @@ class DLSSManager {
                                                    sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF,
                                                    sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF};
 
-    bool rrLinkPresets = true;
-
-    // How readily reconstruction drops accumulated history: -1 accumulates longest, +1 is most
-    // responsive. Written per pixel by the shading pass rather than applied uniformly. A rough
-    // surface's shading barely moves between frames and is happy accumulating; a smooth one
-    // carries a sharp reflection that slides across it, so it is ramped part of the way back.
-    // Moving water sits at the far end of its own: its sun glitter is a different set of crests
-    // every frame, and the history length that resolves a static surface smears it.
+    // Per-pixel responsivity: -1 accumulates longest, +1 is most responsive.
     float rrResponsivityRough = -1.0f;  // at roughness 1
     float rrResponsivityMirror = -0.5f; // at roughness 0
     float rrWaterResponsivity = 1.0f;
@@ -89,7 +82,7 @@ class DLSSManager {
     bool untagSpecMV = false;
 
     uint32_t GuideOffFlags() const {
-        // These bits match RS_FLAG_GUIDE_OFF_* in the shader interface.
+        // Must match RS_FLAG_GUIDE_OFF_* in the shaders.
         return (guideOffDepth ? 0x02000000u : 0u) | (guideOffMV ? 0x04000000u : 0u) |
                (guideOffNormals ? 0x08000000u : 0u) | (guideOffRough ? 0x10000000u : 0u) |
                (guideOffAlbedo ? 0x20000000u : 0u) | (guideOffSpecAlb ? 0x40000000u : 0u) |

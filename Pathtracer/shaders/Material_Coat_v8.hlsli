@@ -1,4 +1,3 @@
-// Evaluate the coated layer with its Fresnel-weighted response.
 inline float3 EvaluateBRDF_COAT(
     uint   mID,
     float3 normal,
@@ -97,7 +96,6 @@ struct CoatResult {
     float  t;
 };
 
-// Combine coat reflection and transmission with matching PDFs.
 inline CoatResult EvalCoatAll(
     uint matID, float3 N, float3 V, float3 L,
     half etai, half etat, bool needTransmission = true)

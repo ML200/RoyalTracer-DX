@@ -129,7 +129,7 @@ uint32_t RoyalNRCreateContext(const wchar_t* runtime, ID3D12Device* device, Cont
     if (!runtime || !device || !out)
         return kInvalid;
     *out = nullptr;
-    // Accept only the runtime binary validated for this bridge ABI.
+    // Only runtimes validated against this ABI.
     if (!KnownRuntime(runtime))
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
     auto ctx = std::make_unique<Context>();
@@ -155,7 +155,7 @@ uint32_t RoyalNRCreateContext(const wchar_t* runtime, ID3D12Device* device, Cont
         return result;
     }
     ctx->initialized = true;
-    // Hold the device while the dynamically loaded runtime remains active.
+    // The runtime needs the device alive.
     ctx->device = device;
     device->AddRef();
     result = populate(&ctx->params);
@@ -202,7 +202,7 @@ uint32_t RoyalNREvaluate(Context* ctx, ID3D12GraphicsCommandList* cmd, const Fra
         f->color == f->output || f->width != ctx->width || f->height != ctx->height || !f->guideWidth ||
         !f->guideHeight)
         return kInvalid;
-    // Color/output use display size; depth and motion retain guide resolution.
+    // Color/output at display size; depth/motion at guide size.
     auto& p = ctx->params;
     p.Set("DLSSNR.Color", f->color);
     p.Set("DLSSNR.Output", f->output);
@@ -217,7 +217,7 @@ uint32_t RoyalNREvaluate(Context* ctx, ID3D12GraphicsCommandList* cmd, const Fra
     p.Set("DLSSNR.DepthInverted", 1u);
     p.Set("DLSSNR.Reset", f->reset);
 
-    // Optional inputs are explicitly nulled for deterministic parameter state.
+    // Null optional inputs; no stale parameters.
     for (const char* key : {"DLSSNR.UI", "DLSSNR.UIAlpha", "DLSSNR.Backbuffer", "DLSSNR.ControlMask",
                             "DLSSNR.BidirectionalDistortionField"})
         p.Set(key, static_cast<void*>(nullptr));

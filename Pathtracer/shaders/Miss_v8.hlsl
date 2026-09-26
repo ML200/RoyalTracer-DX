@@ -1,7 +1,6 @@
 #include "Includes_v8.hlsli"
 
-// Escaped rays are shaded by the trace raygen (PtShadeMiss in PtVertex_v8.hlsli); this miss
-// shader only exists so the pipeline has one, and is never invoked.
+// Never invoked; the pipeline just needs a miss shader.
 [shader("miss")]
 void Miss(inout TracePayload payload)
 {

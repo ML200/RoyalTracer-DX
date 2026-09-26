@@ -13,13 +13,10 @@ void OceanMediumCoefficients(out float3 sigmaA, out float3 sigmaS, out float g) 
         max(f16tof32(m.sss_radius_g & 0xffffu), 0.0005f);
     g = clamp(f16tof32(m.sss_radius_g >> 16), -0.95f, 0.95f);
 }
-// Only initialization and lighting query the height field. Path membership thereafter
-// follows actual triangle crossings, including total internal reflection.
+// Initialization and lighting only; paths follow triangle crossings.
 float OceanHeight(float2 xz) {
     const OceanParamsGPU p = OceanParams();
-    // Newton on the horizontal map: find the undisplaced point whose displacement lands on xz.
-    // Each step takes its residual and its Jacobian from one fused sample, and the last sample is
-    // the height itself.
+    // Newton on the horizontal map: q + D(q) = xz.
     float2 q = xz;
     OceanSample s = OceanSampleSurface(q, 0.0f);
     [unroll] for (uint i=0u; i<3u; ++i) {
@@ -37,7 +34,7 @@ bool OceanPointInside(float3 pos) {
     const OceanParamsGPU p = OceanParams();
     const float2 absoluteXZ = pos.xz+p.curveOrigin;
     if (any(abs(absoluteXZ) >= p.halfExtent)) return false;
-    // Clear of every crest, or below every trough: no need to find the surface.
+    // Above every crest or below every trough: no solve.
     const float meanLevel = p.surfaceY - 0.5f*dot(absoluteXZ,absoluteXZ)*p.invRadius;
     if (pos.y > meanLevel + p.crestHeight) return false;
     if (pos.y < meanLevel - p.troughDepth) return true;
@@ -54,16 +51,13 @@ float OceanBoundaryDistance(float3 pos, float3 dir, float distanceM) {
     }
     return distanceM;
 }
-// Straight shadow connections use a local height-plane intersection. Refracted
-// environmental volume lighting explicitly splits its water and air legs instead.
+// Local height-plane approximation, for straight shadow connections.
 float3 OceanShadowTransmittance(float3 a, float3 b) {
     if (!OceanMediumEnabled()) return 1.0f;
     const float3 span = b-a;
     const float distanceM = length(span);
     if (distanceM < 1e-5f) return 1.0f;
-    // Curvature only ever lowers the sea, so a segment whose ends both clear the highest crest
-    // cannot touch water. That is nearly every shadow ray in a scene with a sea in it, and the
-    // height solve below is the most expensive thing on this path.
+    // Both ends above every crest; curvature only lowers the sea.
     const OceanParamsGPU p = OceanParams();
     if (min(a.y, b.y) > p.surfaceY + p.crestHeight) return 1.0f;
     const float3 dir = span/distanceM;

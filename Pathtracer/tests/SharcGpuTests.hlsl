@@ -34,7 +34,6 @@ void prepare(uint3 tid : SV_DispatchThreadID) { SharcPrepareIndex(tid.x); }
 groupshared uint sharcDirtyMask[SHARC_GROUP_SIZE / 32u];
 
 [numthreads(SHARC_GROUP_SIZE, 1, 1)]
-// Resolve dirty radiance and guide entries into reusable history.
 void resolve(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     uint baseSlot = group.x * SHARC_GROUP_SIZE;
@@ -116,7 +115,7 @@ void fill(uint3 tid : SV_DispatchThreadID)
     }
     if (testMode == 42u)
     {
-        // A specular reflection past the registered vertex: what the path finds beyond it stays out.
+        // Radiance past a specular reflection stays out.
         SharcTrainingState state;
         SharcTrainingInit(state, tid.x);
         SharcTrainingVertex(state, s, 1.0f, Hash32(seed));
@@ -146,7 +145,7 @@ void fill(uint3 tid : SV_DispatchThreadID)
     float3 value = testMode == 0u ? 100.0f : 0.001f;
     if (testMode == 3u) value = 0.0f;
     if (testMode == 11u) value = 2.0f;
-    // A light of the radiance in testPad.x, steady (40) or with +-50% uniform noise (41).
+    // Radiance testPad.x: steady (40) or +-50% uniform noise (41).
     if (testMode == 40u || testMode == 41u)
         value = asfloat(testPad.x) * (testMode == 41u ? 0.5f + RandomFloatSingle(seed) : 1.0f);
     if (testMode == 4u)
@@ -190,7 +189,7 @@ void query(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= 64u) return;
     if (testMode == 40u)
     {
-        // The path tracer's two queries, and the convergence of the nearest record with its flag.
+        // Both path tracer queries, plus the nearest record's convergence.
         SharcSurface s = Surface(0u);
         uint seed = Hash32(tid.x ^ 0x40u);
         float3 forced, drawn;
@@ -642,8 +641,7 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
     if (tid.x == 0u) results.Store(64u * 4u, asuint(exact));
 }
 
-// The old register-side reuse generator against the reservoir-side accumulation on identical
-// synthetic candidates: reservoir bytes and the (phatSel, wsum) state must match exactly.
+// Register- vs reservoir-side accumulation: bytes and (phatSel, wsum) must match.
 uint LiteTestStateAddress(uint px) { return ps_numPx() * PS_LITE_STATE_PLANE + px * PS_LITE_STATE_BYTES; }
 
 LiteSample LiteTestCandidate(inout uint seed, uint instance)

@@ -37,7 +37,6 @@ using ResidentBelowFn = std::function<bool(uint64_t key)>;
 
 class LodTree {
 public:
-    // Builds occupancy metadata and roots from the voxel store.
     void configure(const VoxelStore& store);
 
     int root_level() const { return m_rootLevel; }
@@ -45,10 +44,9 @@ public:
 
     static double node_distance(const NodeKey& k, const double cam[3]);
 
-    // Selects a distance-driven cut, optionally splitting work across workers.
     void select(const double cam[3], float lodFactor, LodCut& out, planet::WorkerPool* pool = nullptr) const;
 
-    // Resolves resident geometry with coarser stand-ins for missing chunks.
+    // Unready nodes fall back to resident descendants or ancestors.
     void render_list(LodCut& cut, const ReadyFn& ready, std::vector<RenderItem>& out,
                      const ResidentBelowFn& residentBelow = {}, planet::WorkerPool* pool = nullptr) const;
 

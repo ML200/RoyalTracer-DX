@@ -61,7 +61,6 @@ bool LTC_MergeForSplit(uint cell,inout uint count,inout uint target,float target
     g_sharc.Store(cell+4u,count);
     return true;
 }
-// Sort frozen clusters by descending learned mass.
 void LTC_SortCut(uint cell) {
     uint count=g_sharc.Load(cell+4u);
     [loop] for(uint i=1;i<count;++i) {
@@ -77,7 +76,6 @@ void LTC_SortCut(uint cell) {
         g_sharc.Store4(dest,a);g_sharc.Store4(dest+16u,b);g_sharc.Store4(destStats,c);g_sharc.Store4(destStats+16u,d);
     }
 }
-// Publish CDF and probabilities after a complete cut update.
 void LTC_PublishDistribution(uint cell) {
     uint count=g_sharc.Load(cell+4u);float sum=LTC_Sum(cell,count),cdf=0.0f;
     float powerSum=0.0f;
@@ -134,10 +132,7 @@ void LTC_Initialize(uint cell) {
     uint parent=g_sharc.Load(cell+76u);
     uint source=parent<LT_CELL_CAPACITY?LTC_Cell(parent):0u;
     uint count=(parent<LT_CELL_CAPACITY && g_sharc.Load(source)==1u)?g_sharc.Load(source+4u):0u;
-    // The cell this one was to inherit from can have been recycled since the request was made,
-    // or can still be filling itself. Dropping the request would leave the place without a cell
-    // of its own for another frame, and asking again would meet the same race, so it starts from
-    // the shared root of its normal instead, which always stands.
+    // Source recycled or still filling: start from the root of its normal.
     if(count==0u || count>LT_CUT_MAX) {
         source=LTC_Cell(LT_GRID_CAPACITY+LTC_NormalFace(asfloat(g_sharc.Load3(cell+112u))));
         count=g_sharc.Load(source)==1u?g_sharc.Load(source+4u):0u;
@@ -159,15 +154,7 @@ void LTC_Initialize(uint cell) {
     g_sharc.Store(cell+20u,0u);g_sharc.Store(cell+24u,LTC_Now());
     LTC_PublishDistribution(cell);g_sharc.Store4(LTC_KeyAddress(LTC_Index(cell)),key);
 }
-// Consume accumulated rewards and refine one adaptive cell.
-//
-// Each update blends the weights of the cut toward the estimate of every cluster's contribution
-// that the batch gives, an estimate that holds whichever distribution drew the samples; the
-// weights keep the units of the rewards, so batches without any reward lower them all and a
-// rare reward stands out against them. An inherited cut is put into those units once, when the
-// first rewards arrive. The cell forgets in samples, not in updates: a cell covering many pixels
-// adapts within a few frames, a cell touched by a few paths keeps a longer memory, and a
-// starting cut counts as LT_PRIOR_HISTORY samples.
+// Blend weights toward the batch estimate (forgetting in samples), then maybe split.
 bool LTC_Update(uint cell,uint cellSlot) {
     uint count=g_sharc.Load(cell+4u),samples=0u;
     if(count==0u || count>LT_CUT_MAX) return false;
@@ -180,12 +167,7 @@ bool LTC_Update(uint cell,uint cellSlot) {
     }
     if(samples==0u) return false;
     uint initial=max(g_sharc.Load(cell+44u),1u);
-    // A cell refines once its batch holds one sample for every time its cut has grown, with a
-    // floor of two. Asking for several times that changed nothing for a cell that many paths
-    // reach, which clears any such budget every frame, and it held a cell that few paths reach
-    // idle for frames on end while its batch filled. The step it takes when it finally refines
-    // is no larger for having waited, because the blend weight follows the sample count, so the
-    // wait bought no accuracy and cost the cell every frame it spent waiting.
+    // One sample per cut growth, at least two.
     uint budget=max((count+initial-1u)/initial,2u);
     if(samples<budget) return false;
     uint iteration=g_sharc.Load(cell+8u)+1u;
@@ -255,12 +237,7 @@ bool LTC_Update(uint cell,uint cellSlot) {
         [unroll] for(uint k=0;k<4u;++k) if(k<children) {
             uint destination=LTC_Cluster(cell,k==0u?j:count+k-1u);
             float ratio=priorSum>0?priors[k]/priorSum:1.0f/float(children);
-            // A child starts with the share of its parent's learned weight that the prior
-            // predicts for it, so a split leaves the mass of the cut where it was and its own
-            // rewards take the child over within a few updates. Starting every child at the
-            // parent's whole weight instead, to have them all sampled until those rewards
-            // arrive, multiplies the weight of a freshly split region by its child count and
-            // costs far more variance than the exploration is worth.
+            // Prior share of the parent's weight; the split conserves mass.
             float q=ratio*parentQ;
             LTC_ClearCluster(destination);LTC_StoreNode(destination,LTC_Child(parent,first,k));
             g_sharc.Store(LTC_Stats(destination)+LT_ST_Q,asuint(q));

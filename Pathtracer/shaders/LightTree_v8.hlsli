@@ -60,8 +60,7 @@ inline uint LT_PickAndRescale(float w0, float w1, float w2, float w3, uint n, fl
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
-// Bound each node by receiver, orientation, distance, and emitted power. A receiver without a
-// normal (n zero: a point in a participating medium) sees every direction alike.
+// Node importance (Conty & Kulla 2018); n = 0 is a receiver in a medium.
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
     float3 bmin, float3 bmax,
@@ -159,8 +158,7 @@ LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index, LT_BlasFrame 
     }
     return c;
 }
-// The importance of one child for a receiver in the node's frame. Its topology is not read here:
-// only the child a descent takes needs it (LT_ChildTopology).
+// Topology is read only for the taken child (LT_ChildTopology).
 float LT_ChildWeight(uint phase, uint nodeOffset, uint index, LT_BlasFrame frame, float3 xP, float3 nP)
 {
     const LTNodeCommon c = LT_LoadChild(phase, nodeOffset, index, frame);
@@ -171,7 +169,7 @@ uint4 LT_ChildTopology(uint phase, uint nodeOffset, uint index, LT_BlasFrame fra
     return LT_LoadChild(phase, nodeOffset, index, frame).topology;
 }
 
-// Descend TLAS then BLAS while accumulating the exact branch PDF.
+// TLAS then BLAS descent, accumulating the exact branch PDF.
 bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint startSlot,
     out uint slotOut, out uint instOut, out LTLeaf leaf, out float pdfT, out float pdfB)
 {
@@ -224,10 +222,7 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
         if (iter == LT_TRAIL_MAX_DEPTH) { if (phase == 0u) pdfT = 0.0f; else pdfB = 0.0f; return false; }
         ++iter;
 
-        // The siblings are fetched together, so the two cache lines of a sibling block arrive in one
-        // round trip instead of one after the other; the taken child's topology is read after.
-        // Light pass median on bistro (RTX 5090, 1200 frames): 0.66 ms, against 0.75 ms with the
-        // next sibling fetched while the current one was weighed.
+        // All siblings in one round trip, the taken child's topology after.
         const uint count = min(t.y, 4u);
         const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, frame, xP, nP);
         float w1 = 0.0f, w2 = 0.0f, w3 = 0.0f;
@@ -244,7 +239,6 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
     }
 }
 
-// Sample leaf triangles by emitted weight, with a uniform zero-power fallback.
 uint LT_SampleLeafTriangle_Stratified(LTLeaf leaf, float xi, out float pdfLeaf)
 {
     const uint base = leaf.triFirst;
@@ -310,7 +304,7 @@ LT_Sample LT_SampleSubtree(float3 worldPos, float3 worldNormal, inout uint rng, 
     return LT_SampleSubtree(worldPos, worldNormal, rng, startNode, startSlot, ignored);
 }
 
-// Replay stored trails to evaluate the matching subtree PDF.
+// Replays stored trails for the matching subtree PDF.
 float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode=0u, uint startSlot=LT_SENTINEL, uint startDepth=0u)
 {
     if (triIndex == LT_SENTINEL || slot == LT_SENTINEL) return 0.0f;
@@ -378,7 +372,7 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
         if (childIdx >= t.y) return 0.0f;
         ++iter;
 
-        // As in LT_Descend: the siblings together, then the topology of the child on the trail.
+        // As in LT_Descend.
         const uint count = min(t.y, 4u);
         const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, frame, xP, nP);
         float w1 = 0.0f, w2 = 0.0f, w3 = 0.0f;
@@ -403,7 +397,6 @@ inline float LT_TriangleArea(uint tri, uint objID)
     return 0.5 * length(cross(B - A, C - A));
 }
 
-// Convert triangle selection probability into an area-measure PDF.
 float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID, bool useLearning=true)
 {
     float p_select = LT_PdfSelectTriangle(x, n, tri, objID, useLearning);
@@ -421,7 +414,6 @@ struct LT_LightSampleResult
     uint   objID;
 };
 
-// Convert a selected triangle into a world-space point and solid-angle PDF.
 LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSample, inout uint rng)
 {
     LT_LightSampleResult result = (LT_LightSampleResult)0;
@@ -463,7 +455,6 @@ LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSamp
 
     float pdfArea = treeSample.pdf / max(area, 1e-10f);
 
-    // Convert the selected area PDF to solid angle.
     if (cosLight > 1e-6f) {
         result.pdfSolidAngle = pdfArea * distSq / cosLight;
     } else {

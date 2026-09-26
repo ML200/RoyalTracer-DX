@@ -11,7 +11,7 @@ namespace lt {
 #define LT_PACKED_UINT uint
 #endif
 
-// World-space bounds retain FP32 precision. Leaves use index as the slot ID.
+// Leaves use index as the slot ID.
 struct LightTLASNodePacked {
     LT_PACKED_FLOAT3 bmin; float power;
     LT_PACKED_FLOAT3 bmax; float cosTheta_o;
@@ -19,14 +19,11 @@ struct LightTLASNodePacked {
     LT_PACKED_UINT index; LT_PACKED_UINT childCount;
 };
 
-// Each mesh starts with one 32-byte bounds header, followed by its nodes.
-// Header words 0..5 contain FP32 min.xyz/max.xyz. Node IDs exclude the header.
-// Bounds words pack a lower coordinate in 16 bits and an upper one in 16 bits.
-// Leaves use index as the leaf-triangle offset; each leaf has one triangle.
+// Per mesh: 32-byte header (FP32 min.xyz, max.xyz), then nodes; IDs exclude it.
 struct LightBLASNodePacked {
-    LT_PACKED_UINT boundsX, boundsY, boundsZ; float power;
+    LT_PACKED_UINT boundsX, boundsY, boundsZ; float power; // bounds: lower | upper << 16
     LT_PACKED_UINT axis; float cosTheta_o;
-    LT_PACKED_UINT index; LT_PACKED_UINT childCount;
+    LT_PACKED_UINT index; LT_PACKED_UINT childCount; // leaf: triangle offset, one triangle
 };
 
 #ifdef __cplusplus

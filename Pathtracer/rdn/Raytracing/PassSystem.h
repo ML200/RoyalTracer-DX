@@ -54,8 +54,6 @@ class PassSystem {
 
     void RegisterPassIndex(const std::wstring& file, uint32_t index) { m_passIndex[file] = index; }
 
-    void Rebuild(const std::vector<std::wstring>& newTokens) { Build(newTokens); }
-
   private:
     static uint32_t RequiredFeatures(const std::wstring& file);
     static PassDesc ParseToken(const std::wstring& token);

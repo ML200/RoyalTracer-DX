@@ -71,8 +71,7 @@ class Editor {
     int m_cachedMatModel = -1;
     std::vector<UINT> m_cachedUniqueMats;
 
-    // Staged sea state. Wind, turbulence and swell re-bake four 1024^2 cascades on the CPU, so a
-    // drag edits this copy and only reaches the ocean once the widget is released.
+    // Staged sea state; applied on widget release.
     ocean::Params m_waterParams;
     bool m_waterRespecPending = false;
 

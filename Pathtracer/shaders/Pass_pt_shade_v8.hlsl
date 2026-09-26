@@ -1,17 +1,7 @@
 #include "Includes_v8.hlsli"
 #include "PtDefer_v8.hlsli"
 
-// Material evaluation at the deferred vertex, on the lobe group its sample picked: the value of
-// the cache-bound scatter that weights everything traced after it, the light and sun samples the
-// light pass resolved (with their visibility), MIS, and the diffuse-reuse candidates. The light
-// sample belongs to the pick, evaluated on the same group and divided by the probability of the
-// pick, except on the broad group, which takes it on every pick that defers the vertex; each is
-// MIS-weighted against its group's own density. No rays are traced here.
-//
-// Three phases, so each BSDF evaluation runs with little around it: the scatter weight first,
-// then the two light techniques, each reading only its own part of the light record; their reuse
-// candidates stay in the register generator (a reservoir-side accumulation of these produced wrong
-// reservoirs in practice); then the tail, which reloads the path fields it needs.
+// Deferred-vertex material pass, no rays. Phased (scatter, lights, tail) to cut live state.
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
@@ -36,11 +26,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 rayDir  = v.dirIn;
     const uint   group   = DvLobeGroup(v.flags);
     const float  neeScale = path.pickP > 0.0f ? rcp(path.pickP) : 0.0f;   // the light sample stands for this pick
-    // The continuation of a broad pick at a reuse primary is broad as a whole: the reservoir carries it.
+    // Broad pick at a reuse primary: the reservoir carries it.
     const bool liteGen   = depth == 1u && (path.ps & PT_PS_LITE_VERTEX) != 0u && group == LOBE_GROUP_BROAD;
     float3 total = 0.0f;
 
-    // --- the cache-bound scatter first: afterwards only its weight stays live ---
     float3 W = 0.0f;
     bool tailAlive = false;
     if ((info & DV_KIND_MASK) == DV_KIND_BSDF)
@@ -50,7 +39,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         const float cosTheta = abs(dot(v.n, sc.dirOut));
         W = lobe.val * v.absorb * cosTheta / sc.pdfTotal;
         tailAlive = !(any(isnan(W)) || any(isinf(W))) && any(W > 0.0f);
-        // Russian roulette, replayed with the throughput the trace pass could not know.
+        // Russian roulette deferred from the trace pass (needs W).
         if (tailAlive && depth >= (uint)pt_rrStartDepth)
         {
             uint sRr = RcBounceSeed(pathSeed, depth, RC_STREAM_RR);
@@ -61,12 +50,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
     const float3 liteBroad = liteGen ? W : 0.0f;
 
-    // --- light sample and sun sample: the light pass resolved both and their visibility. The broad
-    // group takes them on every pick that defers the vertex, divided by the probability of such a
-    // pick (DvDeferP), so that a glossy pick does not leave the pixel without its diffuse light. A
-    // picked group other than the broad one takes them on its own pick, divided by the probability
-    // of that pick. Each is MIS-weighted against its own group's density, as the BSDF side of that
-    // group is. ---
+    // Broad group lit on every deferring pick (1/DvDeferP), other groups on their own.
     const bool broadEvery = (v.flags & DVF_BROAD_NEE) != 0u;
     const bool liteNee    = (v.flags & DVF_LITE_NEE) != 0u;
     LiteGen liteG = LiteGenEmpty();
@@ -96,7 +80,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             if (!(lightPdf > 0.0f) || !any(visT > 0.0f) || !any(radiance > 0.0f)) continue;
             const float  cosSurf    = dot(v.n, L);
             const float3 lightScale = radiance * cosSurf * visT / lightPdf;
-            // The cut learns from the broad response where there is one (LTC_TrainShare).
+            // The cut learns from the broad response if any (LTC_TrainShare).
             float3 trained = 0.0f;
             [branch] if (broadEvery || broadPick)
             {
@@ -108,7 +92,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                     const float misWeight = lightPdf / (lightPdf + lobeNEE.pdf);
                     if (liteNee)
                     {
-                        // The reservoir carries the broad part; none of it goes to the pixel here.
+                        // Broad part goes to the reservoir, not the pixel.
                         uint sLite = RcBounceSeed(pathSeed, depth, 0x4c495445u + tech);
                         LiteSample cand;
                         LiteLink   link;
@@ -147,10 +131,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
     if (liteNee) LiteGenCommit(pixelIdx, liteG);
 
-    // --- the tail: everything gathered after the deferred scatter, weighted by its value ---
     if (tailAlive)
     {
-        // A reuse primary hands its broad-lobe share to the reservoir; the rest continues down the path.
+        // A reuse primary's broad share goes to the reservoir.
         const float3 Wtail = W - liteBroad;
         total += path.T * Wtail * DvLoadPathRelL(pixelIdx);
 

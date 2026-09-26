@@ -24,14 +24,11 @@ inline float3 MirrorAcrossPlane(float3 v, float3 n)
 }
 
 static const float GGX_REFLECT_PICK_MIN = 0.125f;
-// Water uses the same finite GGX distribution in sampling and evaluation, including
-// the evaluator's existing numerical alpha minimum. Do not collapse its sampler to
-// H=N while still returning a continuous solid-angle PDF and accepting light samples.
+// Never for water: its pdf must stay continuous.
 inline bool GGXUsesDeltaSampling(uint matID, float roughness)
 {
     return !LoadIsOceanMaterial(matID) && roughness < SMOOTH_SPECULAR_THRESHOLD;
 }
-// Choose reflection probability from Fresnel and lobe availability.
 inline float GGXReflectPick(uint mID, float p_refl, float p_tran)
 {
     const float p_sum = p_refl + p_tran;
@@ -168,7 +165,7 @@ inline float Sampling_Weight_GGX(
     return (1.0f - metalness) * F_d + metalness * Luma(F_c) + (1 - F_d) * (1.0 - LoadKd_w(mID));
 }
 
-// Sample reflection or transmission from the Walter microfacet model.
+// Walter 2007 reflection/transmission sampling.
 inline float3 SampleBRDF_GGX(
     uint   mID,
     float3 outgoing,
@@ -252,7 +249,6 @@ struct GGXResult {
     float  t;
 };
 
-// Evaluate GGX radiance response for the chosen transport mode.
 inline GGXResult EvalGGXAll(
     uint matID, float3 N, float3 fN, float3 V, float3 L,
     half etai, half etat, float3 Kd, half Pr, half Pm,
@@ -447,7 +443,7 @@ inline GGXResult EvalGGXAll(
     return r;
 }
 
-// Evaluate the selected GGX lobe PDF in solid-angle measure.
+// Solid-angle pdf.
 inline float BRDF_PDF_GGX(
     uint mID, float3 N, float3 fN,
     float3 wi, float3 wo,

@@ -85,7 +85,7 @@ void DLSSManager::CreateInputTextures(ID3D12Device* device) {
     createRenderTex(m_colorBeforeTrans, DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_ColorPreTrans");
     createRenderTex(m_biasHint, DXGI_FORMAT_R8_UNORM, L"DLSS_BiasHint");
 
-    // The shading pass writes this alongside the other guides, through the renderer's own heap.
+    // Written by the shading pass via the renderer's heap.
     createRenderTex(m_responsivityMask, DXGI_FORMAT_R16_FLOAT, L"DLSS_ResponsivityMask");
 
     createDisplayTex(m_output, DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Output");
@@ -151,9 +151,7 @@ void DLSSManager::Evaluate(ID3D12GraphicsCommandList* cmdList, ID3D12Device* dev
     constexpr D3D12_RESOURCE_STATES stateSRV =
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    // DLSS consumes guides as SRVs and returns them to UAV state afterward. The mask itself is
-    // filled per pixel by the shading pass, alongside the other guides; zero on both ends means
-    // nothing wants an override, so the mask is left unbound and reconstruction uses its default.
+    // All zero: leave the mask unbound (DLSS default).
     const bool useResponsivityMask =
         rrResponsivityRough != 0.0f || rrResponsivityMirror != 0.0f || rrWaterResponsivity != 0.0f;
 
@@ -271,8 +269,6 @@ void DLSSManager::Evaluate(ID3D12GraphicsCommandList* cmdList, ID3D12Device* dev
     sl::Resource slNormals(sl::ResourceType::eTex2d, m_normals.Get(), (uint32_t)stateSRV);
     sl::Resource slAlbedo(sl::ResourceType::eTex2d, m_diffuseAlbedo.Get(), (uint32_t)stateSRV);
     sl::Resource slSpecAlb(sl::ResourceType::eTex2d, m_specAlbedo.Get(), (uint32_t)stateSRV);
-    sl::Resource slRough(sl::ResourceType::eTex2d, m_roughness.Get(), (uint32_t)stateSRV);
-    sl::Resource slSpecHit(sl::ResourceType::eTex2d, m_specHitDist.Get(), (uint32_t)stateSRV);
     sl::Resource slInput(sl::ResourceType::eTex2d, m_input.Get(), (uint32_t)stateSRV);
     sl::Resource slSpecMV(sl::ResourceType::eTex2d, m_specMvec.Get(), (uint32_t)stateSRV);
     sl::Resource slOutput(sl::ResourceType::eTex2d, m_output.Get(), (uint32_t)stateUAV);

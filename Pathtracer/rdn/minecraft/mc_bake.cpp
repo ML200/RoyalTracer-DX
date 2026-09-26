@@ -24,7 +24,6 @@ inline const uint8_t* texel(const BakeTexture& t, float u, float v) {
     return t.rgba + (size_t)ty * t.pitch + (size_t)tx * 4;
 }
 
-// Rasterizes one quad triangle with nearest-depth texel ownership.
 void raster_triangle(const Vert& v0, const Vert& v1, const Vert& v2, const BakeTexture& tex, BakedFace& face, std::vector<float>& zbuf) {
     const float area = edge(v0, v1, v2.x, v2.y);
     if (std::fabs(area) < 1e-8f) return;
@@ -56,7 +55,6 @@ void raster_triangle(const Vert& v0, const Vert& v1, const Vert& v2, const BakeT
 
 }
 
-// Projects model geometry onto each axis-aligned coarse face.
 void bake_block_faces(const std::vector<RawQuad>& quads, int size, const BakeTextureLookup& lookup, BakedFace out[6]) {
     size = std::max(1, size);
     std::vector<float> zbuf[6];

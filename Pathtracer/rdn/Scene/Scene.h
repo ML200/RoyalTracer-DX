@@ -41,7 +41,7 @@ struct SceneInstance {
 };
 
 struct SceneModel {
-    bvh::Survey bvhSurvey; // Import-time geometry survey; model motion may change world-space overlap.
+    bvh::Survey bvhSurvey; // import-time; motion can change overlap
     std::string name = "Model";
     std::string filePath = "";
 
@@ -125,7 +125,7 @@ struct Scene {
     UINT oceanMatIDBase = 0;
     UINT oceanPropsBase = 0;
     UINT oceanMatIndex = 0;
-    bool oceanMaterialEdited = false; // live editor values take precedence over generated defaults
+    bool oceanMaterialEdited = false; // editor edits override generated values
     bool oceanMatIDReserved = false;
 
     UINT combinedVertexCount() const {
@@ -136,7 +136,7 @@ struct Scene {
     }
 
     UINT instancePropsCount() const {
-        // Property ranges are reserved independently for terrain, rocks, voxels and the ocean.
+        // Each stream reserves its own range.
         const UINT base = terrainInstanceSlots ? (terrainPropsBase + terrainInstanceSlots) : (UINT)instances.size();
         const UINT withRocks = base + rockInstanceSlots;
         const UINT withVoxels =
@@ -212,8 +212,6 @@ struct Scene {
 
     XMFLOAT3 prevSceneOriginWorld = {0.0f, 0.0f, 0.0f};
 
-    void PropagateModelTransforms();
-
     void MarkModelMoved(UINT modelIndex);
 
     void MarkMaterialsDirty(bool emissionChanged = false);
@@ -227,8 +225,7 @@ struct Scene {
 
     void ReserveVoxels(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, UINT minPropsBase);
 
-    // Reserves the ocean's geometry and instance ranges. Its instance records come last, which is
-    // what lets the shader recognise an ocean hit from a single threshold comparison.
+    // Ocean instances come last; shaders detect them by index.
     void ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, const Material& mat,
                       float foamAlbedo);
 

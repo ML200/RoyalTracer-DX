@@ -11,7 +11,7 @@ static const uint SHARC_NODE = 32u;
 static const uint SHARC_META = 44u;
 static const uint SHARC_INSTANCE = 48u;
 static const uint SHARC_MATERIAL = 52u;
-static const uint SHARC_FAST_MEAN = 56u;      // fast window (SharcConvergence): luminance mean
+static const uint SHARC_FAST_MEAN = 56u;      // fast window luma mean
 static const uint SHARC_FAST_L2 = 60u;        // and second moment
 static const uint SHARC_FRAME_RGB = 64u;
 static const uint SHARC_FRAME_L2 = 88u;
@@ -36,17 +36,14 @@ static const uint SHARC_REPLACE_AGE = 16u;
 
 static const uint SHARC_MERGE_RECORDS = 4u;
 
-// Convergence of a history against the lighting (SharcConvergence).
+// SharcConvergence tuning.
 static const float  SHARC_FAST_DECAY          = 0.5f;                    // fast window: about two updates
 static const float  SHARC_FAST_VARIANCE_FLOOR = 0.25f;                   // share of the history's variance
 static const float2 SHARC_CONVERGENCE_Z       = float2(2.0f, 4.0f);      // gap in standard errors
 static const float2 SHARC_CONVERGENCE_GAP     = float2(0.15f, 0.35f);    // gap relative to the brighter
 static const uint   SHARC_QUERY_UNCONVERGED   = 0x80000000u;             // free bit of the demodulator word
 
-// How far a query may differ from an entry and still read it. The geometric normal and the plane
-// keep light from leaking between surfaces; the shading normal, the albedo (the entries store
-// demodulated radiance) and the roughness only vary with texture detail, which a query through a
-// wide cone averages anyway, so they are allowed to differ a lot before an entry is split.
+// Query/entry mismatch ramps; loose, wide cones average texture detail.
 static const float2 SHARC_SIMILAR_NORMAL    = float2(0.50f, 0.80f);   // shading-normal cosine
 static const float2 SHARC_SIMILAR_ALBEDO    = float2(1.00f, 2.00f);   // log2 of the albedo ratio
 static const float2 SHARC_SIMILAR_ROUGHNESS = float2(0.15f, 0.35f);   // roughness difference
@@ -80,7 +77,7 @@ struct SharcHistory
     float interval;
     uint frames;
     uint lastTouch;
-    bool converged;     // no path ends in a history behind the lighting (SharcConvergence)
+    bool converged;     // else no path ends here (SharcConvergence)
 };
 
 uint SharcStateAddress(uint slot) { return slot * 4u; }
@@ -88,7 +85,6 @@ uint SharcEntryAddress(uint slot) { return SHARC_STATE_BYTES + slot * SHARC_ENTR
 uint SharcDirtyAddress(uint word) { return SHARC_DIRTY_OFFSET + word * 4u; }
 uint SharcBucketOf(uint hash) { return hash & (SHARC_CAPACITY / SHARC_BUCKET_SIZE - 1u); }
 
-// Hash spatial identity and surface identity into one cache key.
 uint SharcCheckHash(int3 node, uint meta, uint instance, uint material)
 {
     uint h = Hash32(asuint(node.z) ^ 0x7f4a7c15u);
@@ -121,7 +117,6 @@ uint SharcPackMean(float v) { return f32tof16(min(v, 1048064.0f) * 0.0625f); }
 float SharcUnpackMean(uint h) { return f16tof32(h) * 16.0f; }
 uint SharcPackUnorm8(float v) { return (uint)(saturate(v) * 255.0f + 0.5f); }
 
-// Decode the packed query record shared by all SHaRC passes.
 void SharcLoadQueryRecord(uint e, float size, out uint check, out SharcDescriptor d, out SharcHistory h)
 {
     uint4 a = g_sharc.Load4(e + SHARC_QUERY);
@@ -249,8 +244,7 @@ void SharcLoadBucket(uint bucket, out uint states[SHARC_BUCKET_SIZE])
     }
 }
 
-// A slot's state from a bucket read, with constant indices only: an array indexed at run time
-// is kept in local memory for the whole insert (3% of the training pass on bistro).
+// Constant indices only; dynamic indexing spills the array to local memory.
 uint SharcBucketState(uint states[SHARC_BUCKET_SIZE], uint p)
 {
     uint state = 0u;
@@ -308,7 +302,6 @@ void SharcInitializeEntry(uint e, int3 node, uint meta, SharcSurface s, float3 r
     g_sharc.Store(e + SHARC_LAST_TOUCH, sharc_frame);
 }
 
-// Claim or reuse a cache entry while publishing complete state.
 uint SharcFindOrInsert(int3 node, uint level, uint axis, SharcSurface s, float3 relative, out float weight)
 {
     uint meta = SharcMeta(s, level, axis);
@@ -373,7 +366,7 @@ uint SharcFindOrInsert(int3 node, uint level, uint axis, SharcSurface s, float3 
     uint expected = 0u;
     if (slot == SHARC_INVALID)
     {
-        // No slot is locked here (that returned as contended above).
+        // No slot is locked here (contended returned above).
         uint victimAge = 0u;
         [loop] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
         {
@@ -408,7 +401,6 @@ float SharcFloat(uint2 words, float inverseScale)
     return (float(words.y) * 4294967296.0f + float(words.x)) * inverseScale;
 }
 
-// Accumulate weighted radiance and moments with fixed-point atomics.
 void SharcAccumulate(uint e, float3 radiance, float w)
 {
     if (e == SHARC_INVALID || !all(isfinite(radiance)) || !isfinite(w) || w <= 0.0f) return;
@@ -479,10 +471,7 @@ float SharcStatisticalConfidence(uint e)
     float error = sqrt(variance / max(neff, 1.0f)) / max(mean, 1e-8f);
     uint frames = g_sharc.Load(e + SHARC_FRAMES);
 
-    // Trust follows the sample count. The relative error only rejects an entry that is plainly
-    // garbage: light-tree NEE keeps the per-sample variance so high that a tight error bound left
-    // most entries unused, and the paths that should have ended in them went on to take their
-    // own light samples instead.
+    // Trust follows sample count; the error test only rejects garbage.
     float confidence = smoothstep(0.5f * (float)sharc_minSamples, (float)sharc_minSamples, neff);
     confidence *= smoothstep(1.0f, 2.0f, (float)frames);
     confidence *= 1.0f - smoothstep(1.0f, 2.0f, error);
@@ -538,8 +527,7 @@ void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 rel
             : SharcSurfaceWeight(d, s, relative, size);
         if (!isfinite(surfaceWeight) || surfaceWeight <= 0.0f) continue;
         geometricSupport += surfaceWeight;
-        // A history behind the lighting ends no path, not even where the cache answers with
-        // whatever it holds (ignoreConfidence).
+        // Unconverged history ends no path, even with ignoreConfidence.
         float confidence = !h.converged ? 0.0f
             : ignoreConfidence ? (h.frames > 0u ? 1.0f : 0.0f) : SharcConfidence(h);
 
@@ -576,26 +564,10 @@ void SharcQueryLevel(SharcSurface s, uint level, out float3 sum, out float suppo
     }
 }
 
-// Full angle of the circular cone of a diffuse lobe (SharcLobeConeAngle): the cosine lobe covers
-// 1.5 pi, since the integral of (cos/pi)^2 over the hemisphere is 2/(3 pi) (pi/4 angle^2 = 1.5 pi).
+// Diffuse lobe cone full angle, sqrt(6): solid angle 1.5 pi.
 static const float SHARC_DIFFUSE_CONE = 2.44948974f;
 
-// Share of queries the cache may answer where the path's cone meets a surface. The cone is the
-// lobes that led here (SharcLobeConeAngle), as its full angle and its width at the hit, so its apex
-// lies width/angle back along the ray. Seen from there, one cell may fill at most 1/q of the cone's
-// solid angle (q = sharc_queryFootprint), and so hold about that share of the lobe's light: the
-// lobe then reaches other cells as well, and no single cell can show. The cell is the one a query
-// reads, the coarser level's with four times the area as often as the query picks that level. It
-// counts as a disk of that area facing the apex, whose solid angle is exact at any distance and
-// never exceeds the hemisphere, not as the smaller disk a slant shows: a cone meeting the surface
-// at a slant is stretched along it but no wider across it, so a cell wider than the cone shows
-// across the slant however many cells the stretch reaches. (Counted with the slant, the narrow
-// lobe of a 0.03 glass pane let the cache answer on the ground seen through it at a glance, and its
-// cells showed as splotches.) At the default q = 8 a diffuse cone reaches the limit
-// where the surface it meets lies closer than about 1.4 cells (the band runs from 1.06 to 1.37):
-// in a crevice or where two objects touch, the cell also holds lit surface the query cannot see. A
-// short band around the limit mixes both answers, so the switch leaves no edge. (At q = 4, cells
-// still showed through frosted glass.)
+// Cache share; a cell (disk facing the apex, no slant) may fill 1/q of the cone.
 float SharcConeRamp(float coneWidth, float coneAngle, float3 position)
 {
     if (!(coneAngle > 0.0f)) return 0.0f;
@@ -609,7 +581,6 @@ float SharcConeRamp(float coneWidth, float coneAngle, float3 position)
     return smoothstep(0.8f, 1.25f, coneSolidAngle / (sharc_queryFootprint * cellSolidAngle));
 }
 
-// Draw a cache estimate using confidence-aware stochastic rejection.
 bool SharcQueryStochastic(SharcSurface s, bool ignoreConfidence, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
@@ -635,8 +606,7 @@ bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance)
 {
     return SharcQueryStochastic(s, false, seed, radiance);
 }
-// Whether a training path may end in the cache here (SharcConeRamp). A share of the paths goes on
-// past the cache either way, so that it does not only learn from itself.
+// At least 1/32 continue so the cache does not only learn from itself.
 bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAngle, inout uint seed)
 {
     float footprint = SharcConeRamp(coneWidth, coneAngle, position);
@@ -645,8 +615,6 @@ bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAng
     return true;
 }
 
-// Accept cache history only when its footprint and confidence agree, for a diffuse cone of the
-// given width.
 bool SharcQuery(SharcSurface s, float coneWidth, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
@@ -659,20 +627,7 @@ bool SharcQueryForced(SharcSurface s, inout uint seed, out float3 radiance)
     return SharcQueryStochastic(s, true, seed, radiance);
 }
 
-// How far a history has kept up with the lighting, from 0 (behind it) to 1. The history is a long
-// window (sharc_historyFrames updates, however many frames apart) and trails a light change by
-// about that many updates; a fast window of about the last two updates follows it. The gap between
-// their luminances is the evidence that the history is behind, in standard errors of the fast
-// window, and it matters by its size relative to the brighter of the two: both have to be large.
-// The fast window's noise comes from its own spread, because after a light goes out its samples are
-// small and tight where the history's spread would hide the drop. It is floored at a quarter of the
-// history's spread, so that a short run of alike samples proves nothing. Tuned on a simulated
-// record with lognormal sample noise (coefficient of variation 1.3): after a light dropped to 5%,
-// paths went on ending in a history more than half too bright for 31 updates instead of 60 at three
-// samples per update, and for 5 instead of 56 at ten; a steady record was gated on under 0.4% of
-// updates and its value came out 4-9% noisier. Noise ruled by rare bright samples (fireflies) sets
-// the spread by those samples and hides a change from this test; such histories follow the
-// lighting at their own pace, as before.
+// 1 = kept up with the lighting, 0 = behind (large z and relative gap).
 float SharcConvergence(float history, float recent, float recentVariance, float recentSamples)
 {
     const float gap = abs(history - recent);
@@ -683,7 +638,6 @@ float SharcConvergence(float history, float recent, float recentVariance, float 
     return isfinite(convergence) ? convergence : 0.0f;
 }
 
-// Fold the frame accumulation of an entry into its history (resolve pass and tests).
 void SharcResolveEntry(uint slot)
 {
     uint state = g_sharc.Load(SharcStateAddress(slot));
@@ -703,11 +657,10 @@ void SharcResolveEntry(uint slot)
     {
         float4 previous = float4(asfloat(g_sharc.Load3(e + SHARC_MEAN)), asfloat(g_sharc.Load(e + SHARC_HISTORY_W)));
         float2 oldMoments = float2(asfloat(g_sharc.Load(e + SHARC_HISTORY_L2)), asfloat(g_sharc.Load(e + SHARC_HISTORY_W2)));
-        // Luminance mean and second moment, weight and squared weight of the fast window.
+        // Fast window: luma mean, second moment, weight, squared weight.
         float4 fast = asfloat(uint4(g_sharc.Load2(e + SHARC_FAST_MEAN), g_sharc.Load2(e + SHARC_FAST_W)));
         bool validHistory = all(isfinite(previous)) && all(isfinite(oldMoments)) &&
             previous.w > 0.0f && oldMoments.y > 0.0f;
-        // Corrupt history must not contaminate the next frame.
         if (!validHistory)
         {
             previous = 0.0f;
@@ -721,7 +674,6 @@ void SharcResolveEntry(uint slot)
         const float historyLuma = Luma(previous.xyz);
         float oldWeight = previous.w * decay;
         float fastOld = fast.z * SHARC_FAST_DECAY;
-        // Both windows with this frame's samples, as the plain update would leave them.
         float convergence = 1.0f;
         if (validHistory)
         {
@@ -734,9 +686,7 @@ void SharcResolveEntry(uint slot)
             convergence = SharcConvergence((historyLuma * oldWeight + frameLuma) / (oldWeight + frame.w),
                 recent, recentVariance, recentSamples);
         }
-        // A history behind the lighting keeps only the share of its past the convergence vouches
-        // for, in both windows, so that neither holds on to the old lighting. This, more than the
-        // gate, is what clears a light that went out from a cell within a few updates.
+        // Both windows forget by convergence; clears a light that went out.
         oldWeight *= convergence;
         fastOld *= convergence;
 
@@ -764,8 +714,7 @@ void SharcResolveEntry(uint slot)
             g_sharc.Store(e + SHARC_INTERVAL, asuint(interval));
             g_sharc.Store(e + SHARC_LAST_UPDATE, sharc_frame);
 
-            // Below the threshold no path ends here (SharcQueryNode); above it the convergence
-            // scales the confidence like any other doubt about the history.
+            // Below the threshold no path ends here (SharcQueryNode).
             const bool converged = convergence >= sharc_convergenceThreshold;
             const float confidence = converged ? SharcStatisticalConfidence(e) * convergence : 0.0f;
             g_sharc.Store(e + SHARC_CONFIDENCE, asuint(confidence));

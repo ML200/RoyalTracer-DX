@@ -2,11 +2,7 @@
 #include "OceanVolume.hlsli"
 #include "PtVertex_v8.hlsli"
 
-// Drive one sample of the pixel path. Every vertex is shaded after the reorder, the primary one
-// straight from the camera record without a trace; the path loop keeps the path state,
-// applies the compact results and finalizes the deferred record for the light and material passes.
-// Whatever the loop carries is saved and restored around each trace and reorder, so the part of
-// the deferred record that is known at the capture is written there and not carried to the end.
+// One path sample; leaves the deferred record for the light and material passes.
 [shader("raygeneration")]
 void Pass_pt_trace_v8()
 {
@@ -27,13 +23,12 @@ void Pass_pt_trace_v8()
 
     const uint maxBounces = pt_maxBounces;
 
-    // The throughput is absolute until the deferred vertex and relative to its scatter afterwards;
-    // the radiance gathered with it is the pixel's until then and the record's relL afterwards.
+    // Absolute until the deferred vertex, then relative to its scatter (relL).
     float3 throughput = float3(1, 1, 1);
     float3 gathered   = 0.0f;
     float  prev_pdf   = 1.0f;
     float  pathSpread = 0.0f;
-    uint   pathCone   = 0u;     // cone of the path's lobes for the cache test (PtConePack)
+    uint   pathCone   = 0u;     // lobe cone for the cache test (PtConePack)
     float3 liteL      = 0.0f;
     float3 liteSuffix = 0.0f;
     uint   ps = PtPsInit(s);
@@ -44,11 +39,10 @@ void Pass_pt_trace_v8()
     uint   info      = 0u;
     DvMiss missEnd = (DvMiss)0;
 
-    // The camera pass resolved the primary vertex, so the first iteration shades it from the camera
-    // record without a trace.
+    // The first iteration shades the camera record, untraced.
     float3 pos = load_x1(g_sample_current, pixelIdx);   // the vertex the next ray leaves
     const float3 toPrimary = pos - InitOrigin();
-    float  pathDist = length(toPrimary);   // path length: with the pixel cone it sizes the texture footprint
+    float  pathDist = length(toPrimary);   // for the texture footprint
     float3 rayDir   = toPrimary / max(pathDist, 1e-6f);
     RayDesc ray;
     ray.Origin    = pos;
@@ -70,7 +64,6 @@ void Pass_pt_trace_v8()
     [loop]
     for (;;)
     {
-        // ---- trace, reorder ----
         const uint depth = PtPsDepth(ps);
         OceanPathHit hit = (OceanPathHit)0;
         uint reorderHint = 0x100u;
@@ -80,12 +73,7 @@ void Pass_pt_trace_v8()
         {
             hit = OceanTracePathHitInMedium(ray, (inFlags & PV_IN_WATER_MEDIUM) != 0u);
             if ((inFlags & PV_IN_WATER_MEDIUM) != 0u) {
-                // The water between here and the hit: the path goes on to the hit through the
-                // segment's transmittance, and what the water scatters towards it along the way is
-                // added here (OceanSegmentInScatter). The first water segment of the camera path -
-                // from the camera itself under water, or from the surface it looked through - takes
-                // a sample of the sun and the lights at one point on it; every later one the
-                // modelled diffuse field alone.
+                // Water in-scatter; only the first segment samples the sun and lights.
                 uint sVolume = RcBounceSeed(PtPathSeed(pixel, s), depth, 0x57415452u);
                 const float segment = OceanBoundaryDistance(ray.Origin, rayDir, hit.distance);
                 const bool sampled = (inFlags & PV_IN_WATER_SCATTERED) == 0u && depth <= (cameraWater ? 1u : 2u);
@@ -97,8 +85,7 @@ void Pass_pt_trace_v8()
                 const float3 segmentT = OceanMediumTransmittance(sigmaA + sigmaS, segment);
                 throughput *= segmentT;
                 if ((ps & PT_PS_LITE_VERTEX) != 0u) liteSuffix *= segmentT;
-                // A deferred emitter replay has no slot for segment attenuation.
-                // Resolve this endpoint in place using the now-attenuated throughput.
+                // Deferred emitter replay can't attenuate; resolve in place.
                 immediate = false;
                 inFlags &= ~PV_IN_IMMEDIATE;
                 inFlags |= PV_IN_WATER_SCATTERED;
@@ -106,19 +93,12 @@ void Pass_pt_trace_v8()
             }
             if (hit.hit) reorderHint = hit.instance & 0xffu;
         }
-        // The one reorder point, on the path of every iteration, the primary one sorted by the
-        // instance of the camera record: with the reorder inside the trace branch (skipped on the
-        // primary iteration) the device hung at random. Only a completed surface/miss endpoint
-        // reaches it; the water segment above works on ordinary data, never a live HitObject.
-        // Paths past their deferred vertex sort apart from the ones before it, since the two shade
-        // differently (a cache lookup against a capture). Pass median on bistro (RTX 5090, 1200
-        // frames): 2.64 ms, against 2.75 ms on the instance alone; ten instance bits instead of
-        // eight were no better.
+        // Keep outside the trace branch: reordering inside it hung the device.
 #if PT_SER_REORDER
         dx::MaybeReorderThread(reorderHint | (pending ? 0x200u : 0u), 10u);
 #endif
 
-        // ---- shade: build the context of the vertex, then the one shading call ----
+        // One PtVertexShade call site, so it inlines once.
         PtVertexIO io;
         io.flags = inFlags; io.pdf = prev_pdf; io.spread = pathSpread; io.dist = pathDist; io.cone = pathCone;
         io.dirPk = 0u; io.nPk = 0u; io.pos = pos; io.color = 0.0f; io.auxPk = 0u; io.nee = 0.0f; io.neeLite = 0.0f;
@@ -148,7 +128,6 @@ void Pass_pt_trace_v8()
         pos = io.pos;
         cameraRecordPending = false;
 
-        // ---- apply the vertex result ----
         const uint result = io.flags & PV_RESULT_MASK;
         const bool liteVertex = (ps & PT_PS_LITE_VERTEX) != 0u;
         const bool litePath   = depth >= 2u && liteVertex;
@@ -183,8 +162,7 @@ void Pass_pt_trace_v8()
             break;
         }
 
-        // The park comes first: the reuse suffix starts at this vertex, so a cache hit at the
-        // parked point is the first thing it collects (the hit shader reports both together).
+        // Park first: a cache hit here is the suffix's first radiance.
         if ((io.flags & PV_LITE_PARKED) != 0u)
         {
             liteSuffix = 1.0f;
@@ -202,13 +180,12 @@ void Pass_pt_trace_v8()
                 if (!any(throughput > 0.0f)) break;
             }
         }
-        // The light sample of an in-place vertex, taken where the cache did not end the path.
         if ((io.flags & PV_NEE) != 0u)
         {
             gathered += throughput * io.nee;
             if (litePath) liteL += liteSuffix * io.neeLite;
         }
-        // A subsurface walk moved the vertex to its exit (io.pos), one depth further along the path.
+        // The subsurface exit counts as one more depth.
         if ((io.flags & PV_SSS_WALKED) != 0u)
         {
             ps |= PT_PS_SSS;
@@ -219,8 +196,7 @@ void Pass_pt_trace_v8()
         const bool captured = (io.flags & PV_CAPTURED) != 0u;
         if (captured)
         {
-            // What was gathered so far is the pixel's; from here on the path gathers relative to
-            // the deferred scatter, and the head of the record is final.
+            // Flush to the pixel; gather relative to the deferred scatter from here.
             PtAddRadiance(pixel, gathered);
             gathered = 0.0f;
             pending = true;
@@ -248,8 +224,7 @@ void Pass_pt_trace_v8()
         pathDist   = io.dist;
         if (result == PV_TERMINATE) break;
 
-        // Russian roulette scales surviving paths after the configured depth (deferred scatters
-        // are replayed by the material pass).
+        // Russian roulette; the material pass replays it for deferred scatters.
         if (!(captured && kind == DV_KIND_BSDF) && PtPsDepth(ps) >= (uint)pt_rrStartDepth)
         {
             uint sRr = RcBounceSeed(PtPathSeed(pixel, s), PtPsDepth(ps), RC_STREAM_RR);
@@ -259,7 +234,6 @@ void Pass_pt_trace_v8()
             if (litePath) liteSuffix *= rcp(survivalProb);
         }
 
-        // ---- next ray ----
         rayDir = UnpackNormal(io.dirPk);
         const float3 vertexN = UnpackNormal(io.nPk);
         prevNPk = io.nPk;

@@ -1,11 +1,4 @@
-// Tessellates the selected ocean quadtree leaves straight into the renderer's global vertex
-// buffer, so the acceleration structures build from geometry that never touches the CPU.
-//
-// Each vertex is displaced by the cascades filtered to this tile's vertex spacing: a coarse tile
-// carries only the waves it can represent, and everything finer reaches the image through the
-// full-resolution normal the hit evaluator samples. Vertices on an edge whose neighbour is one
-// level coarser are collapsed onto that neighbour's sample positions, which closes the T-junction
-// cracks that would otherwise let rays leak through the surface.
+// Tessellates the selected quadtree tiles straight into the global vertex buffer.
 
 #include "OceanLayout.h"
 
@@ -30,7 +23,7 @@ struct OceanVertexOut {
     half2 texCoord;
 };
 
-// Matches UnpackNormal_INT in Compression_v8.hlsli: octahedral, two signed 16-bit components.
+// Must match UnpackNormal_INT (Compression_v8.hlsli): octahedral, 2 x signed 16-bit.
 uint OceanPackNormal(float3 n) {
     const float3 p = n / max(abs(n.x) + abs(n.y) + abs(n.z), 1e-20f);
     float2 f = p.xy;
@@ -62,13 +55,12 @@ void OceanTiles(uint3 tid : SV_DispatchThreadID) {
     const OceanVertexSource src = OceanStitchSource(i, j, tile.stitch);
     const float2 localLo = float2(src.lo) * step;
     const float2 localHi = float2(src.hi) * step;
-    const float2 local = float2(i, j) * step; // lerp(localLo, localHi, w): stitching moves no vertex sideways
+    const float2 local = float2(i, j) * step; // == lerp(localLo, localHi, src.w)
 
     const float2 qLo = tile.anchor.xz + localLo;
     OceanSample s = OceanSampleSurface(qLo, OceanGeometryWidth(qLo, P));
     if (src.w > 0.0f) {
-        // Interpolate the two samples of the coarser edge rather than displacing this point, so
-        // the vertex lands exactly on the segment the neighbour's edge spans.
+        // Lerp the coarser edge's samples so the vertex lies on it.
         const float2 qHi = tile.anchor.xz + localHi;
         const OceanSample b = OceanSampleSurface(qHi, OceanGeometryWidth(qHi, P));
         s.displacement = lerp(s.displacement, b.displacement, src.w);
@@ -76,8 +68,7 @@ void OceanTiles(uint3 tid : SV_DispatchThreadID) {
         s.stretch = lerp(s.stretch, b.stretch, src.w);
     }
 
-    // The Earth's drop is interpolated like the displacement: evaluating the quadratic at the
-    // interpolated point would bow the vertex off the neighbour's straight edge.
+    // Lerp the drop too, to stay on the neighbour's straight edge.
     const float curveLo = tile.curveBase + dot(tile.curveGrad, localLo) + dot(localLo, localLo) * 0.5f * tile.invCurveRadius;
     const float curveHi = tile.curveBase + dot(tile.curveGrad, localHi) + dot(localHi, localHi) * 0.5f * tile.invCurveRadius;
     const float curve = lerp(curveLo, curveHi, src.w);
@@ -85,41 +76,25 @@ void OceanTiles(uint3 tid : SV_DispatchThreadID) {
 
     OceanVertexOut v;
     v.vertex = float3(local.x + s.displacement.x, s.displacement.y - curve, local.y + s.displacement.z);
-    // The hit evaluator replaces this with the full-resolution normal; it only has to agree with
-    // the triangle well enough for the interpolation guard in EvalSurfaceStateImpl to accept it.
+    // Replaced at the hit; must pass EvalSurfaceStateImpl's interpolation guard.
     v.packedNormal = OceanPackNormal(OceanNormalFromSample(s, curveSlope));
-    // Texture coordinates are unit-per-tile: the hit evaluator recovers the undisplaced sea
-    // position from them, and derives its tangent frame and beam footprint from them.
+    // Unit per tile; the hit recovers the undisplaced position from it.
     v.texCoord = (half2)(float2(i, j) / (float)G);
 
     verts[tile.vertexBase + tid.x] = v;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Whitecaps, after Crest's foam simulation (wave-harmonic/crest, MIT). One thread per texel of each
-// camera-centred level (z). Last frame's foam at the same world point fades; where the composite
-// surface - every cascade, filtered to the breaking scale - is squeezed past breaking, more
-// gathers. The levels move in whole texels, so carrying the foam over is an exact texel offset;
-// what scrolls in from outside a level is taken from the next coarser one.
-// ---------------------------------------------------------------------------------------------
+// Whitecaps, after Crest's foam simulation (wave-harmonic/crest, MIT).
 OceanFoamState OceanLoadFoamState(RWByteAddressBuffer stats) {
     return stats.Load<OceanFoamState>(OCEAN_FOAM_STATE_OFFSET);
 }
 
-// How plainly white foam of this cover is: what a whitecap census photographs as foam, and what
-// the cover asked for (foamCover) is measured in - the cap and the raft it leaves while that is
-// still a sheet with holes in it (OceanFoamRaft). The lace it dissolves into is left out: counted,
-// old trails met the measured cover and the sea stopped breaking.
+// Whitecap share of this cover, as foamCover counts it; lace excluded.
 float OceanFoamWhite(float cover) {
     return saturate((cover - 0.3f) / 0.4f);
 }
 
-// How much foam a breaking crest throws up at this point of its run, one on average. A crest does not
-// spill evenly along its length, and the foam it leaves comes off it in streaks along its path, so a
-// trail is streaked rather than one smooth band: noise drawn out five times as long downwind as it is
-// across, from a metre across down to a third of that. At the texel's absolute world position, so
-// every level lays down the same streaks, each keeping the octaves its grid holds (four texels across
-// at least).
+// Foam yield along a breaking crest's path, mean 1: downwind streak noise.
 float OceanFoamStreaks(float2 world, float texel, float2 wind) {
     const float2 w = OceanFoamFrame(world, wind);
     float g = 0.0f, amp = 1.0f, total = 0.0f, across = 1.2f;
@@ -157,7 +132,7 @@ void OceanFoam(uint3 tid : SV_DispatchThreadID) {
         if (all(src >= 0) && all(src < OCEAN_FOAM_SIZE)) {
             amount = prev.Load(int4(src, level, 0));
         } else if (level + 1u < OCEAN_FOAM_LEVELS) {
-            // Ground the level scrolled onto was held last frame by the next coarser one.
+            // Scrolled in: read the next coarser level.
             const float4 coarse = P.foamLevel[level + 1u];
             const float coarseTexel = 2.0f * texel;
             const int2 c = int2(floor((q - (coarse.xy - coarse.zw * coarseTexel)) / coarseTexel));
@@ -165,23 +140,13 @@ void OceanFoam(uint3 tid : SV_DispatchThreadID) {
                 amount = prev.Load(int4(c, level + 1u, 0));
         }
     }
-    // A cap and the sheet it leaves collapse within a couple of seconds, as the bubbles under them
-    // rise and burst; the lace of strands that is left lingers - foamDecayRate is the lace's rate.
-    // How the cover comes apart is drawn where it is shown (OceanFoamAt), from the cover alone.
-    // Foam fades for as long as simulated time moves; a paused sea keeps its caps.
     const float fresh = smoothstep(0.05f, 0.4f, amount);
     amount *= exp(-P.foamDecayRate * gDt * lerp(1.0f, OCEAN_FOAM_FRESH_DECAY, fresh));
 
-    // Each level tests the surface at the breaking scale, or at its own texel where that is
-    // coarser: a far level records the breaking of the waves long enough to show there, as caps on
-    // their crests, rather than aliasing the small breakers it cannot hold. The coarser levels'
-    // surfaces are the smoother for it, which is why each level has its own breaking point.
     const OceanSample s = OceanSampleSurface(q, max(OCEAN_FOAM_BREAK_WIDTH, texel));
     const float3 A = s.stretch;
 
-    // Crests are tested on the unit-gain sea, the kilometre-scale sea-state field divided back
-    // out, so one breaking point holds for the whole ocean wherever the camera is; how much more
-    // a rough patch breaks is laid on where the foam is shown (OceanFoamAt).
+    // Jacobian of the unit-gain sea (Tessendorf 2001); OceanFoamAt applies the gain.
     const float3 u = float3(1.0f, 1.0f, 0.0f) + (A - float3(1.0f, 1.0f, 0.0f)) / max(s.gain, 0.05f);
     const float jacobian = u.x * u.y - u.z * u.z;
     if (((tid.x | tid.y) & (OCEAN_FOAM_HIST_STRIDE - 1u)) == 0u) {
@@ -192,8 +157,7 @@ void OceanFoam(uint3 tid : SV_DispatchThreadID) {
     const OceanFoamState state = OceanLoadFoamState(stats);
     const float breaking = saturate((state.threshold[level] - jacobian) / max(state.softness[level], 1e-3f));
     if (breaking > 0.0f) {
-        // Where the crest throws up little, its foam also never gets past a sheet with holes in it:
-        // however long a crest keeps breaking, each point only piles up as much as its streak holds.
+        // Each point piles up only as much as its streak holds.
         const float2 world = (float2(P.foamCell[level].xy + int2(tid.xy)) + 0.5f) * texel;
         const float streak = OceanFoamStreaks(world, texel, P.foamWind);
         const float most = saturate(0.2f + 0.65f * streak);
@@ -208,8 +172,7 @@ void OceanFoam(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
-// One level's histogram, cleared behind it and summed into gsFoamCount[i] = samples in bins 0..i.
-// One thread per bin.
+// gsFoamCount[i] = a level's samples in bins 0..i; the histogram is cleared.
 groupshared uint gsFoamCount[OCEAN_FOAM_BINS];
 static const float OCEAN_FOAM_SAMPLES =
     float((OCEAN_FOAM_SIZE / OCEAN_FOAM_HIST_STRIDE) * (OCEAN_FOAM_SIZE / OCEAN_FOAM_HIST_STRIDE));
@@ -226,8 +189,6 @@ void OceanFoamHistogram(RWByteAddressBuffer stats, uint level, uint i) {
         GroupMemoryBarrierWithGroupSync();
     }
 }
-// The Jacobian below which `share` of the histogrammed sea lies. Nothing asked for breaks nothing;
-// more than the histogram holds breaks everything it holds.
 float OceanFoamQuantile(float share) {
     const float target = share * OCEAN_FOAM_SAMPLES;
     if (target <= 0.0f)
@@ -243,7 +204,6 @@ float OceanFoamQuantile(float share) {
     const float below = lo > 0u ? float(gsFoamCount[lo - 1u]) : 0.0f;
     return OCEAN_FOAM_HIST_MIN + (float(lo) + (target - below) / max(float(gsFoamCount[lo]) - below, 1.0f)) * OCEAN_FOAM_HIST_STEP;
 }
-// Share of the histogrammed sea below this Jacobian.
 float OceanFoamShareBelow(float jacobian) {
     const float b = (jacobian - OCEAN_FOAM_HIST_MIN) / OCEAN_FOAM_HIST_STEP;
     if (b <= 0.0f)
@@ -252,9 +212,7 @@ float OceanFoamShareBelow(float jacobian) {
     const float below = i > 0u ? float(gsFoamCount[i - 1u]) : 0.0f;
     return lerp(below, float(gsFoamCount[i]), saturate(b - float(i))) / OCEAN_FOAM_SAMPLES;
 }
-// Mean cover of level `coarse` over the ground of the level `k` steps finer, the middle 2^-k of
-// it: the middle two texels each way of mip 10 - k (the levels are aligned to within a texel of
-// the coarser one).
+// Mean cover of level `coarse` over level `coarse - k`'s ground.
 float OceanFoamCoverOver(uint base, uint coarse, uint k) {
     const uint mip = OCEAN_FOAM_MIPS - 2u - k;
     RWTexture2DArray<float> m = ResourceDescriptorHeap[base + mip];
@@ -263,24 +221,7 @@ float OceanFoamCoverOver(uint base, uint coarse, uint k) {
                     m[uint3(c - 1u, c, coarse)] + m[uint3(c, c, coarse)]);
 }
 
-// After the foam update and its mips: set each level's breaking point for the next frame from the
-// histograms the update just filled.
-//
-// How much breaks is steered, not assumed. The share of the reference level that breaks is the
-// crests squeezed hardest, and it is walked until the foam they leave covers foamCover of the sea
-// - the share that takes is the waves' and the foam lifetime's business, and far from
-// proportional: a light sea's few breakers barely graze the breaking point and leave faint foam, a
-// gale's pitch far past it. No crest squeezed less than foamBreakMax breaks at all, though, so a
-// sea that cannot break that much stays under its cover. Every other level breaks the reference
-// level's share times its OceanFoamState.match, walked until the two lay the same cover on the
-// ground they share. A crest breaks in full at the Jacobian a quarter of the share lies below, so
-// the core of every breaker is solid foam whatever the tail of the sea's Jacobian looks like.
-//
-// The steering has to be slower than the foam it steers, whose response lags by its lifetime, so
-// its rate comes with it (foamSteer). A change of the cover asked for is taken at once as the same
-// change of the share - with every breaker's core solid, the two go roughly in proportion - and
-// the steering only trims after. One group of a thread per bin; every thread works the same
-// scalars.
+// Next frame's breaking points: histogram quantiles of a share steered toward foamCover.
 [numthreads(OCEAN_FOAM_BINS, 1, 1)]
 void OceanFoamStats(uint3 gtid : SV_GroupThreadID) {
     const OceanParamsGPU P = OceanParams();
@@ -295,19 +236,15 @@ void OceanFoamStats(uint3 gtid : SV_GroupThreadID) {
     float coverage[OCEAN_FOAM_LEVELS];
     [unroll] for (uint l = 0u; l < OCEAN_FOAM_LEVELS; ++l)
         coverage[l] = top[uint3(0u, 0u, l)];
-    // The cover the steering answers to: how much of the reference level is plainly white.
     const float white = (float)stats.Load(OCEAN_FOAM_WHITE_OFFSET) / (OCEAN_FOAM_WHITE_SCALE * OCEAN_FOAM_SAMPLES);
 
-    // Foam that started over (the first frame, a jump) has to build up for a couple of lifetimes
-    // before its cover says anything about the share. The white the steering reads is fresh foam,
-    // which fades OCEAN_FOAM_FRESH_DECAY times faster than the lace.
+    // After a restart, hold the steering for two fresh-foam lifetimes.
     const float whiteRate = max(P.foamDecayRate * OCEAN_FOAM_FRESH_DECAY, 1e-3f);
     float settle = valid ? max(state.settle - gDt, 0.0f) : min(2.0f / whiteRate, 10.0f);
     if (P.foamHistory == 0u)
         settle = min(2.0f / whiteRate, 10.0f);
     const bool steer = settle <= 0.0f && gDt > 0.0f;
-    // White cover is about the share times the white's lifetime, so that is where the share
-    // starts, and where a change of either moves it at once.
+    // White cover ~ share * lifetime: seeds the share, rescales it when either changes.
     const float target = P.foamCover;
     float share = valid ? state.share : min(target * whiteRate, 0.5f);
     if (valid && state.target > 0.0f && target > 0.0f)
@@ -320,7 +257,7 @@ void OceanFoamStats(uint3 gtid : SV_GroupThreadID) {
     }
     share = target > 0.0f ? clamp(share, 1e-6f, 0.5f) : 0.0f;
 
-    // Each other level against the reference one, over the ground the finer of the two holds.
+    // Steer each level to the reference level's cover on shared ground.
     float match[OCEAN_FOAM_LEVELS];
     [unroll] for (uint l = 0u; l < OCEAN_FOAM_LEVELS; ++l) {
         match[l] = valid && l != R ? state.match[l] : 1.0f;
@@ -338,8 +275,7 @@ void OceanFoamStats(uint3 gtid : SV_GroupThreadID) {
     threshold[R] = min(OceanFoamQuantile(share), P.foamBreakMax);
     softness[R] = threshold[R] - min(OceanFoamQuantile(0.25f * share), threshold[R] - 0.02f);
     const float breaking = OceanFoamShareBelow(threshold[R]);
-    // A sea that cannot break the share asked for does not have the steering wind up asking for
-    // ever more.
+    // Anti-windup when the sea cannot break the share.
     share = min(share, 1.5f * breaking + 1e-6f);
     [unroll] for (uint l = 0u; l < OCEAN_FOAM_LEVELS; ++l) {
         if (l == R)
@@ -347,8 +283,7 @@ void OceanFoamStats(uint3 gtid : SV_GroupThreadID) {
         OceanFoamHistogram(stats, l, i);
         const float s = min(breaking * match[l], 0.5f);
         float t = OceanFoamQuantile(s);
-        // The finer levels test the same filtered surface as the reference one, so no less
-        // squeezed a crest breaks on them either.
+        // Finer levels test the same surface, so foamBreakMax applies too.
         if (l < R)
             t = min(t, P.foamBreakMax);
         threshold[l] = t;
@@ -356,8 +291,7 @@ void OceanFoamStats(uint3 gtid : SV_GroupThreadID) {
     }
 
     if (i == 0u) {
-        // Breaking points settle within a tenth of a second rather than jumping with every frame's
-        // histogram; the first set is taken as it is.
+        // Settle over ~0.1 s; the first set is taken as is.
         const float follow = valid ? 1.0f - exp(-gDt / 0.1f) : 1.0f;
         [unroll] for (uint l = 0u; l < OCEAN_FOAM_LEVELS; ++l) {
             state.threshold[l] = lerp(state.threshold[l], threshold[l], follow);

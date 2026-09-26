@@ -1,8 +1,6 @@
 #include "Includes_v8.hlsli"
 
-// Atmosphere along the primary ray: in-scattering up to the primary hit, and the sky behind
-// escaped pixels. Both feed the shading pass through the scratch slices 10 (radiance) and 11
-// (transmittance).
+// Writes scratch slices 10 (radiance) and 11 (transmittance).
 [numthreads(8, 8, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
@@ -26,10 +24,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     const SunState sun = ComputeSunState();
-    // In-scattering up to the surface (or through the whole atmosphere behind an escaped pixel),
-    // integrated per pixel with a jittered step schedule and scaled by SKY_INTENSITY: the same
-    // estimate the clear-sky path of the previous integrator produced. The night background and
-    // the stars are added behind escaped pixels only.
     const float maxDistanceKm = isMeshHit
         ? length(load_x1(g_sample_current, pixelIdx) - rayOrigin) / WORLD_UNITS_PER_KM
         : -1.0f;

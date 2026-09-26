@@ -18,7 +18,6 @@ bool RegionFile::parse_name(const std::string& fileName, int32_t& rx, int32_t& r
     return true;
 }
 
-// Reads and validates the region header before exposing chunk offsets.
 bool RegionFile::open(const std::string& path, std::string* err) {
     m_data.clear();
     FILE* f = nullptr;
@@ -52,13 +51,11 @@ bool RegionFile::read_chunk(int lx, int lz, std::vector<uint8_t>& nbt, std::stri
     if (!chunk_present(lx, lz)) { if (err) *err = "chunk absent"; return false; }
     const size_t h = (size_t)(lx + lz * 32) * 4;
     const uint32_t offSectors = ((uint32_t)m_data[h] << 16) | ((uint32_t)m_data[h + 1] << 8) | m_data[h + 2];
-    const uint32_t numSectors = m_data[h + 3];
     const uint64_t off = (uint64_t)offSectors * 4096ull;
     if (off + 5 > m_data.size()) { if (err) *err = "chunk offset out of range"; return false; }
     const uint8_t* p = m_data.data() + off;
     const uint32_t len = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
     if (len < 1 || off + 4 + len > m_data.size()) { if (err) *err = "chunk length out of range"; return false; }
-    (void)numSectors;
     const uint8_t kind = p[4];
     const uint8_t* payload = p + 5;
     const size_t payloadLen = len - 1;
@@ -77,7 +74,6 @@ bool RegionFile::read_chunk(int lx, int lz, std::vector<uint8_t>& nbt, std::stri
     return true;
 }
 
-// Decodes palette indices without allowing entries past the input array.
 void unpack_block_states(const int64_t* longs, size_t longCount, uint32_t bits,
                          bool padded, uint32_t* out) {
     const uint64_t mask = (bits >= 64) ? ~0ull : ((1ull << bits) - 1ull);

@@ -4,7 +4,6 @@
 groupshared uint sharcDirtyMask[SHARC_GROUP_SIZE / 32u];
 
 [numthreads(SHARC_GROUP_SIZE, 1, 1)]
-// Resolve dirty radiance and guide entries into reusable history.
 void main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     uint baseSlot = group.x * SHARC_GROUP_SIZE;

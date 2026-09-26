@@ -40,7 +40,6 @@ bool read_named(Cursor& c, NbtValue& v) {
     return read_payload(c, t, v);
 }
 
-// Recursively decodes one payload while validating cursor bounds.
 bool read_payload(Cursor& c, NbtType type, NbtValue& v) {
     switch (type) {
     case NbtType::Byte:   if (!c.need(1)) return c.fail("truncated byte");   v.i = (int8_t)c.u8();   return true;
@@ -148,7 +147,6 @@ const NbtValue* NbtValue::get_compound(std::string_view key) const {
     return (v && v->type == NbtType::Compound) ? v : nullptr;
 }
 
-// Parses one named root tag from a bounded input buffer.
 bool nbt_parse(const uint8_t* data, size_t size, NbtValue& root, std::string* err) {
     if (err) err->clear();
     root = NbtValue{};

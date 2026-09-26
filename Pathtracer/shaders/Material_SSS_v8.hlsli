@@ -26,7 +26,7 @@ inline void SSS_OrthoBasis(float3 n, out float3 t, out float3 b)
     b = float3(c, s + n.y * n.y * a, -n.y);
 }
 
-// Sample a local direction from the HG phase distribution.
+// Henyey & Greenstein 1941.
 inline float3 SampleHenyeyGreenstein(float3 wo, float g, inout uint seed)
 {
     const float u1 = RandomFloatSingle(seed);
@@ -48,7 +48,6 @@ inline float3 SampleHenyeyGreenstein(float3 wo, float g, inout uint seed)
     return normalize(sinT * cos(phi) * T + sinT * sin(phi) * B + cosT * wo);
 }
 
-// Evaluate the Henyey-Greenstein phase function.
 inline float EvaluatePhaseHG(float g, float cosTheta)
 {
     const float gg    = g * g;
@@ -119,7 +118,7 @@ inline SSSWalkResult SubsurfaceWalk(
         ray.Origin    = pos;
         ray.Direction = dir;
         ray.TMin      = 0.0001f;
-        ray.TMax      = max(dl, 2.0f * ray.TMin);   // a step shorter than the start offset would invert the extents
+        ray.TMax      = max(dl, 2.0f * ray.TMin);   // keeps TMax > TMin
         if (!IsRayDescValid(ray)) return r;
 
         RayQuery<RAY_FLAG_FORCE_OPAQUE> q;

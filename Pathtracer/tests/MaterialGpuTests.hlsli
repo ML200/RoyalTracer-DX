@@ -126,7 +126,7 @@ void materialSamplingCheck(uint3 tid : SV_DispatchThreadID)
             float3 l = CosineUnitVectorInHemisphere(n, seed);
             if (testMode == 100u)
             {
-                // Independently integrate the legacy BRDF with its VNDF proposal.
+                // Independent VNDF-sampled reference.
                 float3 h = SampleVNDF_H((float)rough * (float)rough, v, n, seed);
                 float3 reflected = reflect(-v, h);
                 if (dot(n, reflected) > 0.0f)

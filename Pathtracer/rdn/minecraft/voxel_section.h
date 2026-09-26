@@ -8,13 +8,11 @@ namespace mc {
 
 class Section {
 public:
-    // Stores 16x16x16 voxels as compact palette indices.
     static Section uniform(Voxel v) {
         Section s;
         s.m_palette.push_back(v);
         return s;
     }
-    // Builds a palette and repacks values into word-aligned indices.
     static Section from_values(const Voxel* v);
 
     bool  is_uniform() const { return m_bits == 0; }

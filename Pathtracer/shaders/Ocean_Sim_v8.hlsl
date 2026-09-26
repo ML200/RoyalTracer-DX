@@ -1,18 +1,4 @@
-// Ocean surface simulation. Every entry point here runs on the streaming compute queue before the
-// frame traces against the ocean, and reaches its resources through ResourceDescriptorHeap.
-//
-// Pipeline, once per frame:
-//   FftH   evolve h0 to the current time, derive the eight real fields, inverse FFT along rows
-//   FftV   inverse FFT along columns, unpacked straight into displacement and derivatives
-//   Mip    box pyramids of both, so geometry and shading can filter to their footprint
-//   Foam   world-space whitecaps from the composite surface, and their pyramids (Ocean_Tiles)
-//   Tiles  quadtree leaves -> displaced vertices for the acceleration structures (Ocean_Tiles)
-//
-// Evolution and assembly ride inside the two transforms: each one used to be a pass of its own
-// that wrote the whole field out and read it straight back in.
-//
-// h0 is baked on the CPU whenever the sea state changes: the same samples produce the per-cascade
-// statistics the host conditions the surface with, so the two cannot drift apart.
+// FFT ocean simulation (Tessendorf 2001). h0 is baked on the CPU.
 
 #include "OceanLayout.h"
 #include "OceanMath.hlsli"
@@ -35,8 +21,7 @@ float2 CMul(float2 a, float2 b) {
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-// Two lines at once: the four packed complex fields of a cascade travel as two float4 lines, so
-// one group transforms all eight real fields of its row or column.
+// Two float4 lines: a cascade's four packed complex fields.
 groupshared float4 g_line[2][OCEAN_FFT_SIZE];
 
 uint BitReverseN(uint v) {
@@ -47,8 +32,7 @@ uint BitReverseN(uint v) {
     return v >> (16u - OCEAN_FFT_LOG2);
 }
 
-// In-place Cooley-Tukey on both lines. Positive exponent: this is the synthesis direction, and
-// the 1/N normalisation is deliberately left out because the baked amplitudes already carry it.
+// In-place Cooley-Tukey, positive exponent; no 1/N (baked into h0).
 void FftLines(uint tid) {
     [unroll]
     for (uint stage = 1u; stage <= OCEAN_FFT_LOG2; ++stage) {
@@ -67,7 +51,7 @@ void FftLines(uint tid) {
         const float4 a1 = g_line[1][i0], b1 = g_line[1][i1];
         const float4 bw0 = float4(CMul(b0.xy, w), CMul(b0.zw, w));
         const float4 bw1 = float4(CMul(b1.xy, w), CMul(b1.zw, w));
-        // Every thread must finish reading its pair before any of them overwrites a slot.
+        // All reads before any in-place write.
         GroupMemoryBarrierWithGroupSync();
         g_line[0][i0] = a0 + bw0;
         g_line[0][i1] = a0 - bw0;
@@ -77,10 +61,7 @@ void FftLines(uint tid) {
     }
 }
 
-// h(k,t) = h0(k) e^{-i w t} + conj(h0(-k)) e^{i w t}, then the eight derived real fields packed
-// two per complex transform. Each field is Hermitian, so the pair separates exactly into the real
-// and imaginary parts of one inverse transform. The wave vector is rebuilt from the grid index:
-// node n of a patch of length L sits at (n - N/2) 2 pi / L, the zero frequency in the middle.
+// h(k,t) = h0(k) e^{-i w t} + conj(h0(-k)) e^{i w t} (Tessendorf 2001); two real fields per transform.
 void EvolveMode(uint2 at, uint c, OceanParamsGPU P, out float4 slice0, out float4 slice1) {
     Texture2DArray<float4> h0Tex = ResourceDescriptorHeap[OCEAN_SRV_H0];
     const float4 h0 = h0Tex[uint3(at, c)];
@@ -103,19 +84,18 @@ void EvolveMode(uint2 at, uint c, OceanParamsGPU P, out float4 slice0, out float
     const float2 specDYdx = float2(-h.y * kx, h.x * kx);
     const float2 specDYdz = float2(-h.y * kz, h.x * kz);
 
-    // Horizontal displacement: -i (k/|k|) h, scaled by the choppiness.
+    // Choppy displacement -i (k/|k|) h (Tessendorf 2001).
     const float tx = kx * invK * lambda;
     const float tz = kz * invK * lambda;
     const float2 specX = float2(h.y * tx, -h.x * tx);
     const float2 specZ = float2(h.y * tz, -h.x * tz);
 
-    // Horizontal displacement gradients, for the stretch the normal is warped by. Multiplying by
-    // i k twice turns the leading -i into a real factor, so these stay real-valued spectra.
+    // Horizontal displacement gradients: real multiples of h.
     const float2 specDXdx = h * (kx * kx * invK * lambda);
     const float2 specDZdz = h * (kz * kz * invK * lambda);
     const float2 specDXdz = h * (kx * kz * invK * lambda);
 
-    // Pack: field A goes to the real part, field B to the imaginary part of one transform.
+    // Pack A + iB: A to the real part, B to the imaginary.
     slice0 = float4(specX.x - specZ.y, specX.y + specZ.x, specY.x - specDXdz.y, specY.y + specDXdz.x);
     slice1 = float4(specDYdx.x - specDYdz.y, specDYdx.y + specDYdz.x, specDXdx.x - specDZdz.y,
                     specDXdx.y + specDZdz.x);
@@ -134,7 +114,7 @@ void OceanFftH(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         const uint x = tid + half_ * OCEAN_FFT_THREADS;
         float4 s0, s1;
         EvolveMode(uint2(x, row), c, P, s0, s1);
-        // Load bit-reversed so the in-place butterflies come out in natural order.
+        // Bit-reversed load, natural-order result.
         g_line[0][BitReverseN(x)] = s0;
         g_line[1][BitReverseN(x)] = s1;
     }
@@ -149,8 +129,7 @@ void OceanFftH(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
 }
 
-// One group per (column, cascade). The (-1)^(x+z) factor recentres the spectrum, whose wave
-// vectors are stored with the zero frequency in the middle of the grid.
+// One group per (column, cascade). (-1)^(x+z): zero frequency is stored mid-grid.
 [numthreads(OCEAN_FFT_THREADS, 1, 1)]
 void OceanFftV(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     RWTexture2DArray<float4> fft = ResourceDescriptorHeap[OCEAN_UAV_FFT];
@@ -181,9 +160,7 @@ void OceanFftV(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// One mip level of every pyramid. gU0: displacement parity; gU1: destination mip.
-// ---------------------------------------------------------------------------------------------
+// One mip of every pyramid. gU0: displacement parity; gU1: destination mip.
 [numthreads(8, 8, 1)]
 void OceanMip(uint3 tid : SV_DispatchThreadID) {
     const uint dstSize = max(1u, (uint)OCEAN_FFT_SIZE >> gU1);

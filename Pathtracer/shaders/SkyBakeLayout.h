@@ -1,6 +1,6 @@
 #pragma once
 
-// Sky-bake offsets are shared by the host and shader passes.
+// Shared by the host and the shaders.
 #define SKYBAKE_SUN_OFFSET 0u
 #define SKYBAKE_SUN_BYTES 64u
 #define SKYBAKE_LUT_OFFSET 256u
@@ -10,9 +10,7 @@
 #define SKYBAKE_LUT_BYTES (SKYBAKE_LUT_W * SKYBAKE_LUT_H * SKYBAKE_LUT_TEXEL_BYTES)
 #define SKYBAKE_BYTES (SKYBAKE_LUT_OFFSET + SKYBAKE_LUT_BYTES)
 
-// The sky's irradiance on a horizontal plane (the sun excluded), summed over the bake's upper half
-// as it is baked: three 64-bit fixed-point sums, in one of two slots by frame parity so the slot a
-// frame sums into was cleared the frame before, while nothing read or wrote it.
+// Sky irradiance: three 64-bit fixed-point sums; two slots by frame parity.
 #define SKYBAKE_IRRADIANCE_OFFSET 64u
 #define SKYBAKE_IRRADIANCE_SLOT_BYTES 32u
 #define SKYBAKE_IRRADIANCE_SCALE 1048576.0f

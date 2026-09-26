@@ -26,7 +26,7 @@ float3 CosineUnitVectorInHemisphere(float3 normal, inout uint seed)
     return CosineUnitVectorInHemisphereFrom(normal, float2(u1, u2));
 }
 
-// Energy-preserving Oren-Nayar (EON), with an analytic diffuse MS term.
+// Energy-preserving Oren-Nayar (EON).
 inline float OrenNayarDirectionalAlbedo(float mu, float roughness)
 {
     float x = 1.0f - saturate(mu);
@@ -46,7 +46,7 @@ inline float EvaluateOrenNayar(float3 N, float3 V, float3 L, float roughness)
            (1.0f - OrenNayarDirectionalAlbedo(l, roughness)) / max(1.0f - avg, 1e-8f);
 }
 
-// Keep legacy entry points and cosine proposals for integrator/replay compatibility.
+// Legacy Lambertian entry points; cosine proposals.
 inline float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 flatNormal, float3 incoming, float3 outgoing, float etai, float etat, float3 Kd) {
     if(dot(-incoming, flatNormal) <= 0.0f)
         return float3(0,0,0);
@@ -58,7 +58,6 @@ inline float Sampling_Weight_Lambertian(uint mID, float3 normal, float3 outgoing
     return 1.0f;
 }
 
-// Sample the cosine-weighted diffuse hemisphere.
 inline float3 SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flatNormal, inout uint seed) {
     return CosineUnitVectorInHemisphere(normal, seed);
 }

@@ -9,19 +9,7 @@ namespace ocean {
 
 constexpr double kGravity = 9.80665;
 
-// Optional test the quadtree asks about a square of the plane. The sea covers its whole extent,
-// and in a world whose water covers only part of it - a block world's coast and lakes, with a city
-// on the rest - every ray pays to traverse water tiles standing where there is no water.
-//
-// Three answers, not two, because a yes/no test is not enough: a tile the size of the map that
-// happens to contain a harbour would answer yes and stay that size, and its bounding box would
-// then enclose everything else in the scene. Partial means "split me": subdividing until each
-// tile is either all water or none of it is what actually keeps the bounds tight, and tight
-// bounds are the whole point - a box that overlaps the world is one every ray has to enter.
-//
-// Coordinates are absolute world XZ, matching the quadtree's own; `size` is the tile's edge.
-// Answering Full where there is no water only costs what it cost before; answering None where
-// there is water would leave a hole, so err towards Partial when unsure.
+// Water coverage of a quadtree tile (world XZ). Partial splits it; when unsure, answer Partial.
 enum class Coverage : uint8_t { None, Partial, Full };
 
 struct ICoverage {
@@ -29,26 +17,15 @@ struct ICoverage {
     virtual Coverage Test(double minX, double minZ, double size) const = 0;
 };
 
-// User-facing description of a sea state. Wind speed and fetch drive the JONSWAP spectrum, so a
-// realistic sea needs only those two plus the water's optical type.
 struct Params {
     bool enabled = true;
 
-    // Wind speed at 10 m, m/s. Beaufort 5 ~ 10 m/s, Beaufort 7 ~ 15 m/s.
-    float windSpeed = 11.0f;
-    // Distance over which the wind has been blowing, metres. Open ocean is effectively unlimited;
-    // 200 km already produces a nearly fully developed sea.
-    float fetch = 200000.0f;
-    // Wind bearing in degrees, clockwise from +Z.
-    float windDirectionDeg = 30.0f;
-    // 0 keeps the full wind-sea spread, 1 narrows it toward long-crested swell. Pushing this up
-    // quickly turns the sea into parallel corrugations, so the default stays low.
-    float swell = 0.15f;
-    // Exponent of the downwind lobe. 0 is symmetric, higher values suppress waves travelling into
-    // the wind and make the crests more parallel.
-    float windAlign = 0.8f;
-    // Negative values retain the existing wind/fetch-derived spectrum. Otherwise these
-    // physical controls take precedence; amplitudeScale remains a final artistic gain.
+    float windSpeed = 11.0f;        // m/s at 10 m
+    float fetch = 200000.0f;        // m
+    float windDirectionDeg = 30.0f; // clockwise from +Z
+    float swell = 0.15f;            // 0 wind sea, 1 long-crested swell
+    float windAlign = 0.8f;         // downwind lobe exponent
+    // < 0: derived from wind and fetch
     float significantHeight = -1.0f;
     float peakPeriod = -1.0f;
     float swellHeight = 0.0f;
@@ -56,127 +33,52 @@ struct Params {
     float swellDirectionDeg = 80.0f;
     float swellSpreadDeg = 12.0f;
     bool paused = false;
-    float fixedTimeStep = 0.0f; // deterministic capture/testing; 0 uses frame time
-    float bodyWeight = 0.0f; // optional diffuse surface contribution; clear water uses transmission + SSS
-    uint32_t debugMode = 0; // OCEAN_DEBUG_*: 0 beauty, 1 normal, 2 compression, 3 geometry LOD, 4 filter mip
+    float fixedTimeStep = 0.0f; // s; 0 uses frame time
+    float bodyWeight = 0.0f; // diffuse surface share
+    uint32_t debugMode = 0; // OCEAN_DEBUG_*
 
-    // How hard a gusty, veering wind whips the short waves riding the big ones. It pulls their
-    // crests into points (extra horizontal compression and Stokes sharpening on the short waves
-    // only, see ShortWaveChop) and scatters the wind sea off the wind's heading into a confused,
-    // short-crested one (DirectionalFocus). Wave height and length stay the wind's, and so does how
-    // much of the sea is white (WhitecapCover). 0 leaves every crest rounded and the waves marching
-    // one way; 1 is the calibrated sea; 3 a hard, confused one. The wind's own forcing scales the
-    // whipping (see WindChop).
-    float turbulence = 1.0f;
+    float turbulence = 1.0f; // short-wave chop and spread: 0 calm, 1 calibrated, 3 storm
 
-    // Kilometre-scale variation in sea state. A real ocean is not one sea everywhere: currents
-    // shear the surface, wind arrives in gusts and lulls, and the result is patches of steeper,
-    // more broken water drifting between calmer lanes. A tiling fBm of the gain the whole wave
-    // field is multiplied by reproduces that. 0 gives the uniform sea; 0.4 means the roughest
-    // patches carry 40% more wave than the mean and the calmest 40% less.
-    float turbulenceVariation = 0.35f;
-    // Tiling period of that field in metres. The octaves inside it run from this down to a
-    // sixteenth of it, so the patches themselves are a few hundred metres to a few kilometres.
-    float turbulencePeriod = 9000.0f;
+    float turbulenceVariation = 0.35f; // km-scale sea-state gain variation
+    float turbulencePeriod = 9000.0f;  // m
 
-    // Second-order Stokes crest sharpening, as a multiple of the physical bound harmonic: 0 gives
-    // the symmetric Gaussian sea a linear spectrum produces, 1 the real wave's narrow crest and
-    // long shallow trough, and higher values push each band towards its steepness limit. It never
-    // moves the surface sideways, so it lifts a crest without folding it.
-    float crestSharpening = 1.0f;
+    float crestSharpening = 1.0f; // x physical second-order harmonic
 
-    // Horizontal displacement gain on every wave: 1 is the physical first-order (Lagrangian) sea,
-    // 0 a purely vertical, rounded one. The short waves' extra comes on top (ShortWaveChop).
-    float choppiness = 1.0f;
-    // Overall wave height multiplier; 1 is the physical JONSWAP height.
+    float choppiness = 1.0f;         // horizontal displacement gain
     float amplitudeScale = 1.0f;
-    // Amplitude gain on wind waves shorter than 8 m, reaching full gain below 2 m.
-    // Leaves the long wind sea and independent swell unchanged; 1 uses the unmodified spectrum.
-    float shortWaveAmplitude = 1.5f;
+    float shortWaveAmplitude = 1.5f; // gain on wind waves under 8 m, full under 2 m
 
-    // Chlorophyll concentration, mg/m^3, feeding Morel's Case-1 model. 0.03 is clear open ocean
-    // (deep indigo), 1-10 is coastal green.
-    float chlorophyll = 0.06f;
-    // Extra scattering multiplier for turbid or sediment-laden water.
-    float turbidity = 1.0f;
+    float chlorophyll = 0.06f; // mg/m^3
+    float turbidity = 1.0f;    // scattering gain
 
-    // Whitecaps are simulated, not painted: foam gathers wherever the surface is squeezed past
-    // breaking and fades after it, so it sits on the crests the waves point, and a rounded sea
-    // carries none. As many crests break as it takes for the foam to cover a third of what is
-    // measured at sea, and at most three per cent (WhitecapCover) - a few small caps at Beaufort 6,
-    // a crest breaking here and there in a gale. This scales that cover and moves the breaking
-    // point with it (BreakingThreshold): 1 is the calibrated sea, higher lets gentler crests break
-    // too, 0 turns foam off.
-    float foamCoverage = 1.0f;
-    // Fraction of the lace a whitecap leaves surviving each second. The cap and the sheet of foam
-    // it leaves fade five times as fast (OCEAN_FOAM_FRESH_DECAY): a whitecap's white area decays
-    // within a second or two (Monahan & Lu 1990, stage B), the thin lace of monolayer foam after it
-    // lingers a few seconds more.
-    float foamDecay = 0.75f;
-    // Local bubble-raft reflectance. Coverage is accounted for separately, so this must not
-    // contain a second coverage average (which would turn whitecaps grey).
-    float foamAlbedo = 0.65f;
+    float foamCoverage = 1.0f; // whitecap cover gain; 0 = off
+    float foamDecay = 0.75f;   // lace surviving per second (Monahan & Lu 1990)
+    float foamAlbedo = 0.65f;  // excludes coverage
 
-    bool legacySubsurface = false; // retained API field; solid-object SSS is never used for water
-    // Water volume controls. Radius scales the scattering mean free path in metres.
+    // Water volume; radius scales the mean free path.
     float subsurfaceStrength = 1.0f;
     float subsurfaceRadiusScale = 1.0f;
-    float subsurfacePhaseG = 0.9f; // ocean particles are strongly forward scattering (Petzold: ~0.92)
+    float subsurfacePhaseG = 0.9f; // Petzold 1972: ~0.92
 
-    // Follow the curve of the Earth. Without it the horizon sits at infinity and distant ships
-    // never drop below it, which reads as wrong immediately in a wide ocean shot.
-    bool curvature = true;
+    bool curvature = true; // Earth curvature
 
-    // Tiles the quadtree may keep resident. Every tile is an acceleration structure refitted each
-    // frame, an instance in the scene's top level, and a block of the shared vertex and index
-    // buffers. Selection coarsens its detail until the sea fits, so this is a ceiling rather than
-    // what the default sea uses (about 300 from deck height). Read once, when the buffers are sized.
-    uint32_t maxTiles = OCEAN_MAX_TILES;
+    uint32_t maxTiles = OCEAN_MAX_TILES; // read once at init
 
-    // Half-width of the simulated ocean in metres. The quadtree root spans 2x this.
-    float extent = 60000.0f;
-    // Smallest tile edge in metres; sets the finest displaced geometry (tile / OCEAN_TILE_GRID).
-    float minTileSize = 8.0f;
-    // Tile edge length as a fraction of the distance to the camera, for tiles the camera can see.
-    // Quads come out at this / OCEAN_TILE_GRID of their distance, 1.6% at the default: a couple of
-    // dozen pixels, which is as fine as geometry needs to be when the normal carries the detail.
-    // Lower is finer; the triangle count goes with the inverse square.
-    float lodFactor = 0.5f;
-    // The same ratio is multiplied by this for tiles outside the view. The whole sea stays in the
-    // scene for reflections, shadows and refraction, but a secondary ray sees it through a
-    // blurred, noisy estimate and never along a silhouette, so it can be built far coarser. 1
-    // makes the detail independent of where the camera looks.
-    float offscreenLodScale = 4.0f;
-    // Tiles nearer than this keep the in-view detail wherever the camera looks, so reflections and
-    // shadows of the waves right beside it stay as sharp as the waves in front of it.
-    float nearKeepRadius = 24.0f;
+    float extent = 60000.0f;        // m, half-width
+    float minTileSize = 8.0f;       // m
+    float lodFactor = 0.5f;         // tile edge / camera distance
+    float offscreenLodScale = 4.0f; // lodFactor gain outside the view
+    float nearKeepRadius = 24.0f;   // m, full detail in every direction
 
-    // How far a hit averages the wave normal over its ray footprint, turning the ripples it
-    // averages away into roughness. 0, the default, samples every ripple at full resolution at
-    // every distance and keeps the surface a mirror: each pixel sees one sharp facet, and the
-    // denoiser's accumulation over many of them is what builds the distant sheen and glitter
-    // path, with the real sparkle of the waves in it. Filtering to the footprint (1) is steadier
-    // but reads as a rough, plastic-looking sea far away.
-    float filterScale = 0.0f;
+    float filterScale = 0.0f; // wave normal filtering to the ray footprint; 0 = off
 
-    // Roughness floor the sun sampler and next-event estimation widen the water surface to, and
-    // nothing else: continuation rays, environment reflections and the reconstruction guides keep
-    // the authored roughness and the full-resolution wave normal. Clear water is authored
-    // mirror-flat, which leaves direct lighting a delta lobe whose glitter resolves as isolated
-    // fireflies rather than as a sun track, so this trades highlight sharpness against that noise.
-    float sunLobeRoughness = 0.1f;
+    float sunLobeRoughness = 0.1f; // roughness floor for sun/NEE sampling only
 
-    // Mean sea level. The waves swing about it and it stays put whatever the wind: the atmosphere
-    // model treats anything below its ground as underground, so the renderer takes that ground
-    // below the deepest trough rather than lifting the sea clear of it. Lifting the sea did the
-    // same for the sky, but raised the whole water plane with every step of wind and flooded
-    // whatever stood at the water line.
     float seaLevelY = 0.0f;
 
     uint32_t seed = 1337;
 };
 
-// Reject invalid state at the public boundary; NaNs must never reach spectra or GPU indices.
 inline void ValidateParams(const Params& p) {
     const float values[] = {p.windSpeed,p.fetch,p.windDirectionDeg,p.swell,p.windAlign,p.significantHeight,
         p.peakPeriod,p.swellHeight,p.swellPeriod,p.swellDirectionDeg,p.swellSpreadDeg,p.fixedTimeStep,
@@ -200,11 +102,7 @@ inline void ValidateParams(const Params& p) {
         p.nearKeepRadius < 0 || p.filterScale < 0 || p.filterScale > 8 || p.debugMode >= OCEAN_DEBUG_COUNT)
         throw std::invalid_argument("Ocean parameter outside its supported range");
 }
-// Cascade tile lengths in metres. The outermost one has to be large compared to the field of view
-// or its period shows as repeated structure across the frame, and it also has to be much longer
-// than the peak wavelength so the energy-carrying waves sit well inside its grid rather than on
-// the first few modes. The ratios are deliberately not powers of two, so the combined surface
-// repeats on their least common multiple rather than on the largest of them.
+// m; non-power-of-two ratios so the sum tiles on their LCM.
 inline const std::array<double, OCEAN_CASCADES>& CascadeLengths() {
     static const std::array<double, OCEAN_CASCADES> kL = {8192.0, 977.0, 119.0, 17.0};
     return kL;
@@ -218,40 +116,26 @@ inline double CascadeNyquist(int c) {
     return 3.141592653589793 * OCEAN_FFT_SIZE / CascadeLengths()[(size_t)c];
 }
 
-// Wind speed the whipped look is calibrated at: the default sea state, Beaufort 6.
-constexpr double kReferenceWind = 11.0;
+constexpr double kReferenceWind = 11.0; // m/s, calibration sea state (Beaufort 6)
 
-// How hard the wind forces the short waves, relative to the reference wind. A fully developed
-// spectrum is equally steep at every wind speed - linear theory alone would break a gale as rarely
-// as a breeze - but a stronger wind drives its short waves harder, and that is where the measured
-// rise of whitecapping with wind comes from. Exactly one at the reference wind.
+// Short-wave forcing relative to kReferenceWind.
 inline double WindChop(const Params& p) {
     const double t = ((double)p.windSpeed - kReferenceWind) / kReferenceWind;
     return std::clamp(1.0 + 0.55 * t, 0.45, 1.5);
 }
 
-// Extra horizontal displacement the short waves carry on top of the physical first-order one.
-// Every wave keeps its own full displacement - a gain of one, the Lagrangian sea - so the long waves
-// that carry the swell and the dominant sea move exactly as far sideways as they rise. The short
-// waves riding them get this much more on top: it narrows their crests into the points the
-// whitecaps break from. Turbulence sets it, scaled by the wind's forcing; past the cap the surface
-// folds over in sheets rather than pointing. How much of the sea breaks stays the wind's
-// (WhitecapCover).
+// Extra horizontal chop on the short waves only; above the cap the surface folds.
 constexpr double kMaxShortChop = 2.5;
 inline double ShortWaveChop(const Params& p) {
     return std::min(std::max(0.0, (double)p.turbulence) * WindChop(p), kMaxShortChop);
 }
 
-// Horizontal gain a typical short wave gets, for bounds and readouts.
+// Typical short-wave gain, for bounds.
 inline double EffectiveChoppiness(const Params& p) {
     return (double)p.choppiness * (1.0 + ShortWaveChop(p));
 }
 
-// Which waves are "short", as log2 wavenumbers: the extra chop rises from twice the spectral peak's
-// wavenumber to its full value at eight times it - the waves riding the dominant ones rather than
-// the dominant ones themselves - and falls away again over the octave below half-metre ripples,
-// whose own steepness would otherwise crumple the surface at centimetre scale. The band follows the
-// peak, so a gale's pointed waves are metres long where a breeze's are palm-sized.
+// Short-wave chop band, log2 k: rises from 2x to 8x peak k, fades below half-metre waves.
 struct ChopBand {
     double lo = 0.0, hi = 0.0, cut = 0.0;
 };
@@ -264,7 +148,7 @@ inline ChopBand ShortChopBand(double peakOmega) {
     b.cut = cut;
     return b;
 }
-// Horizontal gain of a wave of wavenumber k. Must match OceanChopGain in shaders/OceanMath.hlsli.
+// Must match OceanChopGain (OceanMath.hlsli).
 inline double ChopGainAt(double k, const ChopBand& b, double extra) {
     auto smooth = [](double t) {
         t = std::clamp(t, 0.0, 1.0);
@@ -274,21 +158,14 @@ inline double ChopGainAt(double k, const ChopBand& b, double extra) {
     return 1.0 + extra * smooth((l - b.lo) / (b.hi - b.lo)) * (1.0 - smooth(l - b.cut));
 }
 
-// Largest gain the kilometre-scale sea-state field reaches. The crest sharpening's monotonic range
-// is solved against the roughest patch rather than against the mean sea.
 inline double TurbulenceMaxGain(const Params& p) {
     return 1.0 + std::clamp((double)p.turbulenceVariation, 0.0, 0.9);
 }
 
-// Largest skew coefficient a band may carry, as a steepness a*sigma. The warp turns around at
-// -1/(2a), so this holds that point past four standard deviations of the band's own elevation:
-// beyond it the deepest troughs would come back up as a second crest.
+// Max a*sigma: keeps the turn point -1/(2a) beyond 4 sigma.
 constexpr double kMaxSkewSteepness = 0.12;
 
-// Second-order Stokes coefficient for a band of mean wavenumber kBar and elevation standard
-// deviation sigma. A physical bound harmonic has a = k; the short bands take the same whipping as
-// their horizontal chop (chopAtK), so turbulence peaks them vertically too. The short cascades are
-// already near their steepness limit and clamp there.
+// Crest sharpening coefficient; physically a = k (Tayfun 1980).
 inline double CrestSkew(const Params& p, double kBar, double sigma, double chopAtK) {
     const double requested = std::max(0.0, (double)p.crestSharpening) * kBar * chopAtK;
     const double peak = sigma * TurbulenceMaxGain(p);
@@ -296,39 +173,20 @@ inline double CrestSkew(const Params& p, double kBar, double sigma, double chopA
     return std::min(requested, limit);
 }
 
-// A crest has to be squeezed to under this share of its rest area before it may break at all: it
-// keeps foam off water that is not being compressed, and a sea with no horizontal displacement
-// carries none. Which of the squeezed crests do break - the hardest-squeezed, as many as it takes
-// for WhitecapCover - is the wind's, not this: set at 0.55, where a crest has plainly lost
-// cohesion, it held back every sea whose crests turbulence had left rounded, so the foam still
-// rose with turbulence. Measured on the composite surface filtered to a quarter metre, where the
-// metre-scale breakers resolve.
+// Jacobian a crest must be squeezed below before it may break.
 constexpr double kBreakingJacobian = 0.9;
 
-// That limit after the whitecap control.
 inline double BreakingThreshold(const Params& p) {
     return std::clamp(kBreakingJacobian + 0.25 * ((double)p.foamCoverage - 1.0), 0.02, 0.95);
 }
 
-// Monahan & O'Muircheartaigh's whitecap coverage: the fraction of the sea surface white with
-// whitecaps, the breaking crests and the foam they leave, W = 3.84e-6 U^3.41 with U in m/s at 10 m.
-// At Beaufort 6 that is barely one per cent, which is far less foam than most ocean shaders draw -
-// and the difference is a large part of why they read as stylised.
+// Whitecap fraction, U at 10 m (Monahan & O'Muircheartaigh 1980).
 inline double WhitecapCoverage(double windSpeed10m) {
     const double U = std::max(0.0, windSpeed10m);
     return std::clamp(3.84e-6 * std::pow(U, 3.41), 0.0, 0.35);
 }
 
-// Share of the sea the whitecaps cover. The foam simulation breaks the crests squeezed hardest,
-// and only those past BreakingThreshold, and it breaks as many of them as it takes for the foam
-// they leave to be plainly white over this much (OceanFoamStats). Left to the surface alone, a
-// breeze's few breakers left next to nothing and anything that pointed the crests harder turned the
-// sea white. The whitecap control multiplies it.
-//
-// It follows Monahan's W(U), but at a third of it and never past three per cent. The census counts
-// the caps and the sheet they leave; the lace this sea draws after them is foam too, and at the full
-// measured cover it doubled what the eye takes in - a gale's worth of white at Beaufort 7, most of
-// it bright. However hard it blows or the control is set, the sea stays a sea with foam on it.
+// Target foam cover: 30% of the measured W(U), at most 3%.
 constexpr double kWhitecapShown = 0.3;
 constexpr double kWhitecapMax = 0.03;
 inline double WhitecapCover(const Params& p) {
@@ -336,11 +194,7 @@ inline double WhitecapCover(const Params& p) {
                       kWhitecapMax);
 }
 
-// How much turbulence scatters the waves off the wind's heading, as a factor on the directional
-// spreading exponent. A steady wind raises long crests marching one way; a gusty, veering one
-// leaves a confused, short-crested sea whose waves run in every direction. Exactly one at the
-// calibrated turbulence, so the measured Donelan-Banner spread is what the default sea gets; a
-// storm at 3 spreads the wind sea about 2.5 times as wide.
+// Spreading exponent scale; 1 at turbulence 1.
 inline double DirectionalFocus(const Params& p) {
     return std::exp(-0.47 * (std::max(0.0, (double)p.turbulence) - 1.0));
 }
@@ -350,26 +204,13 @@ inline double ShortWaveAmplitude(const Params& p, double k) {
     constexpr double kFull = 6.283185307179586 / 2.0;
     double t = std::clamp((k - kStart) / (kFull - kStart), 0.0, 1.0);
     t = t * t * (3.0 - 2.0 * t);
-    // The gain is squared into a power below, so it must not be allowed to swing negative - that
-    // would turn a suppressed band back into a boosted one. Turbulence leaves it alone: short wind
-    // waves sit in the spectrum's saturation range, where a harder wind makes them break rather than
-    // grow, so a whipped sea gets its look from pointed crests and whitecaps, not taller ripples.
+    // Squared later; must not go negative.
     return std::max(0.0, 1.0 + (double(p.shortWaveAmplitude) - 1.0) * t);
 }
 
-// The range over which a cascade actually carries energy. The low end is held a few modes above
-// the fundamental because a cascade has almost no resolution there, and the high end stops at its
-// Nyquist limit.
-inline void CascadeBand(int c, double& kMin, double& kMax) {
-    kMin = CascadeFundamental(c);
-    kMax = CascadeNyquist(c);
-}
-
-// Unnormalised share of the spectrum this cascade takes at wavenumber k: one inside the range it
-// resolves well, rolling off smoothly at both ends.
 inline double CascadeWindow(int c, double k) {
     const double lo1 = CascadeFundamental(c);
-    const double lo2 = lo1 * 6.0;   // below six modes a cascade barely resolves the wave
+    const double lo2 = lo1 * 6.0;   // resolved from six modes up
     const double hi2 = CascadeNyquist(c);
     const double hi1 = hi2 * 0.4;
     if (k <= lo1 || k >= hi2)
@@ -383,8 +224,7 @@ inline double CascadeWindow(int c, double k) {
     return rise * fall;
 }
 
-// Partition of unity across the cascades. Power is what has to sum to one, so an amplitude picks
-// up the square root of this.
+// Power partition of unity; amplitudes take the square root.
 inline double CascadeWeight(int c, double k) {
     double total = 0.0;
     for (int j = 0; j < OCEAN_CASCADES; ++j)
@@ -394,18 +234,7 @@ inline double CascadeWeight(int c, double k) {
     return CascadeWindow(c, k) / total;
 }
 
-// Highest wavenumber any cascade can represent; everything above it lives in the BRDF.
-inline double NyquistK() {
-    double k = 0.0;
-    for (int c = 0; c < OCEAN_CASCADES; ++c)
-        k = std::max(k, CascadeNyquist(c));
-    return k;
-}
-
-// --------------------------------------------------------------------------------------------
-// JONSWAP with Donelan-Banner spreading
-// --------------------------------------------------------------------------------------------
-
+// JONSWAP (Hasselmann et al. 1973), Donelan-Banner spreading (Donelan et al. 1985, Banner 1990).
 struct Spectrum {
     double alpha = 0.0;
     double omegaP = 0.0;
@@ -414,42 +243,31 @@ struct Spectrum {
     double windAlign = 0.0;
     double focus = 1.0; // DirectionalFocus
     double energyScale = 1.0;
-    // Energy gain on the waves shorter than the peak, the equilibrium range (Init).
-    double equilibriumGain = 1.0;
-    // Per-omega normalisation of the directional term, so that its integral over theta is 1.
+    double equilibriumGain = 1.0; // above-peak energy gain
+    // Per-omega normalisation of D.
     static constexpr int kNormBins = 256;
     std::array<double, kNormBins> dirNorm{};
     double omegaNormMin = 0.02;
     double omegaNormMax = 40.0;
 
     void Init(const Params& p);
-    // The frequency spectrum alone, without the equilibrium gain or the directional table.
+    // S(omega) only: no equilibrium gain or D table.
     void InitShape(const Params& p);
 
     double S(double omega) const; // frequency spectrum, m^2 s
-    // Share of equilibriumGain a wave of this frequency takes: none up to 1.5 times the peak's
-    // wavenumber, all of it from 3 times on.
+    // 0 below 1.5x peak k, 1 from 3x.
     double EquilibriumShare(double omega) const;
     double D(double omega, double theta) const; // normalised directional spreading, 1/rad
-    // Two-sided wavenumber spectrum in m^4, already including the omega->k jacobian.
-    double S2D(double kx, double kz) const;
+    double S2D(double kx, double kz) const;     // two-sided wavenumber spectrum, m^4
 
   private:
     double DRaw(double omega, double theta) const;
     double DirNormAt(double omega) const;
 };
 
-// Dimensionless fetch gF/U^2 past which the sea stops growing. The JONSWAP fetch laws keep
-// lengthening the waves for as long as the fetch does, but a real sea saturates: once it has
-// travelled far enough for the wind, it is fully developed (Pierson-Moskowitz) and its peak sits at
-// omega_p U/g ~ 0.855 whatever the fetch. That is where 22 chi^(-1/3) reaches it. Without the cap
-// a light breeze over an open-ocean fetch raised the long, slow waves of a gale, which is why the
-// wind barely changed the wave period.
+// Dimensionless fetch cap: fully developed sea (Pierson & Moskowitz 1964).
 constexpr double kFullyDevelopedFetch = 1.7e4;
-// Peak enhancement from the inverse wave age U/c_p (Donelan, Hamilton & Hui 1985): a young sea,
-// its waves still slower than the wind, is sharply peaked; as they catch up the peak broadens to
-// the Pierson-Moskowitz shape. Taken from the peak actually used, so an explicit period gets the
-// shape that period has in this wind.
+// JONSWAP gamma from inverse wave age U/c_p (Donelan et al. 1985).
 inline double PeakEnhancement(double windSpeed, double omegaP) {
     const double inverseAge = windSpeed * omegaP / kGravity;
     if (inverseAge <= 0.83)
@@ -461,9 +279,7 @@ inline double PeakEnhancement(double windSpeed, double omegaP) {
 
 inline void CoxMunkSlopeVariance(double windSpeed10m, double& varAlong, double& varCross);
 
-// Slope variance the cascades resolve of this spectrum, as the bake sums it (the directional term
-// integrates to one): k^2 S over the band from the coarsest cascade's fundamental to the finest's
-// Nyquist limit, short-wave gain included. `ramped` is the part the equilibrium gain scales.
+// Slope variance the cascades resolve; `ramped` is the equilibrium-gain part.
 inline void ResolvedSlopeMoments(const Params& p, const Spectrum& s, double& all, double& ramped) {
     const double w0 = std::sqrt(kGravity * CascadeFundamental(0));
     const double w1 = std::sqrt(kGravity * CascadeNyquist(OCEAN_CASCADES - 1));
@@ -480,16 +296,7 @@ inline void ResolvedSlopeMoments(const Params& p, const Spectrum& s, double& all
     }
 }
 
-// The waves shorter than the peak grow with the wind. JONSWAP's tail, alpha g^2 omega^-5 with alpha
-// all but fixed once the sea is developed, leaves them nearly alone: a stronger wind lengthened and
-// raised the dominant waves while the ones riding them stayed as they were, so a gale only heaved
-// the water about - at 28 m/s the waves resolved carried little more slope than at 11. The sea's
-// mean-square slope in fact rises in step with the wind (Cox & Munk; the omega^-4 equilibrium range
-// of Toba and of Donelan, Hamilton & Hui, whose level grows with the wind). So the equilibrium range
-// takes the energy gain that keeps the slope the cascades resolve at the share of Cox & Munk it has at
-// the reference wind, where the sea keeps exactly its calibrated look: 0.33 at 3 m/s, 1.37 at 20,
-// 1.63 at 28 (open-ocean fetch), steeper waves in a gale and calmer ones in a breeze. The slope is
-// linear in the gain, so it is solved in closed form. An explicit wave height keeps its height.
+// Equilibrium gain makes resolved slope follow Cox & Munk 1954 with wind.
 inline void Spectrum::Init(const Params& p) {
     InitShape(p);
     Spectrum reference;
@@ -518,8 +325,7 @@ inline void Spectrum::Init(const Params& p) {
         energyScale *= double(p.significantHeight) * p.significantHeight / (16.0 * std::max(integral, 1e-30));
     }
 
-    // Tabulate the directional normalisation over a log-spaced omega range; D is expensive enough
-    // that evaluating the integral per grid point would dominate the bake.
+    // Tabulated: too costly per grid point.
     for (int i = 0; i < kNormBins; ++i) {
         const double t = (double)i / (double)(kNormBins - 1);
         const double omega = omegaNormMin * std::pow(omegaNormMax / omegaNormMin, t);
@@ -542,8 +348,7 @@ inline void Spectrum::InitShape(const Params& p) {
     omegaP = 22.0 * std::pow(kGravity * kGravity / (U * F), 1.0 / 3.0);
     swell = std::clamp((double)p.swell, 0.0, 1.0);
     focus = DirectionalFocus(p);
-    // A confused sea also sends more of its waves back against the wind.
-    windAlign = std::max(0.0, (double)p.windAlign) * focus;
+    windAlign =std::max(0.0, (double)p.windAlign) * focus;
     if (p.peakPeriod > 0.0f) omegaP = 6.283185307179586 / std::max(0.5, (double)p.peakPeriod);
     gamma = PeakEnhancement(U, omegaP);
     equilibriumGain = 1.0;
@@ -580,7 +385,7 @@ inline double Spectrum::S(double omega) const {
 }
 
 inline double Spectrum::DRaw(double omega, double theta) const {
-    // Donelan-Banner beta_s, with the three published frequency regimes.
+    // Donelan-Banner beta_s
     const double ratio = std::max(0.56, omega / std::max(omegaP, 1e-6));
     double beta;
     if (ratio < 0.95)
@@ -591,9 +396,8 @@ inline double Spectrum::DRaw(double omega, double theta) const {
         const double eps = -0.4 + 0.8393 * std::exp(-0.567 * std::log(ratio * ratio));
         beta = std::pow(10.0, eps);
     }
-    // Swell narrows the lobe: a long-travelled sea arrives far more directional than it left.
-    // Turbulence widens it.
-    beta *= (1.0 + 3.0 * swell) * focus;
+    // Swell narrows, turbulence widens.
+    beta *=(1.0 + 3.0 * swell) * focus;
 
     const double ch = std::cosh(std::min(beta * theta, 30.0));
     double d = 1.0 / (ch * ch);
@@ -628,12 +432,7 @@ inline double Spectrum::S2D(double kx, double kz) const {
     return S(omega) * D(omega, theta) * dOmegaDk / k;
 }
 
-// --------------------------------------------------------------------------------------------
-// Sea state summary, from a one-dimensional integral of the frequency spectrum. The directional
-// term integrates to one, so this needs no angular pass and can be evaluated before the wave field
-// is baked - which is what lets a scene position a camera or a hull against the water line.
-// --------------------------------------------------------------------------------------------
-
+// Sea-state predictions from S(omega) alone, usable before the bake.
 inline double PredictElevationVariance(const Params& p) {
     Spectrum s;
     s.Init(p);
@@ -650,8 +449,7 @@ inline double PredictElevationVariance(const Params& p) {
     return (var + double(p.swellHeight) * p.swellHeight / 16.0) * amp * amp;
 }
 
-// Independent incoming swell: log-normal angular-frequency density and normalized
-// wrapped Gaussian direction. Both integrate to one; Hm0 supplies the component energy.
+// Swell: log-normal in omega, wrapped Gaussian in direction, scaled to Hm0.
 inline double SwellDensity(const Params& p, double kx, double kz) {
     const double k = std::hypot(kx, kz);
     if (k < 1e-8 || p.swellHeight <= 0.0f) return 0.0;
@@ -670,31 +468,17 @@ inline double SwellDensity(const Params& p, double kx, double kz) {
     return double(p.swellHeight) * p.swellHeight / 16.0 * spectral * direction * kGravity / (2.0 * w * k);
 }
 
-inline double PredictSignificantWaveHeight(const Params& p) {
-    return 4.0 * std::sqrt(std::max(0.0, PredictElevationVariance(p)));
-}
-
-// How far the deepest trough reaches below the mean. Elevation is Gaussian, so four and a half
-// standard deviations covers all but about a millionth of the surface; choppiness sharpens the
-// troughs beyond that.
+// Deepest trough below the mean: 4.5 sigma, deepened by chop.
 inline double PredictWaveDepth(const Params& p) {
     const double sigma = std::sqrt(std::max(0.0, PredictElevationVariance(p)));
     return 4.5 * sigma * (1.0 + 0.3 * EffectiveChoppiness(p));
 }
 
-// Mean sea level the ocean will actually use.
 inline double PredictSurfaceLevel(const Params& p) {
     return (double)p.seaLevelY;
 }
 
-// --------------------------------------------------------------------------------------------
-// Cox & Munk (1954) mean-square slope of a clean sea surface, wind speed in m/s at 12.5 m. These
-// are the measured totals the synthesised spectrum is calibrated against.
-// --------------------------------------------------------------------------------------------
-
-// Foam coverage and bubble-cloud density of each slot in the ocean's material block:
-// OCEAN_FOAM_STEPS steps from clear water to solid foam, repeated for each of OCEAN_BUBBLE_STEPS
-// densities of the cloud under it. The diagnostic slot after them carries neither.
+// Material block slot -> foam level and bubble density; the debug slot has neither.
 inline float MaterialSlotFoam(uint32_t slot) {
     return slot < OCEAN_MATERIAL_LEVELS ? float(slot % OCEAN_FOAM_STEPS) / float(OCEAN_FOAM_STEPS - 1) : 0.0f;
 }
@@ -702,17 +486,10 @@ inline float MaterialSlotBubbles(uint32_t slot) {
     return slot < OCEAN_MATERIAL_LEVELS ? float(slot / OCEAN_FOAM_STEPS) / float(OCEAN_BUBBLE_STEPS - 1) : 0.0f;
 }
 
-// The bubble cloud a breaker drives under its cap: void fractions of a per cent or more in the top
-// half metre, clearing within seconds as the bubbles rise (Deane & Stokes 2002). It is a strong
-// scatterer in absorbing water, so what it sends back up is the diffuse reflectance of a scattering
-// half-space - Jensen et al.'s (2001) dipole, behind sea water's refractive boundary - and the light
-// diffusing through it is tinted by the water it travels, red lost first: the pale turquoise under
-// a breaking crest, deepening as the cloud thins out. `absorption` is the water's, per metre;
-// `cover` is the share of the light the surface lets through that the cloud catches before the
-// water below would. A density of 1 is a fresh cloud.
-static constexpr double kBubbleScatter = 0.8; // reduced scattering coefficient of a fresh cloud, 1/m
+// Breaker bubble cloud (Deane & Stokes 2002) as a dipole half-space (Jensen et al. 2001).
+static constexpr double kBubbleScatter = 0.8; // 1/m, reduced scattering of a fresh cloud
 inline void BubbleCloud(double density, const XMFLOAT3& absorption, XMFLOAT3& albedo, float& cover) {
-    const double boundary = 2.8; // (1 + Fdr) / (1 - Fdr) for light inside water meeting air
+    const double boundary = 2.8; // (1 + Fdr) / (1 - Fdr), water to air
     const double scatter = std::max(density, 0.0) * kBubbleScatter;
     const double a[3] = {absorption.x, absorption.y, absorption.z};
     float r[3];
@@ -725,12 +502,7 @@ inline void BubbleCloud(double density, const XMFLOAT3& absorption, XMFLOAT3& al
     cover = (float)(1.0 - std::exp(-0.8 * std::max(density, 0.0)));
 }
 
-// Writes one slot of the ocean's material block from the water material. Foam replaces
-// transmission with a diffuse raft of `foamAlbedo` on the surface; the bubble cloud under it
-// replaces the part of the rest that it catches with its own diffuse return, beneath the water's
-// own clear, mirror-smooth surface. What neither catches still enters the sea, and both take the
-// volume scattering with them. The diagnostic slot is opaque. `waterAbsorption` is the water
-// material's Tf. Every place that generates or edits the block goes through here.
+// Single writer of the ocean material block. `waterAbsorption` is the water's Tf.
 template <typename Enable>
 inline void WriteMaterialSlot(uint32_t slot, const XMFLOAT4& waterKd, const XMFLOAT3& waterAbsorption,
                               float waterSssWeight, uint32_t waterSssEnable, float foamAlbedo, XMFLOAT4& kd,
@@ -761,20 +533,14 @@ inline void WriteMaterialSlot(uint32_t slot, const XMFLOAT4& waterKd, const XMFL
     sssEnable = opaque < 1.0f ? (Enable)waterSssEnable : (Enable)0u;
 }
 
+// Clean-sea slope variance (Cox & Munk 1954).
 inline void CoxMunkSlopeVariance(double windSpeed10m, double& varAlong, double& varCross) {
-    // The relations are quoted at mast height; the logarithmic profile makes 12.5 m about 4%
-    // slower than the 10 m reference wind.
-    const double U = std::max(0.0, windSpeed10m) * 1.04;
+    const double U = std::max(0.0, windSpeed10m) * 1.04; // U10 -> U12.5
     varAlong = 3.16e-3 * U;
     varCross = 0.003 + 1.92e-3 * U;
 }
 
-// --------------------------------------------------------------------------------------------
-// Water optics: Pope & Fry (1997) pure-water absorption plus Morel's Case-1 relations for the
-// chlorophyll-bearing component, band-averaged into linear RGB.
-// --------------------------------------------------------------------------------------------
-
-// Absorption of pure water, 1/m, at 20 nm steps from 400 to 700 nm.
+// Pure water absorption, 1/m, 400-700 nm in 20 nm steps (Pope & Fry 1997).
 inline const std::array<double, 16>& PureWaterAbsorption() {
     static const std::array<double, 16> a = {0.00663, 0.00454, 0.00635, 0.00979, 0.0127, 0.0204,
                                              0.0409,  0.0474,  0.0619,  0.0896,  0.2224, 0.2755,
@@ -782,14 +548,12 @@ inline const std::array<double, 16>& PureWaterAbsorption() {
     return a;
 }
 
-// Scattering of pure sea water, 1/m (Morel 1974): b(500 nm) = 0.0029 with a lambda^-4.32 slope.
+// Pure seawater scattering, 1/m (Morel 1974).
 inline double PureSeaWaterScattering(double lambdaNm) {
     return 0.0029 * std::pow(500.0 / lambdaNm, 4.32);
 }
 
-// Averages a spectral quantity over rectangular R, G and B bands. Rectangular bands are a coarse
-// stand-in for the sensor response, but the absorption varies by more than an order of magnitude
-// across the visible range, so the band choice matters far less than using a spectrum at all.
+// Mean over rectangular R, G, B bands.
 template <typename Fn> inline XMFLOAT3 BandAverage(Fn&& f) {
     const double bands[3][2] = {{600.0, 700.0}, {500.0, 600.0}, {400.0, 500.0}};
     XMFLOAT3 out{};
@@ -815,7 +579,7 @@ inline double PureWaterAbsorptionAt(double lambdaNm) {
     return tbl[(size_t)i0] * (1.0 - f) + tbl[(size_t)i1] * f;
 }
 
-// Morel Case-1: a(lambda) = (a_w + 0.06 C^0.65)(1 + 0.02 exp(-0.014(lambda - 380))).
+// Morel Case-1 absorption.
 inline XMFLOAT3 WaterAbsorptionRGB(double chlorophyll) {
     const double C = std::max(0.0, chlorophyll);
     return BandAverage([&](double lambda) {
@@ -825,31 +589,12 @@ inline XMFLOAT3 WaterAbsorptionRGB(double chlorophyll) {
     });
 }
 
-// Morel Case-1 particulate scattering: b_p(lambda) = (550/lambda) 0.30 C^0.62, over the molecular
-// scattering of pure sea water.
+// Case-1 particulate scattering (Morel 1988) plus pure seawater.
 inline XMFLOAT3 WaterScatteringRGB(double chlorophyll, double turbidity) {
     const double C = std::max(0.0, chlorophyll);
     return BandAverage([&](double lambda) {
         const double bp = (550.0 / lambda) * 0.30 * std::pow(std::max(C, 1e-6), 0.62);
         return PureSeaWaterScattering(lambda) + bp * std::max(0.0, turbidity);
-    });
-}
-
-// Diffuse reflectance of a deep water column, from Morel & Prieur's R = 0.33 b_b / (a + b_b).
-// Only backscattered light returns to the surface, and molecular scattering turns light around
-// far more readily than the strongly forward-peaked particulate phase function does - which is
-// why clear ocean water is blue rather than merely dark.
-inline XMFLOAT3 WaterUpwellingRGB(double chlorophyll, double turbidity) {
-    const double C = std::max(0.0, chlorophyll);
-    return BandAverage([&](double lambda) {
-        const double aw = PureWaterAbsorptionAt(lambda);
-        const double a = (aw + 0.06 * std::pow(std::max(C, 1e-6), 0.65)) *
-                         (1.0 + 0.02 * std::exp(-0.014 * (lambda - 380.0)));
-        const double bw = PureSeaWaterScattering(lambda);
-        const double bp = (550.0 / lambda) * 0.30 * std::pow(std::max(C, 1e-6), 0.62) * std::max(0.0, turbidity);
-        // Backscatter fractions: one half for molecular scattering, about 1.8% for particulates.
-        const double bb = 0.5 * bw + 0.018 * bp;
-        return 0.33 * bb / std::max(a + bb, 1e-6);
     });
 }
 

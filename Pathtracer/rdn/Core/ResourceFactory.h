@@ -17,33 +17,9 @@ struct ResourceFactory {
         return res;
     }
 
-    ComPtr<ID3D12Resource> CreateDefaultBuffer(UINT sizeBytes, const std::wstring& name) const {
-        auto res = nv_helpers_dx12::CreateBuffer(device, sizeBytes, D3D12_RESOURCE_FLAG_NONE,
-                                                 D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
-        res->SetName(name.c_str());
-        return res;
-    }
-
     ComPtr<ID3D12Resource> CreateUploadBuffer(UINT sizeBytes) const {
         return nv_helpers_dx12::CreateBuffer(device, sizeBytes, D3D12_RESOURCE_FLAG_NONE,
                                              D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-    }
-
-    ComPtr<ID3D12Resource> UploadToBuffer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* dst, const void* data,
-                                          UINT sizeBytes,
-                                          D3D12_RESOURCE_STATES afterState = D3D12_RESOURCE_STATE_GENERIC_READ) const {
-        auto upload = CreateUploadBuffer(sizeBytes);
-        void* p = nullptr;
-        CD3DX12_RANGE r(0, 0);
-        ThrowIfFailed(upload->Map(0, &r, &p));
-        memcpy(p, data, sizeBytes);
-        upload->Unmap(0, nullptr);
-
-        cmdList->CopyBufferRegion(dst, 0, upload.Get(), 0, sizeBytes);
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST, afterState);
-        cmdList->ResourceBarrier(1, &barrier);
-        // Retain the upload until the GPU copy completes.
-        return upload;
     }
 
     ComPtr<ID3D12Resource> CreateTexture2D(UINT w, UINT h, DXGI_FORMAT fmt, UINT arraySize = 1,

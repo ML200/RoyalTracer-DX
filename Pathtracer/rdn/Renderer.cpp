@@ -4,9 +4,6 @@
 #include "ReuseTextureGen.h"
 #include "Diagnostics.h"
 #include "Core/PerformanceCapture.h"
-#include "Windowsx.h"
-#include <random>
-#include <unordered_set>
 #include <DirectXPackedVector.h>
 #include <DirectXTex.h>
 
@@ -30,10 +27,7 @@ Renderer::Renderer(UINT width, UINT height)
         L"barrier",
         L"Pass_sharc_prepare_v8.hlsl|fx:4096",
         L"barrier",
-        // No barrier between the two: the primary atmosphere reads only the camera records and the
-        // sky bake, and writes scratch slices only the shading pass reads, so it runs in the long
-        // tail of the training paths instead of after it (frame median on bistro, RTX 5090:
-        // 0.16 ms less; the training timer now includes the part of it that overlaps).
+        // No barrier: disjoint resources, overlaps training.
         L"Pass_sharc_update_v8.hlsl|rg",
         L"Pass_atmosphere_primary_v8.hlsl|cs:8x8",
         L"barrier",
@@ -42,7 +36,7 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_sharc_debug_v8.hlsl|cs:16x16",
         L"barrier",
 
-        // Cache-driven path tracing: trace to the first wide vertex, pick a light there, shade it.
+        // Cache-driven path tracing.
         L"loop:pt_samples",
         L"Pass_pt_trace_v8.hlsl|rg",
         L"barrier",
@@ -186,7 +180,7 @@ void Renderer::InitSceneGPU() {
                 m_rockMeshIndices.push_back(CreateProceduralMesh(rvtx, rm.indices, rockMat));
             }
         }
-        // MINECRAFT: attach the voxel streamer before the unified TLAS is sized.
+        // Attach external streams before sizing the TLAS.
         m_planet.set_external(m_voxels.enabled() ? &m_voxels : nullptr);
         m_planet.set_external2(m_ocean.Enabled() ? &m_ocean : nullptr);
         m_planet.reserve_scene_instances((uint32_t)m_scene.instances.size());
@@ -251,14 +245,12 @@ void Renderer::InitSceneGPU() {
         m_scene.UploadMaterials(m_ctx.Device());
 
         if (m_ocean.Enabled()) {
-            // Bind before Init: the acceleration-structure size query needs the vertex span, which
-            // depends on where the ocean's range landed in the global buffer.
+            // Before Init: AS sizing needs the vertex span.
             m_ocean.BindScene(m_scene.vertexGlobal.Get(), m_scene.indexGlobal.Get(), m_scene.oceanVertexBase,
                               m_scene.oceanIndexBase, m_scene.oceanMatIDBase, m_scene.oceanPropsBase,
                               m_scene.oceanMatIndex);
             m_ocean.Init(m_ctx.Device(), &m_ctx);
-            // The orchestrator hands this pointer to every external stream so it can fill in its
-            // own instance records; without it the ocean's tiles would have no geometry offsets.
+            // External streams write their own instance records here.
             m_planet.bind_instance_properties(m_scene.instanceProperties.Get());
             m_camera.oceanInstanceBase = m_scene.oceanPropsBase;
             m_camera.oceanEnabled = true;
@@ -325,12 +317,11 @@ void Renderer::InitSceneGPU() {
     }
 }
 
-// Apply scene edits and synchronize resources before recording the next frame.
 void Renderer::UpdateRenderer(float dt) {
     m_lastDt = dt;
     using hrc = std::chrono::high_resolution_clock;
 
-    // Reflex sleep — must be called every frame regardless of mode
+    // Every frame, regardless of mode.
     slReflexSleep(*m_ctx.frameToken);
 
     slPCLSetMarker(sl::PCLMarker::eSimulationStart, *m_ctx.frameToken);
@@ -349,9 +340,10 @@ void Renderer::UpdateRenderer(float dt) {
 
     auto t_updateStart = hrc::now();
     m_time++;
+    m_camera.AdvanceTime(dt);
 
     if (m_integratorSettings.compactLightTree != m_lightTreeCompact) {
-        // Drain users of the old descriptors before replacing the selected layout.
+        // The GPU may still read the old descriptors.
         m_ctx.WaitForGPU();
         m_lightTreeRefit.DiscardPending();
         m_lightTreeCompact = m_integratorSettings.compactLightTree;
@@ -362,7 +354,7 @@ void Renderer::UpdateRenderer(float dt) {
     }
 
     if (m_dlss.mode != m_dlss.ActiveMode()) {
-        m_ctx.WaitForGPU(); // drain all in-flight GPU work BEFORE releasing old textures
+        m_ctx.WaitForGPU(); // before releasing old textures
         if (m_dlss.UpdateMode(m_ctx.Device())) {
             m_dlssModeChangedFrames = 2;
             m_camera.ResetJitter();
@@ -392,7 +384,7 @@ void Renderer::UpdateRenderer(float dt) {
         const double nowS = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         voxelLightsDue = m_voxels.light_version() != m_voxelLightKickedVersion && nowS - m_lastVoxelLightKick >= 0.1;
     }
-    // Keep old light buffers alive while earlier frames may reference them.
+    // Keep retired buffers until in-flight frames finish.
     for (size_t i = 0; i < m_vxLightRetired.size();) {
         if (m_time > m_vxLightRetired[i].frame + 4) {
             m_vxLightRetired[i] = m_vxLightRetired.back();
@@ -448,7 +440,7 @@ void Renderer::UpdateRenderer(float dt) {
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam, m_passes, m_dlss, m_dlssNR, m_dlssG,
                   m_integratorSettings, m_fps, m_frameStats, m_planet.stats(),
                   m_voxels.enabled() ? &m_voxels : nullptr, &m_ocean);
-    // Transport changes invalidate accumulated reconstruction and learning history.
+    // Transport changes reset reconstruction and learning history.
     if (m_ocean.Enabled() && m_scene.oceanInstanceSlots && !m_scene.oceanMaterialEdited) {
         const Material water = ocean::OceanSystem::MakeMaterial(m_ocean.GetParams());
         const UINT base = m_scene.oceanMatIndex;
@@ -510,7 +502,7 @@ void Renderer::UpdateRenderer(float dt) {
         previous.meshIndex = instance.meshIndex;
     }
     m_camera.PollSceneOrigin();
-    // Rebasing changes GPU transforms even when scene objects stay still.
+    // A rebase moves every GPU transform.
     if (m_camera.consumeOriginShifted()) {
         m_scene.MarkAllInstancesDirty();
 
@@ -532,7 +524,7 @@ void Renderer::UpdateRenderer(float dt) {
 
     slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *m_ctx.frameToken);
 
-    // Reuse upload buffers and read timestamps only after the frame fence.
+    // Upload reuse and timestamp reads need the fence.
     auto t_waitStart = hrc::now();
     m_ctx.WaitForPreviousFrame();
     m_dlssNR.PrepareFrameGPUIdle();
@@ -542,14 +534,11 @@ void Renderer::UpdateRenderer(float dt) {
 
     SwapSampleBuffers();
 
-    // The shading pass writes the responsivity mask, so its three anchors travel with the rest of
-    // the per-frame camera constants.
+    // The shading pass writes the mask from these.
     m_camera.dlssResponsivityRough = std::clamp(m_dlss.rrResponsivityRough, -1.0f, 1.0f);
     m_camera.dlssResponsivityMirror = std::clamp(m_dlss.rrResponsivityMirror, -1.0f, 1.0f);
     m_camera.dlssWaterResponsivity = std::clamp(m_dlss.rrWaterResponsivity, -1.0f, 1.0f);
-    // The sea's troughs swing below its mean level, and the atmosphere renders anything below its
-    // ground as underground: black sky in every reflection a trough takes. The ground goes below
-    // the deepest trough the waves can reach, a metre clear of it.
+    // Sky ground 1 m below the deepest trough.
     if (m_ocean.Enabled()) {
         const auto& os = m_ocean.GetStats();
         m_camera.oceanGroundY = (float)(os.surfaceY - os.troughDepth - 1.0);
@@ -567,7 +556,7 @@ void Renderer::UpdateRenderer(float dt) {
     }
 }
 
-// Express light instances relative to the current GPU scene origin.
+// Relative to the GPU scene origin.
 std::vector<InstanceXformCPU> Renderer::BuildXformsFromScene() const {
     std::vector<InstanceXformCPU> xf;
     xf.reserve(m_scene.instances.size());
@@ -585,7 +574,7 @@ std::vector<InstanceXformCPU> Renderer::BuildXformsFromScene() const {
 }
 
 void Renderer::KickLightTreeRefit() {
-    // The worker owns a snapshot independent of later scene edits.
+    // Worker snapshot, independent of later edits.
     auto xforms = BuildXformsFromScene();
     auto roots = m_blasLocalRoots;
     auto slots = m_scene.lightInstances;
@@ -610,7 +599,7 @@ void Renderer::KickLightTreeRefit() {
     m_lightTlasForceRebuild = false;
 }
 
-// Publish tree nodes, traversal trails, and instance slots from one refit.
+// Nodes, trails and slots from the same refit.
 void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     if (m_pendingTLASUpload.empty())
         return;
@@ -943,7 +932,7 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     if (newWidth == m_width && newHeight == m_height)
         return;
 
-    // Disable DLSS-G before resize to avoid deadlock with present hook
+    // Avoids a present-hook deadlock on resize.
     if (m_dlssG.enabled) {
         sl::DLSSGOptions gOpts{};
         gOpts.mode = sl::DLSSGMode::eOff;
@@ -979,7 +968,6 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     m_dlssModeChangedFrames = 2;
     m_camera.ResetJitter();
 
-    // Re-enable DLSS-G after resize
     if (m_dlssG.enabled) {
         sl::DLSSGOptions gOpts{};
         gOpts.mode = sl::DLSSGMode::eOn;
@@ -1068,7 +1056,7 @@ void Renderer::RebuildResolutionDependentDescriptors() {
 
 }
 
-// Swap reservoir history and repoint its fixed descriptor slots.
+// Also repoints the fixed descriptor slots.
 void Renderer::SwapSampleBuffers() {
     m_sampleBuffer_current.Swap(m_sampleBuffer_last);
 
@@ -1089,7 +1077,6 @@ void Renderer::SwapSampleBuffers() {
     rawUAVAt(15, m_sampleBuffer_last.Get());
 }
 
-// Recover world coordinates from the camera-relative rendering transform.
 planet::CameraView Renderer::MakePlanetCamera() const {
     const XMMATRIX view = m_camera.ViewMatrix();
     const XMMATRIX invView = XMMatrixInverse(nullptr, view);
@@ -1113,7 +1100,7 @@ planet::CameraView Renderer::MakePlanetCamera() const {
     return cv;
 }
 
-// Mirror changed scene instances into the streamer's unified TLAS input.
+// Copies dirty instances into the streamer's TLAS input.
 void Renderer::BuildPlanetSceneInstances() {
     const auto& src = m_scene.tlasInstances;
     const bool all = m_scene.tlasFullRebuild || m_planetSceneInstances.size() != src.size();
@@ -1139,7 +1126,6 @@ void Renderer::BuildPlanetSceneInstances() {
     }
 }
 
-// Submit streamed geometry before the passes that trace against it.
 void Renderer::RenderFrame() {
     using hrc = std::chrono::high_resolution_clock;
     static auto s_lastTime = hrc::now();
@@ -1150,8 +1136,7 @@ void Renderer::RenderFrame() {
 
     m_planet.begin_frame(m_planetFrame++, MakePlanetCamera());
 
-    // The ocean picks its tiles from the same camera the terrain streamer uses, one frame ahead of
-    // the work the orchestrator records for it.
+    // Same camera as terrain, one frame ahead of its GPU work.
     if (m_ocean.Enabled())
         m_ocean.BeginFrame(m_lastDt, MakePlanetCamera(), m_planetFrame);
 
@@ -1190,7 +1175,7 @@ void Renderer::RenderFrame() {
         const auto previousTlasAddress = m_planet.tlas_address();
         m_planet.submit_work(m_planetSceneInstances.data(), (uint32_t)m_planetSceneInstances.size(), terrainHitGroup,
                              voxelHitGroup);
-        // TLAS growth can replace the allocation behind this descriptor.
+        // TLAS growth may move the allocation.
         if (previousTlasAddress != m_planet.tlas_address()) {
             D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
             sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
@@ -1215,8 +1200,7 @@ void Renderer::RenderFrame() {
         ID3D12Resource* presentedBuffer = m_ctx.BackBuffer();
         m_ctx.ExecuteAndPresent();
 
-        // Opt-in image capture for reproducible, hidden-window rendering reviews.
-        // Synchronous readback runs only at explicitly requested capture frames.
+        // Opt-in capture; synchronous readback.
         static uint32_t captureFrame = 0;
         static const std::wstring capturePath = [] {
             wchar_t path[32768]{};
@@ -1244,8 +1228,7 @@ void Renderer::RenderFrame() {
         slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
         m_editor.RenderPlatformWindows();
     } catch (const std::exception& e) {
-        // Streamline hands out a proxy device; the removal state and the DRED data live on the
-        // native one, which is polled first. The proxy is tried afterwards in case only it reports.
+        // Native device first (DRED lives there), then the proxy.
         dxdiag::CrashLogF(L"\n*** frame failed: %hs\n", e.what());
         dxdiag::CheckDeviceRemoved(m_ctx.NativeDevice(), 2000);
         dxdiag::CheckDeviceRemoved(m_ctx.Device(), 500);
@@ -1342,7 +1325,7 @@ void Renderer::DestroyRenderer() {
         m_dlssG.enabled = false;
     }
     m_editor.Shutdown();
-    // Release the independent NR runtime before Streamline/device shutdown.
+    // Before Streamline/device shutdown.
     m_dlssNR.Shutdown(m_ctx.Device());
     m_dlssHudlessColor.Reset();
     m_ctx.Shutdown();
@@ -1430,7 +1413,6 @@ UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material
     return meshIndex;
 }
 
-// Rebuild index-dependent bindings after instances are added or removed.
 void Renderer::HandleSceneStructuralChange() {
     if (m_scene.sceneInstanceCap() && m_scene.instances.size() > m_scene.sceneInstanceCap())
         throw std::runtime_error("Scene instances exceed the reserved streamed instance range");
@@ -1482,14 +1464,12 @@ void Renderer::HandleKeyUp(UINT8 key) {
         m_editor.ToggleVisibility();
 }
 
-// Execute the configured pass graph with shared queues and resource barriers.
 void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
     m_gpuProfiler.BeginFrame(cmdList);
 
-    bool dlssResChanged = (m_dlssModeChangedFrames > 0);
     if (m_dlssModeChangedFrames > 0) {
-        if (m_dlssModeChangedFrames == 2) { // Evaluate recreates resources after setting the updated options.
+        if (m_dlssModeChangedFrames == 2) { // recreated by the next Evaluate
             sl::Result fr = slFreeResources(sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
             if (fr != sl::Result::eOk)
                 std::wcout << L"[SL] slFreeResources failed: " << (int)fr << std::endl;
@@ -1570,7 +1550,7 @@ void Renderer::PopulateCommandList() {
         const std::wstring* tag;
     };
     std::vector<LoopFrame> loopStack;
-    uint32_t ptSampleIndex = 0; // packed into pt_initialSamples for the sample loop
+    uint32_t ptSampleIndex = 0; // packed into pt_initialSamples
 
     UINT dispW = renderW, dispH = renderH;
 
@@ -1703,7 +1683,6 @@ void Renderer::PopulateCommandList() {
     if (useSharc)
         m_sharcResetPending = false;
 
-    // Tagged loops take their trip count from the integrator settings.
     auto resolveLoopCount = [&](const PassDesc& pass) -> uint32_t {
         if (pass.loopTag.empty())
             return std::max(pass.loopCount, 1u);
@@ -1816,7 +1795,7 @@ void Renderer::PopulateCommandList() {
             raysDesc.RayGenerationShaderRecord.SizeInBytes = rgSize;
             raysDesc.Depth = 1;
             if (p.file == L"Pass_sharc_update_v8.hlsl") {
-                // One training lane per tile of the strided schedule.
+                // One lane per strided tile.
                 const UINT stride = rsConsts[35];
                 raysDesc.Width = (dispW + stride - 1u) / stride;
                 raysDesc.Height = (dispH + stride - 1u) / stride;
@@ -1871,7 +1850,7 @@ void Renderer::PopulateCommandList() {
                     m_sentinelMapped[i] = static_cast<const uint32_t*>(p);
                 }
             }
-            // Read two frames behind to avoid stalling for diagnostics.
+            // Two frames behind, so no stall.
             if (m_sentinelFrame >= 2) {
                 const uint32_t* s = m_sentinelMapped[(m_sentinelFrame + 1) % 3];
                 auto bitsToF = [](uint32_t u) {
@@ -1952,7 +1931,7 @@ void Renderer::PopulateCommandList() {
 
             m_camera.AdvanceFrame();
 
-            // After DLSS: post-process passes run at display resolution
+            // Post-DLSS passes run at display resolution.
             dispW = GetWidth();
             dispH = GetHeight();
 
@@ -2004,7 +1983,7 @@ void Renderer::PopulateCommandList() {
         bool fresh = !m_dlssHudlessColor || m_dlssHudlessColor->GetDesc().Width != GetWidth() ||
                      m_dlssHudlessColor->GetDesc().Height != GetHeight();
         if (fresh) {
-            // Previous-frame fence completed before this command list began.
+            // Safe: the previous frame's fence has completed.
             m_dlssHudlessColor.Reset();
             auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, GetWidth(), GetHeight(), 1, 1);
             auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
@@ -2039,7 +2018,6 @@ void Renderer::PopulateCommandList() {
     m_gpuProfiler.EndPass(cmdList, outputTimer);
     if (m_editor.IsVisible()) {
         const UINT editorTimer = m_gpuProfiler.BeginPass(cmdList, "Editor");
-        // Back buffer is in COPY_DEST after the texture copy — transition to RT
         auto toRT = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
                                                          D3D12_RESOURCE_STATE_RENDER_TARGET);
         cmdList->ResourceBarrier(1, &toRT);
@@ -2061,13 +2039,13 @@ void Renderer::PopulateCommandList() {
         cmdList->ResourceBarrier(1, &b);
     }
 
-    // ── DLSS-G: tag resources after back buffer has final content ──
+    // DLSS-G tags need the final back buffer.
     if (m_dlssG.enabled) {
         constexpr D3D12_RESOURCE_STATES stateUAV = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         constexpr D3D12_RESOURCE_STATES statePresent = D3D12_RESOURCE_STATE_PRESENT;
         sl::Resource slFgDepth(sl::ResourceType::eTex2d, m_dlss.Depth(), (uint32_t)stateUAV);
         sl::Resource slFgMVec(sl::ResourceType::eTex2d, m_dlss.MVec(), (uint32_t)stateUAV);
-        // Contains the displayed scene (including NR), captured before ImGui.
+        // Displayed scene incl. NR, before ImGui.
         sl::Resource slFgHud(sl::ResourceType::eTex2d, m_dlssHudlessColor.Get(),
                              (uint32_t)D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         sl::Resource slFgBB(sl::ResourceType::eTex2d, m_ctx.BackBuffer(), (uint32_t)statePresent);

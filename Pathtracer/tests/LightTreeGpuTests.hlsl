@@ -61,8 +61,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         results[tid.x]=float4(s.pdf,evaluated,estimate,clean?(learned?1:0):-1);return;
     }
     if(testMode==49u) {
-        // Retention of the cell at the receiver: which band its score sits in, and whether the
-        // request path would take its slot under pressure or discard it outright.
+        // Retention band of the receiver's cell, and whether it is replaceable.
         float3 x=testReceivers[0].xyz,n=float3(0,0,1);uint cell;
         if(!LTC_Find(x,n,cell)) {results[tid.x]=float4(-1,-1,-1,-1);return;}
         uint score=g_sharc.Load(cell+20u);
@@ -226,8 +225,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
             ((testSeed&0x80000000u)!=0u?LTC_Hash(tid.x)%triangleCount:(tid.x/256u)%triangleCount):tid.x%triangleCount;
         float3 x=testReceivers[receiver].xyz,n=float3(0,0,1);
         if(testMode==19u) {
-            // A borrowed neighbour sits at the receiver's own level but is not its cell, so it
-            // reports as a fallback, like the shared root.
+            // A borrowed neighbour reports as a fallback, like the root.
             uint cell;bool own;bool found=LTC_Find(x,n,cell,own);
             uint level=found?((!own||LTC_Index(cell)>=LT_GRID_CAPACITY)?LT_MAX_LEVEL+1u:LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell))))):99u;
             results[tid.x]=float4(LTC_Level(x),level,found?g_sharc.Load(cell+8u):0,found?float(LTC_Index(cell)):-1);return;

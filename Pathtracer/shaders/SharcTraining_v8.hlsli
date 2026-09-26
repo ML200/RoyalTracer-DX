@@ -1,7 +1,5 @@
 #pragma once
-// Cache and guide training, used by the training pass and its tests only: the propagation state
-// a training path carries, deposits, guide entry insertion and observation, and the per-lane guide
-// roots. The propagation state spills to the path-state buffer (see PathStateLayout.h).
+// Training pass and tests only; state spills per PathStateLayout.h.
 #include "SharcGuide_v8.hlsli"
 
 
@@ -100,7 +98,6 @@ float SharcTrainingSurvival(SharcTrainingState state, float3 scatterWeight)
     return clamp(state.suffixLuma * Luma(scatterWeight), 0.1f, 1.0f);
 }
 
-// Advance training throughput after BSDF and roulette weighting.
 void SharcTrainingAdvance(inout SharcTrainingState state, float3 full, float3 diffuseOnly, float rrWeight)
 {
     state.suffixLuma *= Luma(full);
@@ -110,12 +107,7 @@ void SharcTrainingAdvance(inout SharcTrainingState state, float3 full, float3 di
     state.fresh = SHARC_INVALID;
 }
 
-// A specular reflection (a pick without spread: a mirror, smooth metal or coat, the reflection of
-// glass or water) ends what the registered vertices learn from this path. The light found past it
-// comes as rare bright samples that no light sample can find (caustics), and a cell that learned
-// one flashed for every path ending in it, most of all in small closed cavities where cells get few
-// samples. Transmission is exempt: light samples already see through glass, and skylight reaches
-// the rooms behind windows only along such paths. Vertices registered past the bounce learn as usual.
+// Specular reflections stop learning (caustics); transmission is exempt.
 void SharcTrainingSpecular(inout SharcTrainingState state)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
@@ -138,7 +130,6 @@ void GuideInitializeEntry(uint e, GuideKey k)
     g_sharc.Store(e + GUIDE_LAST_TOUCH, sharc_frame);
 }
 
-// Bucket locks publish initialized guide entries atomically.
 uint GuideFindOrInsert(GuideKey k)
 {
     uint hash = GuideHash(k);
@@ -172,7 +163,7 @@ uint GuideFindOrInsert(GuideKey k)
     uint expected = 0u;
     if (slot == GUIDE_INVALID)
     {
-        // No slot is locked here (that returned as contended above).
+        // No slot is locked here (contended returned above).
         uint victimAge = 0u;
         [loop] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
         {

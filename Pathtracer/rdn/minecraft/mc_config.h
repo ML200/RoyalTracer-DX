@@ -7,7 +7,6 @@
 namespace mc {
 
 struct MinecraftWorldConfig {
-    // Paths and budgets controlling world loading and streaming.
     std::string worldDir;
     std::string jarPath;
     std::vector<std::string> resourcePacks;

@@ -37,7 +37,6 @@ struct OmmBakeTri {
     float    uv[3][2];
 };
 
-// Enumerates cutout triangles and derives stable micromap keys.
 void enumerate_omm_triangles(const BlockRegistry& reg, std::vector<OmmBakeTri>& out);
 
 }

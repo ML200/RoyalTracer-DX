@@ -1,7 +1,5 @@
 #pragma once
-// Snapshot the trace result into ordinary values immediately. In particular, do
-// not carry/reassign the driver's opaque HitObject through a volume-retrace loop
-// or across a later reorder point. Traversal and alpha-test behavior are unchanged.
+// Plain copy; never carry a HitObject through loops or reorder points.
 struct OceanPathHit {
     bool hit;
     float distance;
@@ -27,13 +25,7 @@ OceanPathHit OceanTracePathHit(RayDesc ray) {
     return result;
 }
 
-// The path's next hit, keeping the water surface consistent with the medium the path is in. A
-// ray in air cannot meet the water from below, nor one in the water meet it from above - but
-// under a full-resolution wave normal on a coarser mesh they do: a ripple steeper than the
-// triangles it sits on bends its reflection past the next facet, which the ray then crosses
-// from the wrong side. That was read as the ray leaving the water and the reflected sky came
-// out as black blobs on the surface. The ray is let through such a facet instead, as if it were
-// part of the ripple it reflected off.
+// Next hit, skipping water facets met from the wrong side for the medium.
 OceanPathHit OceanTracePathHitInMedium(RayDesc ray, bool inWater) {
     OceanPathHit h = OceanTracePathHit(ray);
     [loop] for (uint i = 0u; i < 4u && h.hit && IS_OCEAN_INSTANCE(h.instance); ++i) {
@@ -46,8 +38,7 @@ OceanPathHit OceanTracePathHitInMedium(RayDesc ray, bool inWater) {
     return h;
 }
 
-// One actual path-scattering event between object bounces. No lighting/shadow
-// queries here: the scattered ray continues to real geometry and the environment.
+// One scatter event between object bounces; no lighting queries.
 OceanFlight OceanSampleWaterSegment(float3 origin, float3 dir, float limit, bool used, inout uint seed) {
     OceanFlight f;
     f.distance = limit; f.weight = 1.0f; f.scattered = false;
@@ -59,20 +50,7 @@ OceanFlight OceanSampleWaterSegment(float3 origin, float3 dir, float limit, bool
         float2(RandomFloatSingle(seed),RandomFloatSingle(seed)) : 0.0f;
     return OceanFreeFlight(sigmaA,sigmaS,limit,used,u);
 }
-// What of the sun's beam reaches `pos` in the water, as a share of the beam a flat surface would
-// let through along the refracted direction `t` (the phase left out).
-//
-// The connection through a refracting, moving surface cannot be solved exactly, so it is aimed as
-// if the surface were flat - sunlight enters along t and arrives here from -t - and one ray up that
-// direction finds the actual surface: whatever blocks it (a hull) shadows the point, its foam
-// blocks it too, and the transmission through the real wave is its Fresnel; a second ray on from
-// the surface to the sun finds whatever stands above the water. The wave's normal also decides
-// whether the sunlight it passes actually heads this way: a lobe around the flat direction,
-// normalised by the surface's slope spread so it averages to one, focuses the light into the
-// shafts and caustic ripples sunlit water shows, and widens with depth, where those blur out.
-// `causticShare` is how much of that lobe is applied: all of it for the water's own scattering,
-// none for a surface, which is lit by the mean the lobe averages to. `covered` reports that
-// something in the water stands over the point.
+// Sun at pos relative to flat-surface transmission along t; phase not included.
 float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float causticShare, OceanParamsGPU P,
                      out bool covered)
 {
@@ -95,7 +73,7 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
             AlphaCandidateOccludes(ci, cp, q.CandidateTriangleBarycentrics()))
             q.CommitNonOpaqueTriangleHit();
     }
-    // Only the sea's own surface lets the sun through; anything else in between shadows the point.
+    // Must reach the sea surface; anything else shadows.
     if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return 0.0f;
     if (!IS_OCEAN_INSTANCE(q.CommittedInstanceID())) {
         covered = true;
@@ -104,14 +82,7 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
     const float d = q.CommittedRayT();
     const uint hi = q.CommittedInstanceID();
     const uint hp = FlatPrimID(hi, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
-    // The foam is read at a quarter-metre footprint: what shades the water below is how much of the
-    // surface is white there, not where each strand of the lace runs - and drawing the lace at every
-    // scattering point cost more than the rest of the connection. What the foam and the bubble cloud
-    // under it catch of the light the surface lets through is the step's diffuse weight over the
-    // water's own (WriteMaterialSlot). A surface without the lobe takes the facet the ray crossed and
-    // no foam: the wave's full normal and its foam made no visible difference there, and evaluating
-    // them was half of what the connection added over a straight shadow ray (looking down at a
-    // submerged deck: pt_trace 3.83 -> 3.58 ms against 3.3 ms for the straight ray).
+    // Foam at a 0.25 m footprint, from the step's Kd_w (WriteMaterialSlot).
     float3 n = CandidateGeoNormalW(hi, hp);
     float foam = 0.0f;
     if (causticShare > 0.0f) {
@@ -127,9 +98,7 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
     const float3 surfacePos = pos + toSurface * d;
     const float3 above = VisibilityTransmittance(surfacePos, n, surfacePos + sunDir * RAY_TMAX_PLANET, -sunDir, true, false);
     if (!any(above > 0.0f)) return 0.0f;
-    // The sunlight the wave lets in, taken on the air side where it arrives: the flat direction
-    // leaves the water past the critical angle at a facet tilted away from the sun, which light
-    // coming down through that facet never does.
+    // Fresnel on the air side; avoids false TIR at tilted facets.
     const float3 up = float3(0.0f, 1.0f, 0.0f);
     if (dot(sunDir, n) <= 0.0f) return 0.0f;
     const float transmit = 1.0f - FresnelDielectricTIR(sunDir, n, 1.0f, eta).x;
@@ -138,8 +107,7 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
     float caustic = 1.0f;
     const float3 tn = refract(-sunDir, n, 1.0f / eta);
     if (causticShare > 0.0f && dot(tn, tn) > 0.0f) {
-        // Spread of the refracted direction over the sea, from its total slope variance (the
-        // widest entry of the footprint table), and the lobe that picks out the focused part.
+        // Refracted spread from total slope variance (widest table entry).
         const float spread2 = 0.0625f * max(P.residualSlope[OCEAN_ROUGHNESS_ENTRIES / 4 - 1].w, 1e-4f);
         const float blur = 0.01f + 0.004f * d;
         const float lobe2 = 0.25f * spread2 + blur * blur;
@@ -150,16 +118,7 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
     return above * (transmit / max(flat, 1e-3f)) * (1.0f - foam) * caustic * OceanMediumTransmittance(sigmaA + sigmaS, d);
 }
 
-// The sun as the light sample of a surface in the water. Sunlight reaches it refracted, so it is
-// aimed as if through a flat surface: arriving from L = -t, t the beam's direction under the
-// water, as the irradiance a flat surface passes spread over the refracted beam's cross-section
-// (radiance / pdf is that irradiance, as for the scattering point in OceanSegmentInScatter), and
-// what actually reaches the surface is OceanSunReach's, without the caustic lobe. A straight
-// connection to the sun left the water at the sun's own angle, past the critical angle whenever
-// the sun stood below about 41 degrees: a flat surface turned it back entirely, and only the
-// facets tilted towards the sun let any through, so a submerged hull was lit in dark blotches that
-// moved with every wave, which the reconstruction could only smear. The receiver is lifted to the
-// surface for the sun's own radiance: the beam is the one that reaches the sea.
+// Sun light sample for submerged surfaces, refracted through a flat sea.
 struct OceanWaterSun {
     float3 L;
     float3 radiance;
@@ -193,28 +152,20 @@ float3 OceanWaterSunReach(float3 pos, float3 n, OceanWaterSun s)
                          max(LoadNi(P.materialBase), 1.0f), 0.0f, P, covered);
 }
 
-// Share of a Henyey-Greenstein phase function's mass in the hemisphere ahead: 1/2 for isotropic
-// scattering, 0.977 for the ocean's g = 0.9. One minus it is the backscattered share.
+// Henyey-Greenstein mass in the forward hemisphere.
 float OceanForwardShare(float g)
 {
     if (abs(g) < 1e-3f) return 0.5f;
     return (1.0f + g) / (2.0f * g) - (1.0f - g * g) / (2.0f * g * sqrt(1.0f + g * g));
 }
-// (1 - e^(-k s)) / k, the integral of e^(-k t) over [0, s], kept accurate where k s is small (k may
-// be negative).
+// (1 - e^(-k s)) / k, series for small k s; k may be negative.
 float3 OceanExpIntegral(float3 k, float s)
 {
     const float3 x = k * s;
     const float3 series = s * (1.0f - 0.5f * x + x * x / 6.0f);
     return select(abs(x) < 1e-3f, series, (1.0f - exp(-x)) / select(abs(k) > 1e-30f, k, (float3)1e-30f));
 }
-// Share of the light arriving inside Snell's cone - every direction a flat surface refracts the sky
-// into, down to a half-angle of asin(1/eta) from straight down - that the water scatters on into
-// the outgoing direction `wo`, for radiance uniform over the cone: the phase function's mass inside
-// it, found by sending a fixed set of phase-sampled directions from wo and counting those that land
-// inside, softly. Nearly all of it looking straight up into the cone (0.92 for g = 0.9), a few per
-// cent looking sideways, a trace looking down. The ocean's phase function is so peaked that light
-// spread evenly over the upper hemisphere instead lit a sideways view seven times too bright.
+// Share of uniform light in Snell's cone scattered into wo.
 float OceanConeShare(float3 wo, float g, float cosCone)
 {
     float3 tangent, bitangent;
@@ -229,41 +180,17 @@ float OceanConeShare(float3 wo, float g, float cosCone)
     }
     return max(inside / 24.0f, 0.5f * (1.0f - OceanForwardShare(g)));
 }
-// Depth below the sea's flat mean level at scene-relative p, the Earth's curve included; a point up
-// in a crest counts as at the surface.
+// Depth below mean sea level, Earth's curve included; 0 in crests.
 float OceanMeanDepth(float3 p, OceanParamsGPU P)
 {
     const float2 xz = p.xz + P.curveOrigin;
     return max(P.surfaceY - 0.5f * dot(xz, xz) * P.invRadius - p.y, 0.0f);
 }
 
-// Light the water scatters towards the viewer along a segment of it, as radiance arriving at
-// `origin`: the segment runs from origin along unit `dir` for s metres. The path itself goes on
-// past it to whatever the segment ends at, weighted by the segment's transmittance; the light
-// scattered along the way is added here and goes nowhere further. Choosing per path between the
-// two, as a free flight does, sent only part of the paths on to a hull or seabed behind the water
-// and turned the rest aside, which the reconstruction could only blur into mush.
-//
-// Two parts:
-//
-// The diffuse light field of the water - skylight let through the surface and sunlight scattered
-// more than once - is modelled, not traced: its downwelling irradiance falls off with depth as
-// e^(-Kd y), with Gordon's Kd = 1.04 (a + bb) / mu0 (absorption, backscattering, the refracted
-// sun's cosine), and the sun's direct beam, which is sampled below, is taken out of it. Treated as
-// arriving evenly over Snell's cone, what it scatters towards the viewer is the phase function's
-// mass inside that cone (OceanConeShare), high looking up into it and nearly nothing looking
-// sideways or down; integrated along the segment in closed form, it costs no ray and carries no noise.
-//
-// Where `sampled`, the first water segment of a camera path, the sun's direct beam is added at one
-// point, drawn along the segment in proportion to e^(-k t) with k = sigmaT (1 + w / mu): the view's
-// own attenuation and the beam's, which grows with depth as the segment runs down at w. That is
-// the shape of the unshadowed single scattering, so what is left to chance is only what the point
-// actually receives (OceanSunReach): shadows, foam, caustics. The same point takes one light-tree
-// sample for the lights in or above the water. A point with something standing over it in the
-// water takes a share of the modelled field too.
-static const float OCEAN_SKY_TRANSMIT = 0.934f;   // diffuse skylight through the surface: 1 - 0.066
-static const float OCEAN_DIFFUSE_COSINE = 0.8f;   // mean cosine of the diffuse field just under the surface
-static const float OCEAN_COVERED_AMBIENT = 0.3f;  // share of it under a hull
+// Segment in-scatter: analytic diffuse field, plus sun and lights if sampled.
+static const float OCEAN_SKY_TRANSMIT = 0.934f;   // 1 - 0.066 diffuse reflectance
+static const float OCEAN_DIFFUSE_COSINE = 0.8f;   // mean cosine just under the surface
+static const float OCEAN_COVERED_AMBIENT = 0.3f;  // ambient share under a hull
 float3 OceanSegmentInScatter(float3 origin, float3 dir, float s, bool sampled, inout uint seed)
 {
     if (!OceanMediumEnabled() || !(s > 0.0f)) return 0.0f;
@@ -278,7 +205,7 @@ float3 OceanSegmentInScatter(float3 origin, float3 dir, float s, bool sampled, i
     const float y0 = OceanMeanDepth(origin, P);
     const float w = -dir.y;
 
-    // The sun's beam and the sky just under a flat surface, as irradiance on a horizontal plane.
+    // Horizontal irradiance just under a flat surface.
     const SunState S = ComputeSunState();
     float3 sunE = 0.0f;
     float mu = OCEAN_DIFFUSE_COSINE;
@@ -289,10 +216,10 @@ float3 OceanSegmentInScatter(float3 origin, float3 dir, float s, bool sampled, i
     }
     const float3 skyE = EvaluateSkyIrradiance() * OCEAN_SKY_TRANSMIT;
     const float sunShare = dot(sunE, lum) / max(dot(sunE + skyE, lum), 1e-20f);
+    // Kd = 1.04 (a + bb) / mu0 (Gordon 1989)
     const float3 Kd = 1.04f * (sigmaA + (1.0f - OceanForwardShare(g)) * sigmaS) /
                       lerp(OCEAN_DIFFUSE_COSINE, mu, sunShare);
-    // Radiance uniform over Snell's cone lays irradiance pi sin^2 of its half-angle on a horizontal
-    // plane, with sin = 1/eta.
+    // Uniform radiance over Snell's cone gives E = pi L / eta^2.
     const float share = OceanConeShare(-dir, g, sqrt(max(1.0f - 1.0f / (eta * eta), 0.0f)));
     const float3 field = sigmaS * (share * eta * eta / PI) *
         ((sunE + skyE) * exp(-Kd * y0) * OceanExpIntegral(sigmaT + Kd * w, s) -
@@ -300,7 +227,7 @@ float3 OceanSegmentInScatter(float3 origin, float3 dir, float s, bool sampled, i
     const float3 ambient = max(field, 0.0f);
     if (!sampled) return ambient;
 
-    // One point along the segment, in proportion to the unshadowed single scattering.
+    // One point, pdf ~ unshadowed single scattering.
     const float k = dot(sigmaT * (1.0f + w / mu), lum);
     const float u = RandomFloatSingle(seed);
     float t = u * s, pdf = 1.0f / s;
@@ -320,8 +247,7 @@ float3 OceanSegmentInScatter(float3 origin, float3 dir, float s, bool sampled, i
     if (sun.pdf > 0.0f && sun.direction.y > 1e-3f) {
         const float3 tSun = refract(-sun.direction, up, 1.0f / eta);
         const float3 reach = OceanSunReach(x, sun.direction, tSun, eta, 1.0f, P, covered);
-        // Irradiance of the beam in the water, normal to it: the horizontal irradiance a flat
-        // surface passes, spread over the refracted beam's cross-section.
+        // Irradiance normal to the refracted beam.
         const float3 beam = sun.radiance / sun.pdf * sun.direction.y / max(-tSun.y, 1e-3f) *
                             (1.0f - FresnelDielectricTIR(tSun, up, eta, 1.0f).x);
         result += view * beam * reach * OceanPhase(dot(dir, -tSun), g);
@@ -348,6 +274,6 @@ float3 OceanSampleScatterDirection(float3 incoming, inout uint seed) {
     const float r = sqrt(max(1.0f-mu*mu,0.0f));
     float3 tangent,bitangent;
     GetOrthoBasis(incoming,tangent,bitangent);
-    // Phase value / phase PDF is one. Positive g continues along the incoming ray.
+    // Phase / pdf = 1; g > 0 scatters forward.
     return normalize(mu*incoming+r*(cos(phi)*tangent+sin(phi)*bitangent));
 }

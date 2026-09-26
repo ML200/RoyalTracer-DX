@@ -2,8 +2,7 @@
 #include "PtDefer_v8.hlsli"
 #include "SharcDebug_v8.hlsli"
 
-// Cache and guide inspection: colors the primary surface by the selected cache view. Runs only
-// while an inspection mode is active, so the path tracer itself carries no debug code.
+// Cache/guide debug view; runs only in inspection modes.
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {

@@ -61,7 +61,7 @@ void DeviceContext::Init(HWND hwnd, UINT w, UINT h, bool useWarp) {
 
     ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAllocators[frameIndex].Get(), nullptr,
                                             IID_PPV_ARGS(&cmdList)));
-    cmdList->SetName(L"MainGraphicsList"); // the debug layer names the list in its messages
+    cmdList->SetName(L"MainGraphicsList");
 
     ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
     for (UINT n = 0; n < bufferCount; ++n)
@@ -101,7 +101,6 @@ void DeviceContext::BeginFrame() {
 void DeviceContext::ExecuteAndPresent() {
     ThrowIfFailed(cmdList->Close());
 
-    // Streamed planet work must finish before graphics consumes its buffers.
     cmdQueue->Wait(planetComputeFence.fence(), planetComputeAtSlot[frameIndex]);
 
     ID3D12CommandList* lists[] = {cmdList.Get()};
@@ -123,8 +122,7 @@ void DeviceContext::ExecuteAndPresent() {
         dxdiag::CheckDeviceRemoved(device.Get(), 500);
 #endif
 
-        // Streamline's present hooks can report the device loss here before either device object
-        // does; a loss code from Present is fatal either way, so it reaches the frame's dump path.
+        // Streamline may report device loss only via Present.
         const bool lostByPresent = presentHr == DXGI_ERROR_DEVICE_REMOVED || presentHr == DXGI_ERROR_DEVICE_HUNG ||
                                    presentHr == DXGI_ERROR_DEVICE_RESET;
         if (lostByPresent || FAILED(NativeDevice()->GetDeviceRemovedReason()) ||
@@ -159,7 +157,6 @@ void DeviceContext::FlushAndReset() {
     ID3D12CommandList* lists[] = {cmdList.Get()};
     cmdQueue->ExecuteCommandLists(1, lists);
     WaitForGPU();
-    // Command allocators are reusable only after their GPU work completes.
     ThrowIfFailed(cmdAllocators[frameIndex]->Reset());
     ThrowIfFailed(cmdList->Reset(cmdAllocators[frameIndex].Get(), nullptr));
 }
@@ -364,7 +361,6 @@ void DeviceContext::CreateRTVsAndDepth() {
 }
 
 void DeviceContext::InitPlanetStreaming() {
-    // Copy and compute queues exchange work through per-frame fence timelines.
     D3D12_COMMAND_QUEUE_DESC cqd = {};
     cqd.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
     ThrowIfFailed(device->CreateCommandQueue(&cqd, IID_PPV_ARGS(&planetComputeQueue)));
@@ -422,12 +418,6 @@ UINT64 DeviceContext::SubmitPlanetCompute(UINT64 waitCopyValue) {
 
 UINT64 DeviceContext::PlanetComputeCompleted() const {
     return planetComputeFence.completed();
-}
-UINT64 DeviceContext::PlanetComputeLastSignaled() const {
-    return planetComputeFence.last_signaled();
-}
-void DeviceContext::PlanetCopyCpuWait(UINT64 value) {
-    planetCopyFence.cpu_wait(value);
 }
 void DeviceContext::PlanetComputeCpuWait(UINT64 value) {
     planetComputeFence.cpu_wait(value);

@@ -22,7 +22,7 @@
 
 static constexpr bool kUseBlasCompaction = true;
 
-// Keep opaque and alpha geometry in the shader binding table's order.
+// Opaque then alpha, matching SBT order.
 Renderer::AccelerationStructureBuffers
 Renderer::CreateBottomLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>>& vVertexBuffers,
                               const std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>>& vIndexBuffers,
@@ -105,7 +105,7 @@ Renderer::CreateBottomLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>
 
         m_ctx.FlushAndReset();
 
-        // The GPU-reported size is available only after the build fence.
+        // Readable only after the build fence.
         UINT64 compactedSize;
         void* pMap;
         ThrowIfFailed(readback->Map(0, nullptr, &pMap));
@@ -270,20 +270,14 @@ void Renderer::CreateAccelerationStructures() {
     }
 }
 
-// Shared descriptor layout for ray generation and compute passes.
+// Shared by raygen and compute passes.
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     CD3DX12_ROOT_PARAMETER1 rootParameters[4];
     std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
     ranges.reserve(40);
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     const auto STATIC = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
-    // Buffer SRVs take volatile descriptors. With static ones the driver (NVIDIA 610.88, RTX 5090)
-    // drops the bounds check of StructuredBuffer reads in raygen shaders, even with
-    // DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS: a read past the end of a view returns the
-    // memory behind it, and past the allocation it page-faults (the TDRs in LT_LoadTLAS /
-    // LT_LoadBLAS). Compute shaders, UAVs and typed buffers stay bounds-checked either way.
-    // Measured cost: none (1920x1080 raygen, 64 dependent reads each: 1.198 ms static, 1.197 ms
-    // volatile).
+    // Volatile descriptors: static ones drop raygen bounds checks (NVIDIA 610.88).
     const auto BUFFER_SRV =
         D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 
@@ -322,8 +316,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 13, 11, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    // The reconstruction responsivity mask follows the guides in the heap but not in register
-    // space: u24 already belongs to the auto-exposure buffer.
+    // Responsivity mask: u26, since u24 is auto-exposure.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 26, 0, VOLATILE,
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
@@ -446,12 +439,7 @@ void Renderer::CreateRaytracingPipeline() {
 
     }
 
-    // The raygens shade their hits themselves from the hit object and never invoke it, so the
-    // closest-hit and miss shaders are empty. They still exist: the driver fails
-    // CreateStateObject (DXGI_ERROR_DRIVER_INTERNAL_ERROR) for a raytracing pipeline in which no
-    // hit group has a closest-hit shader, whether the groups are empty or any-hit only, and the
-    // SDK layers crash while reporting that failure. The alpha-test any-hit is the only shader a
-    // traversal ever runs.
+    // Empty closest-hit/miss: CreateStateObject fails without a closest-hit.
     ComPtr<IDxcBlob> missLib = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
     ComPtr<IDxcBlob> hitLib = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.hlsl");
     ComPtr<IDxcBlob> anyHitLib = nv_helpers_dx12::CompileShaderLibrary(L"AnyHit.hlsl");
@@ -479,16 +467,11 @@ void Renderer::CreateRaytracingPipeline() {
     LOG(L"[Pipeline] Ray-tracing state object ready");
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 
-    // With a trace recursion depth of one the driver's default pipeline stack is exactly the
-    // raygen plus the deepest shader a traversal invokes, so it is left in place: an explicit
-    // size that comes out too small corrupts memory long before the device fails. The queried
-    // sizes are logged for reference only.
+    // Keep the driver's default stack (exact at depth 1); log only.
     auto stackOf = [&](const wchar_t* exportName) -> UINT64 {
         const UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(exportName);
         return sz >= 0xFFFFFFFFull ? 0ull : sz;
     };
-    // A raygen's stack holds the state it keeps live across TraceRay, so it tracks the live state
-    // that the traces (and the reorders next to them) have to save and restore.
     UINT64 rgStack = 0;
     for (const auto& name : rayGenNames) {
         const UINT64 sz = stackOf(name.c_str());
@@ -548,7 +531,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
 void Renderer::CreatePathStateBuffer() {
     m_gpuProfiler.Init(m_ctx.Device(), m_ctx.CmdQueue());
     ResourceFactory rf(m_ctx.Device());
-    // World-space cache history survives changes to the render resolution.
+    // World-space cache; survives resolution changes.
     if (!m_sharcBuffer) {
         m_sharcBuffer = rf.CreateUAVBuffer(SHARC_BUFFER_BYTES, L"SHaRC surface radiance cache");
         m_sharcResetPending = true;
@@ -563,7 +546,7 @@ void Renderer::CreatePathStateBuffer() {
         m_autoExposeBuffer = rf.CreateUAVBuffer(128, L"AutoExposeState");
 }
 
-// Fixed renderer slots precede the dynamically populated material texture range.
+// Fixed slots first, then material textures.
 void Renderer::CreateShaderResourceHeap() {
     auto* dev = m_ctx.Device();
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(dev, 1000000, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
@@ -600,14 +583,12 @@ void Renderer::CreateShaderResourceHeap() {
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE handle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart());
     CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-    CD3DX12_CPU_DESCRIPTOR_HANDLE stagingHandle(m_stagingUavHeap->GetCPUDescriptorHandleForHeapStart());
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     auto next = [&]() {
         handle.Offset(1, inc);
         gpuHandle.Offset(1, inc);
     };
-    auto nextStg = [&]() { stagingHandle.Offset(1, inc); };
 
     auto nullSRV = [&](D3D12_SRV_DIMENSION dim = D3D12_SRV_DIMENSION_BUFFER) {
         D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
@@ -850,7 +831,7 @@ void Renderer::CreateShaderResourceHeap() {
     nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
     nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
 
-    // Fixed slots keep later resources independent of gaps in the descriptor table.
+    // Fixed slot, independent of table gaps.
     handle =
         CD3DX12_CPU_DESCRIPTOR_HANDLE(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), AUTOEXPOSE_HEAP_SLOT, inc);
     gpuHandle =
@@ -978,14 +959,13 @@ void Renderer::CreateShaderResourceHeap() {
     writeBatch(m_scene.bindlessNormalBase, normalCount);
     writeBatch(m_scene.bindlessRmaBase, rmaCount);
 
-    // The ocean owns a fixed block of slots below the bindless range and reaches all of them
-    // through direct heap indexing, so it needs no descriptor table of its own.
+    // Ocean uses direct heap indexing, no table.
     static_assert(OCEAN_HEAP_BASE + OCEAN_HEAP_COUNT <= BINDLESS_HEAP_START,
                   "Ocean descriptors overlap the bindless texture range");
     m_ocean.CreateDescriptors(dev, m_srvUavHeap.Get());
 }
 
-// Match pass indices and instance hit-group offsets used during dispatch.
+// Must match dispatch pass indices and hit-group offsets.
 void Renderer::CreateShaderBindingTable() {
     m_sbtHelper.Reset();
     D3D12_GPU_DESCRIPTOR_HANDLE heapHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
@@ -1025,7 +1005,7 @@ void Renderer::CreateShaderBindingTable() {
         m_sbtHelper.AddHitGroup(L"AlphaHitGroup", {});
     }
 
-    // Streamed terrain and voxel records follow the regular scene instances.
+    // Terrain and voxel records follow scene instances.
     m_sbtHelper.AddHitGroup(L"TerrainHitGroup", {});
 
     m_sbtHelper.AddHitGroup(L"OpaqueHitGroup", {});
@@ -1427,7 +1407,6 @@ void Renderer::InitSkyLUTBake() {
     LOG(L"[SkyLUT] Created atmospheric transmittance and multiple-scattering LUTs");
 }
 
-// Rebuild atmospheric lookup tables only when turbidity changes.
 void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
     if (!m_skyLutTransmittancePSO)
         return;
@@ -1452,7 +1431,7 @@ void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
     cmd->Dispatch(256 / 8, 64 / 8, 1);
     m_gpuProfiler.EndPass(cmd, transmittanceTimer);
     {
-        // Multiple scattering reads the transmittance written by the first pass.
+        // Multi-scattering reads the transmittance LUT.
         D3D12_RESOURCE_BARRIER transDone = CD3DX12_RESOURCE_BARRIER::UAV(m_skyTransmittanceLUT.Get());
         cmd->ResourceBarrier(1, &transDone);
     }

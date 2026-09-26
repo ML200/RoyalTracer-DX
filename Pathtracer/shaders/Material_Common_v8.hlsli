@@ -1,4 +1,4 @@
-// Tables store endpoint samples. Map them to texel centers before filtering.
+// Tables store endpoint samples: map to texel centers.
 inline float2 MaterialEnergyUV(float roughness, float NdotV)
 {
     return (saturate(float2(roughness, NdotV)) * 15.0f + 0.5f) / 16.0f;
@@ -17,7 +17,6 @@ inline float GetEssLUT(float roughness, float NdotV)
 }
 
 // Integral of unit-Fresnel GGX times {1, (1-V.H)^5, (1-V.H)^10}.
-// All three moments come from the same small texture fetch used for ESS.
 inline float3 GetGGXEnergyMoments(float roughness, float NdotV)
 {
     return g_LUT.SampleLevel(g_sampler_LUT,
@@ -27,7 +26,7 @@ inline float3 GetGGXEnergyMoments(float roughness, float NdotV)
 inline float GGXDirectionalReflectance(float roughness, float NdotV, float etai, float etat,
                                      bool coat = false)
 {
-    // The legacy TIR branch can only increase reflection: reserve its upper bound.
+    // Possible TIR: use the upper bound.
     if (etai > etat) return 1.0f;
     float3 e = GetGGXEnergyMoments(roughness, NdotV);
     float f0 = ComputeF0Dielectric(etai, etat).x;
@@ -122,7 +121,7 @@ inline void BuildAnisotropicFrame(float3 N, float anisoRotation, out float3 T, o
     }
 }
 
-// Sample an anisotropic visible-normal distribution.
+// Heitz 2018 visible-normal sampling.
 inline float3 SampleVNDF_H_Aniso(float alpha_x, float alpha_y, float3 V, float3 N, float3 T1, float3 T2, inout uint seed)
 {
 
@@ -165,7 +164,7 @@ inline uint FlatPrimID(uint instID, uint geomIdx, uint primIdx)
     return (geomIdx == 0) ? primIdx : (instanceProps[instID].opaqueTriCount + primIdx);
 }
 
-// Beer-Lambert absorption over a distance inside a medium with the given transmittance color.
+// Beer-Lambert absorption.
 inline float3 CalculateAbsorptionThroughput(
     float3 tintColor,
     float distanceTraveled)

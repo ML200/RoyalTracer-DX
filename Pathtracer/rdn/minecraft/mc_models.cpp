@@ -56,7 +56,7 @@ void rotate_about(float p[3], const float origin[3], int axis, float deg) {
     p[0] = r[0] + origin[0]; p[1] = r[1] + origin[1]; p[2] = r[2] + origin[2];
 }
 
-// Applies the model element's vanilla rotation convention.
+// Vanilla rotation convention.
 void rotate_element(float p[3], const float origin[3], int axis, float deg) {
     rotate_about(p, origin, axis, axis == 1 ? deg : -deg);
 }
@@ -124,7 +124,6 @@ static std::string blockstate_resource_path(const std::string& blockName) {
     return "assets/" + n.substr(0, c) + "/blockstates/" + n.substr(c + 1) + ".json";
 }
 
-// Parses one model JSON document into inheritance-ready definitions.
 bool ModelResolver::parse_model(const std::vector<uint8_t>& json, Model& out, std::string* err) {
     const J root = J::parse((const char*)json.data(), (const char*)json.data() + json.size());
     if (!root.is_object()) { if (err) *err = "model json is not an object"; return false; }
@@ -219,7 +218,6 @@ bool ModelResolver::resolve_textures(const Model* m, std::unordered_map<std::str
     return true;
 }
 
-// Emits rotated quads after resolving inherited texture variables.
 void ModelResolver::emit_model(const Variant& v, ResolvedShape& out) {
     const Model* m = load_model(v.model);
     if (!m) return;
@@ -416,7 +414,6 @@ bool when_matches(const BlockStateDesc& s, const J& when) {
 
 }
 
-// Selects matching variants and combines their resolved model geometry.
 bool ModelResolver::resolve(const BlockStateDesc& state, ResolvedShape& out, std::string* err) {
     out = ResolvedShape{};
     std::vector<uint8_t> bytes;

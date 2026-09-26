@@ -13,7 +13,6 @@ int cutout_texture(const BlockRegistry& reg, uint16_t material) {
     return material < reg.materialCutoutTexture.size() ? reg.materialCutoutTexture[material] : -1;
 }
 
-// Chooses subdivision from texture resolution, capped at twelve levels.
 uint8_t level_for_texels(float texels) {
     int k = 0;
     while (k < 12 && (float)(1 << k) < texels - 1e-4f) ++k;
@@ -22,7 +21,6 @@ uint8_t level_for_texels(float texels) {
 
 }
 
-// Enumerates cutout faces and model triangles for micromap baking.
 void enumerate_omm_triangles(const BlockRegistry& reg, std::vector<OmmBakeTri>& out) {
     out.clear();
     auto texels_per_tile = [&](int tex) -> float {

@@ -17,9 +17,7 @@
 #include <filesystem>
 #include <Windows.h>
 
-// The functions below are inline: every translation unit that includes this header must see the
-// same definitions, or the linker picks one of the stub bodies for the whole program and the
-// device-removal dump silently never runs. The switch therefore defaults to on here.
+// Every TU must agree on this, or the linker may keep the stubs.
 #ifndef ENABLE_D3D12_DIAGNOSTICS
 #define ENABLE_D3D12_DIAGNOSTICS 1
 #endif
@@ -80,12 +78,10 @@ inline ComPtr<ID3D12InfoQueue> g_infoQ;
 inline ComPtr<ID3D12DeviceRemovedExtendedData> g_dred;
 
 LONG WINAPI CrashExceptionFilter(EXCEPTION_POINTERS* ep);
-// Symbolized call stack of the caller, written to the crash log (CrashHandler.cpp).
+// Logs the caller's symbolized stack (CrashHandler.cpp).
 void LogCallStack(const wchar_t* title);
 
-// The first occurrence of every debug-layer error gets the call stack of the API call that
-// raised it: the message queue says what went wrong, the stack says where. Runs inside the
-// D3D12 call on whichever thread made it.
+// Runs inside the failing D3D12 call, on its thread.
 inline void CALLBACK InfoQueueCallback(D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id,
                                        LPCSTR description, void*) {
     if (severity > D3D12_MESSAGE_SEVERITY_ERROR)
@@ -102,16 +98,10 @@ inline void InstallCrashHandler() {
     SetUnhandledExceptionFilter(&CrashExceptionFilter);
 }
 
-// NVIDIA Nsight Aftermath GPU crash dumps. DRED names the command a hang happened in; Aftermath
-// names the shader and, for each warp still running, the source line it is stuck on. The library
-// is loaded at run time from the newest Nsight Graphics install (or the path in RT_AFTERMATH_DLL;
-// RT_NO_AFTERMATH=1 skips it), so the build does not depend on it. On a device hang or fault it
-// writes gpu_crash_<pid>.nv-gpudmp next to the executable, the debug info of the shaders involved
-// to aftermath\*.nvdbg, and CompileShaderNew keeps every compiled shader in aftermath\ as well
-// (it follows RT_AFTERMATH_SHADER_DIR). nv-aftermath-format from the same install decodes it:
+// Nsight Aftermath GPU crash dumps, loaded at run time. Decode with:
 //   nv-aftermath-format -D aftermath -B aftermath gpu_crash_<pid>.nv-gpudmp
 namespace aftermath {
-// The declarations used from GFSDK_Aftermath.h and GFSDK_Aftermath_GpuCrashDump.h (API 2.27).
+// Mirrors GFSDK_Aftermath.h / GFSDK_Aftermath_GpuCrashDump.h (API 2.27).
 constexpr uint32_t kVersionApi = 0x21B;
 constexpr uint32_t kWatchDx = 0x1;
 constexpr uint32_t kDeferDebugInfoCallbacks = 0x1;
@@ -170,7 +160,7 @@ inline void __cdecl OnDescription(AddDescriptionFn add, void*) {
     add(0x1u, "RoyalTracer Pathtracer");
 }
 
-// The library of the newest Nsight Graphics install that ships the Aftermath SDK.
+// Newest Nsight Graphics install's Aftermath DLL.
 inline std::wstring FindLibrary() {
     wchar_t overridePath[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"RT_AFTERMATH_DLL", overridePath, MAX_PATH) > 0)
@@ -227,7 +217,7 @@ inline void Enable() {
               (unsigned)r);
 }
 
-// Right after the device is created, on the native device.
+// After device creation, on the native device.
 inline void InitDevice(ID3D12Device* device) {
     State& s = Get();
     if (!s.enabled)
@@ -236,8 +226,7 @@ inline void InitDevice(ID3D12Device* device) {
     CrashLogF(L"[aftermath] DX12 initialize: 0x%08X\n", (unsigned)r);
 }
 
-// After a device removal: the dump is written from a driver thread, so the process has to wait
-// for it before it terminates.
+// After device removal; the dump is written on a driver thread.
 inline void WaitForDump() {
     State& s = Get();
     if (!s.enabled)
@@ -253,22 +242,18 @@ inline void WaitForDump() {
 }
 } // namespace aftermath
 
-// Off by default: the validation layer is heavy enough that a pass which is merely expensive can
-// cross the driver's timeout under it, which reads as a hang that does not happen otherwise.
-// Build with DXDIAG_ENABLE_DEBUG_LAYER=1 to put it back. DRED below is unaffected and stays on,
-// so a device removal still comes with breadcrumbs either way.
+// Off by default: validation slowdown can trigger false TDRs.
 #ifndef DXDIAG_ENABLE_DEBUG_LAYER
 #define DXDIAG_ENABLE_DEBUG_LAYER 0
 #endif
 
-// Enable device-removal breadcrumbs before creating the D3D12 device.
+// Before device creation.
 inline void EnableDebugLayerAndDred() {
     CrashLog(L"[dxdiag] EnableDebugLayerAndDred reached, diagnostic plumbing live\n");
     aftermath::Enable();
 
 #if DXDIAG_ENABLE_DEBUG_LAYER
-    // RT_NO_DEBUG_LAYER=1 in the environment skips the validation layer for one run: it is slow,
-    // and the preview SDK layers crash inside CreateStateObject on some valid pipelines.
+    // Opt-out: slow, and preview layers crash in CreateStateObject.
     char noDebugLayer[8] = {};
     if (GetEnvironmentVariableA("RT_NO_DEBUG_LAYER", noDebugLayer, sizeof(noDebugLayer)) > 0 && noDebugLayer[0] != '0') {
         CrashLog(L"[DX]  Debug-layer SKIPPED (RT_NO_DEBUG_LAYER set)\n");
@@ -287,8 +272,7 @@ inline void EnableDebugLayerAndDred() {
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSet)))) {
         dredSet->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dredSet->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-        // Breadcrumb contexts record the marker the profiler sets per render pass, so the dump
-        // names the pass the GPU was in.
+        // Contexts carry the profiler's per-pass markers.
         ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dredSet1;
         if (SUCCEEDED(dredSet.As(&dredSet1)))
             dredSet1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
@@ -317,10 +301,7 @@ inline void HookDevice(ID3D12Device* device) {
 #endif
 }
 
-// Drain the debug layer's message queue. Each distinct message is logged once with its count of
-// repeats reported later: a validation error that fires per frame would otherwise cost more in
-// console, file and debugger output than the frame itself. After a few repeats the message ID is
-// also denied at the source, so the runtime stops formatting it; validation itself stays on.
+// Logs each message once; frequent IDs are denied at source.
 inline void DumpNewMessages() {
     if (!g_infoQ)
         return;
@@ -342,7 +323,7 @@ inline void DumpNewMessages() {
 
         g_infoQ->GetMessage(i, msg, &sz);
         if (msg->Severity > D3D12_MESSAGE_SEVERITY_WARNING)
-            continue; // info and plain messages carry nothing worth the output cost
+            continue;
 
         const std::string key = std::to_string((int)msg->ID) + ":" + (msg->pDescription ? msg->pDescription : "");
         const uint64_t count = ++seen[key];
@@ -501,8 +482,7 @@ inline void CheckDeviceRemoved(ID3D12Device* device, int pollMs = 0) {
     if (!g_dred) {
         CrashLog(L"    (DRED interface not available, no breadcrumbs)\n");
     } else {
-        // DRED 1.2 adds the marker strings of each list (breadcrumb contexts); the profiler sets
-        // one per render pass, so the last context before the failing op names the pass.
+        // DRED 1.2 contexts name the failing pass.
         ComPtr<ID3D12DeviceRemovedExtendedData1> dred1;
         g_dred.As(&dred1);
         D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 bc1 = {};

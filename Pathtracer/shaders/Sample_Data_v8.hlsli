@@ -11,7 +11,6 @@ uint pixelBaseAddr_SD(uint pixelIdx)
     return pixelIdx * BYTES_SD;
 }
 
-// Transform world positions using the instance inverse matrix.
 float3 WorldToObjectPos(uint id, float3 Pw)
 {
     if (id == 0xFFFFFFFFu) return Pw;
@@ -174,7 +173,6 @@ SDRecord load_SD(RWByteAddressBuffer buf, uint pixelIdx)
     return r;
 }
 
-// Load the compact sample header consumed by later passes.
 void load_SD_header(RWByteAddressBuffer buf, uint pixelIdx,
                     out uint flags, out uint matID, out float pr, out float pm)
 {

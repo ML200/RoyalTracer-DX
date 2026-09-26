@@ -33,7 +33,6 @@ public:
     float lodOpaqueCoverage = 0.5f;
     bool opaqueLeaves = false;
 
-    // Resolves textures and appends renderer materials for every block state.
     bool build(BlockRegistry& reg, IResourceProvider& res,
                MaterialSoA& materials, std::vector<std::string>& materialNames,
                std::vector<TextureData>& textures, int texIdBase,

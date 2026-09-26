@@ -68,7 +68,6 @@ class Renderer {
     void SetFlyCam(FlyCamController* fc) { m_flyCam = fc; }
     UINT GetWidth() const { return m_width; }
     UINT GetHeight() const { return m_height; }
-    float GetAspectRatio() const { return m_aspectRatio; }
 
     UINT CreateProceduralMesh(const std::vector<Vertex>& vertices, const std::vector<UINT>& indices,
                               const Material& material);
@@ -125,7 +124,7 @@ class Renderer {
 
     bool m_lightLearningRevalidatePending = false;
     lt::IncrementalTLAS m_liveLightTlas;
-    bool m_lightTlasForceRebuild = true; // after a scene light-tree rebuild: start the persistent tree over
+    bool m_lightTlasForceRebuild = true; // restart after a light-tree rebuild
     bool m_pendingTlasIncremental = false;
     bool m_lightLearningWasEnabled = false;
     int m_lightLearningCellExponent = 0;

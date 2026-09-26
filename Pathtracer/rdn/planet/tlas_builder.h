@@ -8,21 +8,19 @@ namespace planet {
 
 class TlasBuilder {
 public:
-    // Creates camera-relative instance descriptors and reusable AS storage.
     void init(ID3D12Device5* device, uint32_t max_instances);
 
     void reserve(uint32_t required_instances);
     void begin(uint32_t required_instances = 0);
 
-    // Appends one descriptor; build compares it with the previous frame.
+    // Camera-relative transform; diffed against the last frame.
     void add_instance(D3D12_GPU_VIRTUAL_ADDRESS blas,
                       const float transform[12],
                       uint32_t instance_id,
                       uint32_t hit_group_index,
                       D3D12_RAYTRACING_INSTANCE_FLAGS flags);
 
-    // Rebuilds when the descriptors changed or force is set; refits, in place, when only what
-    // they point at moved. A refit is much cheaper than a rebuild over thousands of instances.
+    // Rebuilds on change or force; refit updates in place.
     bool build(ID3D12GraphicsCommandList4* cmd, bool force = false, bool refit = false);
     bool last_build_recorded() const { return m_lastBuildRecorded; }
 

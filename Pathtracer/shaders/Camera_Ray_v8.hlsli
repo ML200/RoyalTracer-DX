@@ -2,7 +2,6 @@ float3 InitOrigin(){
     return mul(viewI, float4(0, 0, 0, 1)).xyz;
 }
 
-// Reconstruct a jittered world-space camera direction.
 float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
 {
     float2 pixelSample = float2(pixel) + 0.5f + jitter;
@@ -21,7 +20,7 @@ float3 ReconstructPositionFromHitT(int2 pixel, float hitT)
     return InitOrigin() + rayDir * hitT;
 }
 
-// Map uniform random pairs onto a concentric unit disk.
+// Concentric mapping (Shirley & Chiu 1997).
 float2 SampleUnitDisk(inout uint seed)
 {
     float u1 = RandomFloatSingle(seed) * 2.0f - 1.0f;
@@ -39,7 +38,7 @@ float2 SampleUnitDisk(inout uint seed)
     return float2(r * cos(theta), r * sin(theta));
 }
 
-// Offset the origin on the lens while preserving the focus plane.
+// Thin lens; the focus plane stays sharp.
 void InitCameraRayDoF(uint2 pixel, uint2 imgSize, inout uint seed,
                       out float3 rayOrigin, out float3 rayDir)
 {

@@ -5,21 +5,15 @@
 
 namespace planet {
 
-// ALLOW_UPDATE costs a little build time and storage, and buys the refit path below: a source
-// whose instance descriptors are unchanged but whose bottom-level structures were rewritten needs
-// the top level brought up to date, not rebuilt from nothing. With a streamed world that is
-// thousands of instances rebuilt every frame for the sake of a few hundred that moved.
+// ALLOW_UPDATE enables the refit path.
 static constexpr D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS TLAS_BUILD_FLAGS =
     (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)(
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE);
 
-// Refits in a row before a full rebuild is taken anyway. The instance transforms do not move
-// between rebuilds, so the tree stays well shaped, but the bounds it was built around drift with
-// whatever the bottom levels are doing and the quality would decay without a floor under it.
+// Refit quality decays; rebuild after this many.
 static constexpr uint32_t MAX_REFITS_BETWEEN_BUILDS = 64;
 
-// Allocates descriptors, scratch, and result storage for the TLAS.
 void TlasBuilder::init(ID3D12Device5* device, uint32_t max_instances) {
     if (m_instanceDescs && m_mapped) m_instanceDescs->Unmap(0, nullptr);
     m_mapped = nullptr;
@@ -56,7 +50,7 @@ void TlasBuilder::reserve(uint32_t required_instances) {
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                               D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
                               HEAP_DEFAULT);
-    // One scratch buffer serves both paths, so it has to hold whichever needs more.
+    // Shared by build and update.
     auto scratch = create_buffer(m_device.Get(),
                               std::max(info.ScratchDataSizeInBytes, info.UpdateScratchDataSizeInBytes),
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -87,7 +81,6 @@ void TlasBuilder::begin(uint32_t required_instances) {
     m_changed = false;
 }
 
-// Appends a camera-relative instance descriptor to the pending build.
 void TlasBuilder::add_instance(D3D12_GPU_VIRTUAL_ADDRESS blas,
                                const float transform[12],
                                uint32_t instance_id,
@@ -115,9 +108,6 @@ void TlasBuilder::add_instance(D3D12_GPU_VIRTUAL_ADDRESS blas,
     ++m_count;
 }
 
-// Rebuilds after descriptor or capacity changes; refits when only what the descriptors point at
-// moved. `refit` is what a source says when its instances are where they were but the geometry
-// inside them was rewritten - the ocean re-tessellating its tiles, most obviously.
 bool TlasBuilder::build(ID3D12GraphicsCommandList4* cmd, bool force, bool refit) {
     const bool rebuild = !m_built || m_changed || m_builtCount != m_count || force ||
                          (refit && m_refitsSinceBuild >= MAX_REFITS_BETWEEN_BUILDS);
@@ -135,7 +125,7 @@ bool TlasBuilder::build(ID3D12GraphicsCommandList4* cmd, bool force, bool refit)
     desc.SourceAccelerationStructureData  = 0;
 
     if (!rebuild) {
-        // In place: the source and the destination may be the same structure for an update.
+        // In-place update: source == destination.
         desc.Inputs.Flags = (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)(
             desc.Inputs.Flags | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE);
         desc.SourceAccelerationStructureData = m_result->GetGPUVirtualAddress();

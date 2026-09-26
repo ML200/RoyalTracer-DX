@@ -5,7 +5,6 @@ void PassSystem::Build(const std::vector<std::wstring>& tokens) {
     m_passes.clear();
     m_passIndex.clear();
 
-    // Resolve feature requirements before linking loop control tokens.
     for (auto& t : tokens) {
         auto pass = ParseToken(t);
         pass.requiredFeatures = RequiredFeatures(pass.file);

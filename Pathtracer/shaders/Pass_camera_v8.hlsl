@@ -1,8 +1,6 @@
 #include "Includes_v8.hlsli"
 
-// Trace the primary ray and resolve the primary surface. The sample record and the primary extras
-// are written as soon as the material is known, so nothing of the material survives the mirror
-// probe below it. Returns false when the pixel needs no path: a miss, or a mesh light seen directly.
+// False when no path is needed: a miss or a directly seen mesh light.
 inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 rayDir, bool cameraWater)
 {
     RayDesc ray;
@@ -34,15 +32,14 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     const float3  emission = GetEmissionFast(instID, primID);
     const bool    isEmitter = any(emission > 0.0f);
 
-    // Save correspondence only. Evaluate previous geometry in the existing motion compute pass,
-    // avoiding a large texture-sampling expansion in the ray-generation program.
+    // Correspondence only; the motion pass evaluates the previous geometry.
     if (hinfo.isOcean) {
         gScratchPing[uint3(pixel, OCEAN_PREVIOUS_POSITION_SLOT)] =
             float4(attr.barycentrics, asfloat(primID), asfloat(instID));
         gScratchPing[uint3(pixel, OCEAN_GUIDE_SLOT)] = float4(hinfo.oceanFoam, hinfo.oceanBubbles, 0.0f, 0.0f);
     }
 
-    // --- the material: written out, then dead ---
+    // Material: written out, then dead.
     uint mediumMatID;
     bool psrCandidate;
     {
@@ -77,9 +74,7 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     }
     const bool shade = !(isEmitter && hinfo.lightID != 0xFFFFFFFFu);
 
-    // Mirror probe: the virtual point of the reflection feeds specular reprojection everywhere;
-    // near-delta reflectors also follow the reflection through delta surfaces for primary surface
-    // replacement. Only the probe inputs are live here.
+    // Mirror probe for specular reprojection; PSR chain for near-delta reflectors.
     if (hinfo.isOcean)
     {
         gScratchPing[uint3(pixel, 4)] = float4(hitPos, asfloat(instID));
@@ -102,7 +97,6 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
 }
 
 [shader("raygeneration")]
-// Generate primary camera hits and their persistent sample state.
 void Pass_camera_v8()
 {
     const uint2 pixel    = DispatchRaysIndex().xy;
@@ -134,15 +128,13 @@ void Pass_camera_v8()
     bool cameraWater = OceanPointInside(rayOrigin);
     if (!TraceCameraRay(pixel, pixelIdx, rayOrigin, rayDir, cameraWater))
         store_flagsWord(g_sample_current, pixelIdx, load_flagsWord(g_sample_current, pixelIdx) | SD_FLAG_NOBOUNCE);
-    // At a directly visible water interface the actual triangle side is more
-    // precise than the unfiltered height field used for initialization.
+    // Visible water: the triangle side beats the height-field guess.
     if (OceanMediumEnabled() && load_instID(g_sample_current,pixelIdx) != 0xffffffffu &&
         LoadIsOceanMaterial(load_matID(g_sample_current,pixelIdx)))
         cameraWater = load_backface(g_sample_current,pixelIdx);
     if (cameraWater) {
         store_flagsWord(g_sample_current,pixelIdx,load_flagsWord(g_sample_current,pixelIdx) | SD_FLAG_CAMERA_WATER);
-        // Underwater beauty starts at the camera in the path pass, including direct
-        // emitters and misses. Keep the camera record for surface guides only.
+        // The path pass adds underwater radiance; the record is for guides only.
         gScratchPing[uint3(pixel,1)] = 0.0f;
     }
 }

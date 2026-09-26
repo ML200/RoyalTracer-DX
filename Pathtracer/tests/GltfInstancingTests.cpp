@@ -406,8 +406,6 @@ static void TestScene(const fs::path& dir, ID3D12Device* device) {
 }
 
 static void TestBvhOptimization(const fs::path& dir, ID3D12Device* device) {
-    // Overlapping static primitives should be combined; distant geometry should
-    // get separate bounds without losing material identity, triangles or motion.
     const auto path = dir / "bvh-distant.obj";
     {
         std::ofstream f(dir / "bvh-distant.mtl");

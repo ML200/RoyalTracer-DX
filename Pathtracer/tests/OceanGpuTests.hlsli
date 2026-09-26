@@ -1,16 +1,16 @@
 #include "OceanMath.hlsli"
 
-// Runs inside the material GPU harness, using the production water math and dielectric BSDF.
+// Runs inside the material GPU harness.
 float OceanRegressionError()
 {
     float error = 0.0f;
-    // Direct-light width must not narrow rough authored materials or own refraction.
+    // Direct-light widening must not narrow rough materials or own refraction.
     error = max(error, abs(OceanHighlightRoughness(0.4f) - 0.4f));
     if (OceanHighlightRoughness(0.0f) <= 0.0f ||
         !OceanDirectLightingOwnsRay(true, 0.5f) || OceanDirectLightingOwnsRay(true, -0.5f) ||
         OceanDirectLightingOwnsRay(false, 0.5f)) return 1.0f;
     if (GGXUsesDeltaSampling(10u,0.0f) || !GGXUsesDeltaSampling(5u,0.0f)) return 1.0f;
-    // A rotated choppy surface requires the off-diagonal inverse-transpose terms.
+    // Off-diagonal inverse-transpose terms.
     const float2 gradient = float2(0.3f, -0.2f);
     const float3 stretch = float3(1.2f, 0.8f, 0.25f);
     const float2 slope = OceanWarpedSlope(gradient, stretch);
@@ -25,8 +25,7 @@ float OceanRegressionError()
     error = max(error, length(t10 - pow(t1, 10.0f)));
     const float3 n = float3(0, 1, 0);
     const float f0 = FresnelDielectricTIR(n, n, 1.0f, 1.333f).x;
-    // Off-mirror light directions receive the broadened highlight while the actual
-    // continuation lobe retains its sharp peak. Evaluate both through production GGX.
+    // Broadened highlight off-mirror; the continuation lobe keeps its sharp peak.
     const float3 offMirrorLight = normalize(float3(0.04f,1,0));
     const GGXResult sharpPeak = EvalGGXAll(10u,n,n,n,n,(half)1.0f,(half)1.333f,1.0f,(half)0.0f,(half)0.0f);
     const GGXResult widePeak = EvalGGXAll(10u,n,n,n,n,(half)1.0f,(half)1.333f,1.0f,(half)OceanHighlightRoughness(0.0f),(half)0.0f);
@@ -39,7 +38,7 @@ float OceanRegressionError()
     error = max(error, length(transmitted + n));
     if (RefractVector(normalize(float3(0.98f, 0.2f, 0)), n, 1.333f, transmitted)) return 1.0f;
 
-    // Exercise actual GGX sampling, including the smooth water path and TIR.
+    // GGX sampling, including smooth water and TIR.
     uint seed = 0x51a7e123u;
     uint reflections = 0u;
     uint offMirror = 0u;
@@ -53,12 +52,12 @@ float OceanRegressionError()
         offMirror += !refracted && length(wi.xz) > 1e-5f ? 1u : 0u;
         if (!refracted) {
             const float3 h = normalize(n + wi);
-            // At normal incidence the GGX slope CDF has half its mass at tan(theta)=alpha.
+            // Normal incidence: half the GGX slope mass within tan(theta) = alpha.
             coreReflections += dot(h.xz,h.xz) <= 1e-6f*h.y*h.y ? 1u : 0u;
         }
     }
     if (abs(float(reflections) / 2048.0f - 0.7f) > 0.04f) return 1.0f;
-    // Regression: the old sampler always chose H=N despite reporting a finite PDF.
+    // H must not collapse to N.
     if (offMirror < reflections * 9u / 10u) return 1.0f;
     if (abs(float(coreReflections)/max(float(reflections),1.0f) - 0.5f) > 0.06f) return 1.0f;
     bool refracted = false;
@@ -69,8 +68,7 @@ float OceanRegressionError()
     error = max(error, abs(GGXReflectPick(10u, 1.0f, 0.0f) - 1.0f));
     error = max(error, GGXReflectPick(10u, 0.0f, 1.0f));
 
-    // The water proposal must change PDFs, not the physical BSDF value. Check both
-    // hemispheres against ordinary glass at the same IOR and material parameters.
+    // Water proposal changes PDFs only; both hemispheres against glass.
     const float proposalRatio = GGXReflectPick(10u, f0, 1.0f - f0) / GGXReflectPick(5u, f0, 1.0f - f0);
     const float transmissionRatio = (1.0f - GGXReflectPick(10u, f0, 1.0f - f0)) /
         (1.0f - GGXReflectPick(5u, f0, 1.0f - f0));
@@ -83,8 +81,7 @@ float OceanRegressionError()
         error = max(error, abs(water.pdf / glass.pdf - (side == 0u ? proposalRatio : transmissionRatio)));
     }
 
-    // RGB extinction composes by travelled distance; scattering does not change
-    // surface Fresnel. HG is normalized, and distance sampling covers clear water.
+    // Transmittance composes; HG normalised; free flight incl. clear water.
     error = max(error, length(OceanMediumTransmittance(extinction, 3.0f) *
         OceanMediumTransmittance(extinction, 7.0f) - OceanMediumTransmittance(extinction, 10.0f)));
     error = max(error, abs(OceanPhase(0.3f, 0.0f) - 1.0f/(4.0f*PI)));

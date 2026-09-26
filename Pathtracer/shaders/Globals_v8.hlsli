@@ -1,11 +1,10 @@
 #pragma once
-// Bindings, constants and helpers shared by every pass. The radiance cache buffer g_sharc is
-// declared by the front include (Includes_v8.hlsli or IncludesTraining_v8.hlsli) before this file.
+// g_sharc is declared by the front include before this file.
 #include "SharcLayout.h"
 #include "RenderFlags.h"
 #define SHARC_DEBUG_MODE ((sharc_enabled >> SHARC_DEBUG_MODE_SHIFT) & SHARC_DEBUG_MODE_MASK)
 
-// Root constants; the order matches Renderer::PopulateCommandList and SHARC_ROOT_CONSTANTS.
+// Order must match Renderer::PopulateCommandList and SHARC_ROOT_CONSTANTS.
 cbuffer Push : register(b1)
 {
     uint2 gImageSize;
@@ -13,7 +12,7 @@ cbuffer Push : register(b1)
     uint  pt_maxBounces;
     uint  pt_rrStartDepth;
     uint  pt_maxDiffuseBounces;
-    uint  pt_initialSamples;    // sample count in the low half, the current sample index above
+    uint  pt_initialSamples;    // sample count (low 16 bits), sample index (high 16)
     uint  pt_pointFilter;
     uint  lite_spatMcap;
     uint  lite_spatSlots;
@@ -41,9 +40,9 @@ cbuffer Push : register(b1)
     uint  sharc_trainBounces;
     uint  sharc_trainRrDepth;
     uint  guide_params;
-    uint  lt_bufferBase;        // byte offset of the light-learning region in the cache buffer
+    uint  lt_bufferBase;        // byte offset of light learning in g_sharc
     uint  sharc_updateStride;   // training tile width
-    float sharc_convergenceThreshold;   // cells less converged than this never end a path (SharcConvergence)
+    float sharc_convergenceThreshold;   // cells below this never end a path (SharcConvergence)
 };
 
 #define CLAMP_EMITTERS_MODE ((rs_flags & RS_FLAG_CLAMP_EMITTERS) != 0u)
@@ -61,7 +60,6 @@ cbuffer Push : register(b1)
 #define IMG_W (gImageSize.x)
 #define IMG_H (gImageSize.y)
 
-// The host packs the current sample index into the upper half of the sample count.
 #define PT_SAMPLE_COUNT (pt_initialSamples & 0xFFFFu)
 #define PT_SAMPLE_INDEX (pt_initialSamples >> 16u)
 
@@ -140,17 +138,12 @@ cbuffer CameraParams : register(b0)
     float terrainHeightFrequency;
     float oceanInstanceBase;
     float oceanEnabled;
-    // Reconstruction responsivity written per pixel into the denoiser's mask: -1 accumulates the
-    // longest, +1 drops history fastest. Ordinary surfaces interpolate between the two ends by
-    // roughness - a rough surface's shading barely moves between frames, a smooth one carries a
-    // sharp reflection that slides across it. Water gets its own because its sun glitter moves
-    // every frame and history that suits a static surface smears it into streaks.
+    // DLSS responsivity: -1 longest history, +1 drops history fastest.
     float dlssResponsivityRough;  // at roughness 1
     float dlssResponsivityMirror; // at roughness 0
     float dlssWaterResponsivity;
 }
 
-// Instance-property records from this index up belong to the ocean.
 #define OCEAN_ENABLED (oceanEnabled > 0.5f)
 #define IS_OCEAN_INSTANCE(instID) (OCEAN_ENABLED && ((instID) >= (uint)oceanInstanceBase))
 
@@ -294,7 +287,6 @@ StructuredBuffer<LightSlotGpu>     gLT_Slot         : register(t7);
 #include "Camera_ray_v8.hlsli"
 #include "PsrGuide_v8.hlsli"
 
-// Denoiser guides, written by the compute passes.
 RWTexture2D<float>  g_dlssDepth          : register(u11);
 RWTexture2D<float2> g_dlssMVec           : register(u12);
 RWTexture2D<float4> g_dlssNormals        : register(u13);

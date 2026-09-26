@@ -30,8 +30,7 @@ foreach($f in @(0.0,0.0203731878419714,0.15,0.7,0.95,1.0)) {
     Near $(if($q -gt 0){$q*($f/$q)}else{0}) $f 1e-12 'Fresnel reflected energy'
     Near $(if($q -lt 1){(1-$q)*((1-$f)/(1-$q))}else{0}) (1-$f) 1e-12 'Fresnel transmitted energy'
 }
-# Integrate both branches of the estimator independently against analytic homogeneous
-# transport. Includes a zero-extinction channel and a strongly chromatic medium.
+# Both estimator branches vs analytic homogeneous transport.
 $cases=@(@{a=@(0.1,0.01,0.4);s=@(0.05,0.2,0.03)},@{a=@(0.0,0.05,0.3);s=@(0.0,0.1,0.2)})
 $steps=4096
 foreach($case in $cases) {
@@ -73,8 +72,7 @@ foreach($g in @(-0.95,-0.5,0.0,0.5,0.95)) {
     Near $mean $g 0.00001 'HG sampled mean'
     Near $square ((1+2*$g*$g)/3) 0.00001 'HG sampled second moment'
 }
-# One event persists through internal reflection; real object bounces and fresh
-# entries reset it. Thin transmitted panes preserve it.
+# Scatter budget: kept through internal reflection and thin panes, reset by bounces and entries.
 $stateCases=@(
     @($true,$true,$true,$true,$false,$true),
     @($true,$true,$true,$false,$false,$false),
@@ -93,8 +91,7 @@ $resolve=Get-Content (Join-Path $root 'shaders/Pass_shading_v8.hlsl') -Raw
 if(([regex]::Matches($camera,'OceanPointInside\(')).Count -ne 1 -or ($trace+$training+$resolve) -match 'OceanPointInside\('){throw 'Repeated camera classification'}
 if($trace -notmatch 'SD_FLAG_NOBOUNCE\) != 0u && !cameraWater' -or $trace -notmatch 'PV_IN_WATER_SCATTERED' -or $training -notmatch 'waterScatterUsed = true'){throw 'Path state wiring missing'}
 if($resolve -match 'OceanIntegrateVolume|OceanSampleWaterSegment'){throw 'Duplicate camera volume'}
-# Driver-workaround contract: opaque HitObject values must not be loop-carried
-# in either scattering caller. The helper snapshots IDs, barycentrics and distance.
+# Driver workaround: no HitObject carried through the scattering loops.
 $callerCode=[regex]::Replace(($trace+$training),'(?s)/\*.*?\*/|//[^\r\n]*','')
 if($callerCode -match 'dx::HitObject|hitObj\.' -or $volume -notmatch 'OceanPathHit OceanTracePathHit\(RayDesc ray\)') {
     throw 'Opaque hit-object lifetime regression'

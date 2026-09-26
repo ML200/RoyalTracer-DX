@@ -1,6 +1,5 @@
 #include "Camera.h"
 #include "../nv_helpers_dx12/BottomLevelASGenerator.h"
-#include "Windowsx.h"
 #include "../DXRHelper.h"
 #include "../glm/gtc/matrix_transform.hpp"
 
@@ -30,38 +29,6 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
 
     m_buffer = nv_helpers_dx12::CreateBuffer(device, m_bufferSize, D3D12_RESOURCE_FLAG_NONE,
                                              D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-
-    m_constHeap = nv_helpers_dx12::CreateDescriptorHeap(device, 2, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
-}
-
-void Camera::Update(float dt, bool keysDown[256], float aspectRatio) {
-    m_wallTimeSec += dt;
-
-    glm::vec3 eye, center, up;
-    nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
-    glm::vec3 fwd = glm::normalize(center - eye);
-    glm::vec3 right = glm::normalize(glm::cross(fwd, up));
-
-    glm::vec3 move(0.0f);
-    if (keysDown['W'])
-        move += fwd;
-    if (keysDown['S'])
-        move -= fwd;
-    if (keysDown['D'])
-        move += right;
-    if (keysDown['A'])
-        move -= right;
-    if (keysDown[VK_SPACE])
-        move += up;
-    if (keysDown[VK_CONTROL])
-        move -= up;
-
-    if (glm::length(move) > 0.0f) {
-        move = glm::normalize(move) * (moveSpeed * dt);
-        eye += move;
-        center += move;
-        nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
-    }
 }
 
 void Camera::PollSceneOrigin() {
@@ -83,7 +50,7 @@ void Camera::PollSceneOrigin() {
             const glm::vec3 centerShifted = center - shiftDelta;
             nv_helpers_dx12::CameraManip.setLookat(eyeShifted, centerShifted, up);
 
-            // Apply the same shift to history so motion vectors remain continuous.
+            // Shift history too so motion vectors stay continuous.
             const XMMATRIX T = XMMatrixTranslation(shiftDelta.x, shiftDelta.y, shiftDelta.z);
             m_prevView = XMMatrixMultiply(T, m_prevView);
         }
@@ -91,7 +58,7 @@ void Camera::PollSceneOrigin() {
 }
 
 void Camera::UploadGPUBuffer(float aspectRatio) {
-    // The shader ABI starts with current, inverse, and previous camera matrices.
+    // Shader ABI: current, inverse, then previous matrices.
     std::vector<XMMATRIX> matrices(6);
 
     const glm::mat4& viewMat = nv_helpers_dx12::CameraManip.getMatrix();
@@ -112,7 +79,6 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     if (m_resetPending) {
         m_prevView = matrices[0];
         m_prevProj = matrices[1];
-        m_prevProjUnjittered = matrices[1];
     }
 
     matrices[4] = m_prevView;
@@ -142,17 +108,11 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
 
     m_viewMatrix = matrices[0];
     m_projMatrix = matrices[1];
-    m_projMatrixUnjittered = matrices[1];
 }
 
 void Camera::AdvanceFrame() {
     m_prevView = m_viewMatrix;
     m_prevProj = m_projMatrix;
-    m_prevProjUnjittered = m_projMatrixUnjittered;
-}
-
-void Camera::OnMouseButton(int x, int y) {
-    nv_helpers_dx12::CameraManip.setMousePosition(-x, -y);
 }
 
 void Camera::OnMouseMove(int x, int y, bool lmb, bool rmb, bool mmb) {

@@ -37,8 +37,7 @@ struct Runner {
     float rewardScale = 1.0f;
     bool compactNodes = true;
     XMFLOAT3 testCamera{};
-    // Third column of the inverse view, the camera's forward direction. Left at zero the
-    // retention rule has no orientation to work with and leaves every cell in front.
+    // Inverse view column 3; zero leaves every cell in front.
     XMFLOAT3 testForward{};
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
@@ -1014,10 +1013,7 @@ void VerifyGridReview(Runner& runner) {
     runner.clockMs=0;runner.testCamera={0,0,0};
 }
 
-// A cell the camera turns away from offers its slot from that frame, so a newly visible cell in
-// a full table does not wait out the idle delay, and it gives the slot up for good on the short
-// timer. A cell that paths still reach keeps being touched and survives however long it spends
-// behind the camera.
+// Behind-camera cells go first and expire on the short timer, unless still reached.
 void VerifyBehindCameraRetention(Runner& runner) {
     constexpr UINT lights=128,flags=LT_FLAG_LEARNING;
     std::vector<LightTriangle> tris(lights);
@@ -1029,8 +1025,7 @@ void VerifyBehindCameraRetention(Runner& runner) {
     builder.WriteSrvs(runner.device.Get(),runner.Handle(9));builder.WriteLookupSrvs(runner.device.Get(),runner.Handle(16));builder.WriteSlotSrv(runner.device.Get(),runner.Handle(7));
     auto emission=runner.Upload(tris);runner.Srv(emission.Get(),6,sizeof(LightTriangle));
     auto input=runner.Upload(std::vector<XMFLOAT4>{{.25f,.25f,-9.75f,0}});runner.Srv(input.Get(),19,sizeof(XMFLOAT4));runner.Flush();
-    // Three units in front of the receiver, so a cell one unit wide is behind by more than its
-    // own width once the camera turns around.
+    // 3 units in front: a 1-unit cell is behind once the camera turns.
     runner.lodScale=.05f;runner.clockMs=0;runner.testCamera={.25f,.25f,-6.75f};runner.testForward={0,0,-1};
     UINT frame=1;
     const auto feed=[&](UINT steps,UINT stepMs=16u) {
@@ -1047,8 +1042,7 @@ void VerifyBehindCameraRetention(Runner& runner) {
     Require(facing.x==0 && facing.y==0 && facing.w==0,
         "A cell the camera is looking at was offered for replacement");
 
-    // Turning away does not by itself make a cell a victim: a view facing a wall would otherwise
-    // recycle every cell behind it each frame, including the ones its own bounces are using.
+    // Turning away alone does not make a reached cell a victim.
     runner.testForward={0,0,1};runner.PrepareLearning(flags,++frame);
     const auto turned=retention();
     Require(turned.w==0,"A cell the paths still reach was offered for replacement once the camera turned");
@@ -1062,8 +1056,7 @@ void VerifyBehindCameraRetention(Runner& runner) {
     const auto idle=retention();
     Require(idle.x==1 && idle.y==1,"A cell behind the camera outlived the short idle timer");
 
-    // Turning back restores the ten-second tolerance the cell would have had all along, so a
-    // glance away costs nothing as long as the slot was not taken in the meantime.
+    // Turning back restores the ordinary idle tolerance.
     runner.testForward={0,0,-1};runner.PrepareLearning(flags,++frame);
     const auto returned=retention();
     Require(returned.x==0 && returned.y==0 && returned.w==1,
@@ -1299,7 +1292,7 @@ int main(int argc, char** argv) {
                 tris[i].meshID = instances ? i : 0;
             }
             lt::LightTreeBuilder builder;
-            // Reuse the builder and descriptor heap across both directions of a layout change.
+            // One builder and heap across layout changes in both directions.
             for (bool compact : {false, true, false, true}) {
                 settings.compactGpuNodes = compact;
                 builder.Build(tris, settings);

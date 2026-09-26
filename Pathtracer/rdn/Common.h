@@ -71,18 +71,8 @@ static constexpr int LUT_RESOLUTION = 16;
 static constexpr int NUM_SAMPLES_LUT = 32000;
 
 static constexpr UINT AUTOEXPOSE_HEAP_SLOT = 63;
-static constexpr UINT SKY_STARS_HEAP_SLOT = 64;
-static constexpr UINT TERRAIN_TABLE_HEAP_SLOT = 65;
-static constexpr UINT TERRAIN_HEIGHTMAP_HEAP_SLOT = 66;
-static constexpr UINT TERRAIN_SURFACE_COLOR_HEAP_SLOT = 67;
-static constexpr UINT TERRAIN_NORMAL_HEAP_SLOT = 68;
-static constexpr UINT SKY_TRANSMITTANCE_LUT_HEAP_SLOT = 69;
-static constexpr UINT SKY_MULTISCATTER_LUT_HEAP_SLOT = 70;
-
-
-static constexpr UINT BLUE_NOISE_HEAP_SLOT = 86;
 static constexpr UINT BLUE_NOISE_MASK_SIZE = 128;
-// Ocean descriptors occupy the range declared in OceanLayout.h; textures start above it.
+// Textures start above the OceanLayout.h range.
 static constexpr UINT BINDLESS_HEAP_START = 256;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
@@ -178,7 +168,7 @@ struct IntegratorSettings {
     bool sharcGuideTrain = true;
     float sharcGuideMax = 0.75f;
     int sharcGuideLevelOffset = 2;
-    int sharcGuideFreshness = 32; // frames without new evidence after which a receiver guides at half strength
+    int sharcGuideFreshness = 32; // frames without evidence until half strength
     int sharcGuideDepth = 2;
 
     bool liteEnabled = true;
@@ -207,7 +197,7 @@ struct IntegratorSettings {
 
     bool forceDiffuseMats = false;
 
-    // Identify settings changes that require reconstruction history to reset.
+    // Changes here reset reconstruction history.
     auto ReconstructionKey() const {
         const bool lite = liteEnabled;
         return std::make_tuple(maxBounces, maxDiffuseBounces, texturePointFilter, forceDiffuseMats, compactLightTree,
@@ -256,10 +246,7 @@ struct SunSettings {
 
     float atmosEarthShadowSoftness = 0.005f;
 
-    // Distance over which the solar aureole fades in, km. The halo around the sun is the forward
-    // lobe of the Mie phase function, and it belongs to the depth of atmosphere a ray actually
-    // crosses rather than to the direction it points: without this a wall a few metres away picks
-    // up the same halo as the sky behind it. 0 restores the undamped lobe.
+    // Solar aureole fade-in distance; 0 = undamped.
     float atmosHaloDistanceKm = 1.0f;
 };
 

@@ -34,7 +34,6 @@ inline bool isDDSMemory(const uint8_t* data, size_t size) {
 }
 
 inline bool LoadDDSFileToRGBA8(const std::string& path, DXGI_FORMAT targetFormat, DirectX::ScratchImage& outImage) {
-    // Decompress and convert only when the source format differs.
     using namespace DirectX;
     std::wstring wpath(path.begin(), path.end());
     ScratchImage ddsImage;
@@ -97,7 +96,7 @@ inline bool LoadDDSMemoryToRGBA8(const uint8_t* data, size_t size, DXGI_FORMAT t
 }
 
 inline std::vector<uint8_t> DecodeBase64(const char* in, size_t len) {
-    // Ignore non alphabet characters so wrapped asset payloads decode correctly.
+    // Skip non-alphabet bytes (wrapped payloads).
     static const int8_t table[256] = {
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, 62, -1, 63, 52, 53, 54, 55,
@@ -126,8 +125,6 @@ inline std::vector<uint8_t> DecodeBase64(const char* in, size_t len) {
     }
     return out;
 }
-
-constexpr int TARGET_TEXTURE_DIM = 2048;
 
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
@@ -244,23 +241,10 @@ inline XMFLOAT3 reflect(const XMFLOAT3& I, const XMFLOAT3& N) {
     return reflectedVec;
 }
 
-inline float D_GGX(float NdotH, float roughness) {
-    float alpha = roughness * roughness;
-    float alpha2 = alpha * alpha;
-    float NdotH2 = NdotH * NdotH;
-    float denom = (NdotH2 * (alpha2 - 1.0f) + 1.0f);
-    denom = (std::fmax)(denom, 1e-7f);
-    return alpha2 / (PI * denom * denom);
-}
-
 inline float G1_SmithGGX(float NdotV, float alpha) {
     float alpha2 = alpha * alpha;
     float denomC = sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV) + NdotV;
     return 2.0f * NdotV / (std::fmax)(denomC, 1e-7f);
-}
-
-inline float G2_SmithGGX(float NdotV, float NdotL, float alpha) {
-    return G1_SmithGGX(NdotV, alpha) * G1_SmithGGX(NdotL, alpha);
 }
 
 inline void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
@@ -301,59 +285,6 @@ inline void SampleGGX(const Material& mat, const XMFLOAT3& outgoing, const XMFLO
     sample = normalize(reflect(V * -1.0f, H));
     if (dot(N, sample) <= 0.0f)
         sample = XMFLOAT3(0, 0, 0);
-}
-
-inline XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, const XMFLOAT3&,
-                                 float roughness) {
-    XMFLOAT3 H = normalize(V + L);
-    float NdotV = (std::fmax)(dot(N, V), 0.0f);
-    float NdotL = (std::fmax)(dot(N, L), 0.0f);
-    if (NdotV <= 0.0f || NdotL <= 0.0f)
-        return XMFLOAT3(0, 0, 0);
-    float NdotH = (std::fmax)(dot(N, H), 0.0f);
-    float D = D_GGX(NdotH, roughness);
-    float alpha = (std::fmax)(1e-4f, roughness * roughness);
-    float G2 = G2_SmithGGX(NdotV, NdotL, alpha);
-    float denom = (std::fmax)(4.0f * NdotV * NdotL, 1e-7f);
-    float brdf = (D * G2) / denom;
-    return XMFLOAT3(brdf, brdf, brdf);
-}
-
-inline float BRDF_PDF_GGX(const float roughness, const XMFLOAT3& normal, const XMFLOAT3& incoming,
-                          const XMFLOAT3& outgoing) {
-    XMFLOAT3 N = normalize(normal);
-    XMFLOAT3 V = normalize(outgoing);
-    XMFLOAT3 L = normalize(incoming * -1.0f);
-    float NdotV = (std::fmax)(dot(N, V), 0.0f);
-    float NdotL = (std::fmax)(dot(N, L), 0.0f);
-    if (NdotV <= 0.0f || NdotL <= 0.0f)
-        return 0.0f;
-    XMFLOAT3 H = normalize(V + L);
-    float NdotH = (std::fmax)(dot(N, H), 0.0f);
-    float D = D_GGX(NdotH, roughness);
-    float alpha = (std::fmax)(1e-4f, roughness * roughness);
-    float G1 = G1_SmithGGX(NdotV, alpha);
-    return (D * G1) / (4.0f * (std::fmax)(NdotV, 1e-7f));
-}
-
-inline float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, XMFLOAT3, int numSamples,
-                        Material& mat) {
-    float Ess = 0.0f;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    for (int i = 0; i < numSamples; ++i) {
-        XMFLOAT3 L;
-        SampleGGX(mat, V, N, L, dist(gen), dist(gen));
-        float NdotL = dot(N, L);
-        if (NdotL <= 0.0f)
-            continue;
-        XMFLOAT3 brdf3 = EvaluateBRDF_GGX(normalize(V), normalize(L), normalize(N), XMFLOAT3(1, 1, 1), roughness);
-        float pdf = BRDF_PDF_GGX(roughness, N, L * -1.0f, V);
-        pdf = (std::fmax)(pdf, 1e-7f);
-        Ess += (NdotL * brdf3.x) / pdf;
-    }
-    return (numSamples > 0) ? (Ess / numSamples) : 0.0f;
 }
 
 inline float D_Charlie(float NdotH, float r) {
@@ -435,35 +366,6 @@ inline float ComputeSheenDirectionalAlbedo(const XMFLOAT3& N, const XMFLOAT3& V,
     }
     float mean_f = (numSamples > 0) ? (sum_f / numSamples) : 0.0f;
     return mean_f * PI;
-}
-
-inline void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std::wstring& title) {
-    std::wcout << L"\n======================================================================================\n";
-    std::wcout << L" Full 32x32 Matrix for: " << title << L"\n";
-    std::wcout << L"======================================================================================\n";
-    std::wcout << L"(Rows are cos(theta) from 0.0 to 1.0, Columns are Roughness from 0.0 to 1.0)\n\n";
-    std::wcout << L"cos\\r |";
-    for (int x = 0; x < LUT_RESOLUTION; ++x) {
-        float roughness = static_cast<float>(x) / (LUT_RESOLUTION - 1);
-        std::wcout << L" " << std::fixed << std::setprecision(2) << roughness << L" ";
-    }
-    std::wcout << L"\n" << std::wstring(120, L'-') << L"\n";
-    for (int y = 0; y < LUT_RESOLUTION; ++y) {
-        float cosTheta = static_cast<float>(y) / (LUT_RESOLUTION - 1);
-        std::wcout << std::fixed << std::setprecision(3) << cosTheta << L" | ";
-        for (int x = 0; x < LUT_RESOLUTION; ++x) {
-            float value = lutSliceData[y * LUT_RESOLUTION + x];
-            if (value < 0.001f && value != 0.0f) {
-                std::wcout << std::scientific << std::setprecision(1) << value << " ";
-            } else {
-                std::wcout << std::fixed << std::setprecision(3) << value << " ";
-            }
-        }
-        std::wcout << L"\n";
-        if ((y + 1) % 8 == 0)
-            std::wcout << std::wstring(120, L'-') << L"\n";
-    }
-    std::wcout << L"\n";
 }
 
 class ObjLoader {

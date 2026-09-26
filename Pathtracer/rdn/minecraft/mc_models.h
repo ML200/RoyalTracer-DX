@@ -34,13 +34,10 @@ class ModelResolver {
 public:
     explicit ModelResolver(IResourceProvider& res) : m_res(res) {}
 
-    // Resolves inheritance, variants, textures, and model geometry.
     bool resolve(const BlockStateDesc& state, ResolvedShape& out, std::string* err = nullptr);
 
     static std::string texture_resource_path(const std::string& textureName);
     static std::string normalize_name(const std::string& name);
-
-    size_t model_cache_size() const { return m_models.size(); }
 
 private:
     struct FaceDef {

@@ -36,7 +36,7 @@ struct NbtValue {
     const NbtValue*  get_compound(std::string_view key) const;
 };
 
-// Parses big-endian NBT while retaining string views into the input buffer.
+// Big-endian; root keeps string views into data.
 bool nbt_parse(const uint8_t* data, size_t size, NbtValue& root, std::string* err = nullptr);
 
 class NbtWriter {

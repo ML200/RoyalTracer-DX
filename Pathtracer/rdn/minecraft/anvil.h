@@ -13,19 +13,16 @@ class  InternCache;
 
 class RegionFile {
 public:
-    // Parses region coordinates from an Anvil filename.
     static bool parse_name(const std::string& fileName, int32_t& rx, int32_t& rz);
 
-    // Loads the complete region for indexed chunk reads.
     bool open(const std::string& path, std::string* err = nullptr);
     void close() { m_data.clear(); m_data.shrink_to_fit(); }
 
     bool chunk_present(int lx, int lz) const;
-    // Returns the chunk payload as uncompressed NBT bytes.
+    // Output is decompressed NBT.
     bool read_chunk(int lx, int lz, std::vector<uint8_t>& nbt, std::string* err = nullptr) const;
 
     int32_t rx = 0, rz = 0;
-    size_t  file_bytes() const { return m_data.size(); }
 
 private:
     std::vector<uint8_t> m_data;
@@ -42,10 +39,8 @@ struct DecodedChunk {
     std::vector<DecodedSection> sections;
 };
 
-// Decodes palette-compressed sections into interned block states.
 bool decode_chunk(const NbtValue& root, InternCache& interner, DecodedChunk& out, std::string* err = nullptr);
 
-// Unpacks padded or tightly packed palette indices.
 void unpack_block_states(const int64_t* longs, size_t longCount, uint32_t bitsPerEntry,
                          bool padded, uint32_t* outIndices4096);
 

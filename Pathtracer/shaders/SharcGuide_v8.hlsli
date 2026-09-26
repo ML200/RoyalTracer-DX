@@ -91,7 +91,7 @@ GuideKey GuideKeyCentre(float3 position, float3 geometricNormal)
     return k;
 }
 
-// Jittered keys distribute guide updates across neighboring cells.
+// Jittered to spread updates across neighboring cells.
 GuideKey GuideKeyOf(float3 position, float3 geometricNormal, inout uint seed)
 {
     GuideKey k;
@@ -251,7 +251,6 @@ uint4 GuideSlotWords(uint4 w0, uint4 w1, uint4 w2, uint4 w3, uint4 w4, uint4 w5,
         (c == 4u ? w4 : (c == 5u ? w5 : (c == 6u ? w6 : w7))))));
 }
 
-// Reject stale lobes before assembling the active guide mixture.
 GuideSet GuideBuild(uint e, float3 x, float3 n, bool training = false)
 {
     GuideSet g = GuideEmpty();
@@ -336,7 +335,6 @@ uint2 GuideConeAt(GuideSet g, uint c)
         (c == 4u ? g.cone[4] : (c == 5u ? g.cone[5] : (c == 6u ? g.cone[6] : g.cone[7]))))));
 }
 
-// Sample packed guide cones using their normalized mixture weights.
 float3 GuideSample(GuideSet g, float uPick, float2 uDir, out uint pick)
 {
     float u = uPick * g.weightSum;
@@ -380,7 +378,6 @@ float GuideLambertPdf(float3 n, float3 dir)
     return max(dot(n, dir), 0.0f) / GUIDE_PI;
 }
 
-// Correct the BSDF PDF with the guide mixture contribution.
 float GuideMixPdf(GuideSet g, float pShare, float sharePdf, float3 dir, float bsdfPdf)
 {
     if (!(g.q > 0.0f)) return bsdfPdf;
@@ -678,9 +675,7 @@ float4 GuideDebugColor(float3 position, float3 geometricNormal, float3 normal, b
     return float4(0.06f, 0.06f + 0.9f * q, 0.06f + 0.4f * (float)active / (float)GUIDE_SLOTS, 0.0f);
 }
 
-// Maintenance shared by the prepare pass and the tests: reset the dirty words and guide entries,
-// evict aged or relocated cache entries. Returns the instance of an entry that survives so the
-// caller can evict it when the instance moved, or SHARC_INVALID.
+// Returns a surviving entry's instance (caller evicts moved ones), else SHARC_INVALID.
 uint SharcPrepareIndex(uint index)
 {
     if ((sharc_reset & 1u) != 0u && index < SHARC_DIRTY_WORDS)

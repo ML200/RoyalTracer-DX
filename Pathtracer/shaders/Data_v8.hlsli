@@ -54,7 +54,7 @@ struct MatPacked {
 
 #include "LightTreePacked.h"
 
-// Traversal values; the selected GPU layout is decoded by LightTreeDecode.hlsli.
+// Decoded form; see LightTreeDecode.hlsli.
 struct LightTLASNodeGpu
 {
     float3 bmin;     float power;

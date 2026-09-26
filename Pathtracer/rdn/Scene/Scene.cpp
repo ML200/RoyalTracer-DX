@@ -21,15 +21,6 @@ void MeshGPU::CreateBlasBuildInputs(ID3D12Device* device) {
     upload(cpuIndices.data(), cpuIndices.size() * sizeof(UINT), indexBuffer);
 }
 
-void Scene::PropagateModelTransforms() {
-    for (auto& model : models) {
-        for (UINT i = model.instanceStart; i < model.instanceStart + model.instanceCount; ++i) {
-            auto& inst = instances[i];
-            inst.worldTransform = inst.localTransform * model.worldTransform;
-        }
-    }
-}
-
 void Scene::MarkModelMoved(UINT modelIndex) {
     if (modelIndex >= models.size())
         return;
@@ -86,8 +77,7 @@ void Scene::ReserveTerrain(UINT vertexElems, UINT indexElems, UINT matIDElems, U
 
 void Scene::ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots,
                          const Material& mat, float foamAlbedo) {
-    // Read the count while the ocean's own slots are still zero, so the ocean lands after every
-    // other range. The shader relies on that ordering to identify an ocean hit by index alone.
+    // Read before the ocean's slots count, so it lands last.
     oceanPropsBase = instancePropsCount();
     oceanVertexElems = vertexElems;
     oceanIndexElems = indexElems;
@@ -96,8 +86,7 @@ void Scene::ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UIN
 
     oceanMatIndex = (UINT)materials.size();
     oceanMaterialEdited = false;
-    // Whitecap-coverage ramps from the water to solid foam, one for each density of the bubble cloud
-    // under the foam, then the diagnostic slot.
+    // Foam ramps per bubble density, then the diagnostic slot.
     for (uint32_t i = 0; i < OCEAN_MATERIAL_COUNT; ++i) {
         Material layer = mat;
         ocean::WriteMaterialSlot(i, mat.Kd, mat.Tf, mat.sssWeight, mat.sssEnable, foamAlbedo, layer.Kd,
@@ -126,7 +115,7 @@ void Scene::ReserveVoxels(UINT vertexElems, UINT indexElems, UINT matIDElems, UI
 void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
     SCOPE_TIMER("BuildGlobalMeshBuffers");
 
-    // Global bases let terrain, voxel, and imported geometry share buffers.
+    // All geometry shares one buffer.
     geoOffsets.resize(meshes.size());
     size_t totalV = 0, totalI = 0;
 
@@ -152,10 +141,7 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     const uint64_t vbBytes = (uint64_t)combinedVertexCount() * sizeof(BTriVertex);
     const uint64_t ibBytes = (uint64_t)combinedIndexCount() * sizeof(uint32_t);
 
-    // One structured-buffer view spans this whole buffer, and a view's extent is described in 32
-    // bits however large the resource behind it is. Overrunning it does not fail here: the device
-    // is removed a few frames later with DXGI_ERROR_INVALID_CALL and nothing says why. Catch it
-    // where the budgets that caused it can still be named.
+    // 32-bit view extent; overruns surface later as device removal.
     constexpr uint64_t kMaxViewBytes = 1ull << 32;
     if (vbBytes >= kMaxViewBytes) {
         char msg[512];
@@ -171,21 +157,16 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     const uint64_t sceneVbBytes = (uint64_t)totalVertexCount * sizeof(BTriVertex);
     const uint64_t sceneIbBytes = (uint64_t)totalIndexCount * sizeof(uint32_t);
 
-    // Only the planet's terrain generator writes vertices from the CPU and needs the buffers
-    // mapped in host memory. Voxel chunks arrive through GPU copies, which need a default-heap
-    // destination; an upload heap can neither be copied into nor be fetched from at speed.
+    // Only CPU-written terrain needs an upload heap.
     const bool hasTerrain = terrainVertexElems > 0 || terrainIndexElems > 0;
 
-    // The ocean tessellates itself on the GPU every frame and writes into its reserved range, so
-    // the vertex buffer has to be a default-heap resource that a compute shader can bind as an
-    // unordered access view. An upload heap cannot be one, which is why the two are exclusive.
+    // Ocean writes vertices via UAV; upload heaps can't be UAVs.
     const bool hasOcean = oceanVertexElems > 0;
     if (hasTerrain && hasOcean)
         throw std::runtime_error("Streamed terrain and the ocean cannot share the global vertex buffer");
     const D3D12_RESOURCE_FLAGS vbFlags =
         hasOcean ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
-    // The ocean's simulation runs on the streaming compute queue, where the read-only state has to
-    // be one a compute queue accepts; GENERIC_READ is not.
+    // The ocean's compute queue rejects GENERIC_READ.
     const D3D12_RESOURCE_STATES vbReadState =
         hasOcean ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_GENERIC_READ;
 
@@ -214,7 +195,7 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
                                                     D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
         indexGlobal->SetName(L"GlobalIndexBuffer");
 
-        // The ocean's index range never changes, so it is staged once alongside the scene meshes.
+        // Static ocean indices, staged once.
         const uint64_t stagedVbBytes = sceneVbBytes;
         const uint64_t stagedIbBytes =
             sceneIbBytes + (uint64_t)oceanIndexElems * sizeof(uint32_t);
@@ -255,8 +236,7 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
             outI[i] = mesh.cpuIndices[i] + vBase;
     }
 
-    // Ocean tiles all share one topology, laid out so that a tile's triangles index only its own
-    // vertex block. Written once here and never touched again; only the positions change.
+    // Static topology; each tile indexes only its own block.
     if (hasOcean) {
         uint32_t* out = dstIdx + totalIndexCount;
         constexpr uint32_t edge = OCEAN_TILE_EDGE_VERTS;
@@ -268,7 +248,7 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
                     const uint32_t v10 = v00 + 1;
                     const uint32_t v01 = v00 + edge;
                     const uint32_t v11 = v01 + 1;
-                    // Wound so the geometric normal of every ocean triangle points at the sky.
+                    // Wound so geometric normals face the sky.
                     *out++ = v00;
                     *out++ = v01;
                     *out++ = v11;
@@ -326,7 +306,7 @@ void Scene::PrepareInstanceProperties() {
         dirtyInstanceList.push_back(static_cast<uint32_t>(i));
     }
 
-    // Store transforms relative to the current floating origin.
+    // Relative to the floating origin.
     const XMVECTOR shift = XMVectorSet(sceneOriginWorld.x, sceneOriginWorld.y, sceneOriginWorld.z, 0.0f);
 
     const XMVECTOR prevShift =
@@ -445,7 +425,6 @@ void Scene::RebuildTLASInstanceList() {
 }
 
 void Scene::CollectEmissiveTriangles() {
-    // Build triangle and instance light records from the current material set.
     emissiveTriangles.clear();
     triToLightId.clear();
     meshLightBase.assign(meshes.size(), 0xFFFFFFFFu);
@@ -524,8 +503,7 @@ void Scene::UploadMaterials(ID3D12Device* device) {
         voxelMatIDReserved = true;
     }
 
-    // Every ocean triangle shares one material, so one tile's worth of identifiers serves all the
-    // tiles and each one points at the same base.
+    // One tile's IDs serve all tiles: a single material.
     if (oceanMatIDElems && !oceanMatIDReserved) {
         oceanMatIDBase = (UINT)materialIDs.size();
         materialIDs.resize((size_t)oceanMatIDBase + oceanMatIDElems, oceanMatIndex);
@@ -595,7 +573,7 @@ void Scene::CreateTriToLightIdBuffer(ID3D12Device* device, ID3D12GraphicsCommand
     auto br = CD3DX12_RESOURCE_BARRIER::Transition(triToLightIdBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                                    D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &br);
-    // Keep upload memory alive until the GPU copy completes.
+    // Kept until the GPU copy completes.
     pendingLightUploads.push_back(std::move(upload));
 }
 
@@ -621,6 +599,6 @@ void Scene::CreateEmissiveTrianglesBuffer(ID3D12Device* device, ID3D12GraphicsCo
     auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(emissiveTrianglesBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                                         D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &barrier);
-    // Retain the staging resource through the asynchronous submission.
+    // Kept through the async submission.
     pendingLightUploads.push_back(std::move(upload));
 }

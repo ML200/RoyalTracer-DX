@@ -12,20 +12,17 @@ class Camera {
 
     void ResetView();
 
-    void Update(float dt, bool keysDown[256], float aspectRatio);
+    void AdvanceTime(float dt) { m_wallTimeSec += dt; }
     void UploadGPUBuffer(float aspectRatio);
     void AdvanceFrame();
 
-    void OnMouseButton(int x, int y);
     void OnMouseMove(int x, int y, bool lmb, bool rmb, bool mmb);
 
     ID3D12Resource* GPUBuffer() const { return m_buffer.Get(); }
     UINT BufferSize() const { return m_bufferSize; }
     XMMATRIX ViewMatrix() const { return m_viewMatrix; }
-    XMMATRIX ProjMatrix() const { return m_projMatrix; }
     XMMATRIX PrevView() const { return m_prevView; }
     XMMATRIX PrevProj() const { return m_prevProj; }
-    XMMATRIX PrevProjUnjittered() const { return m_prevProjUnjittered; }
     float JitterX() const { return m_jitterX; }
     float JitterY() const { return m_jitterY; }
     uint32_t JitterFrame() const { return m_jitterFrameIndex; }
@@ -43,7 +40,7 @@ class Camera {
 
     void PollSceneOrigin(); // Call before preparing scene instance transforms.
 
-    bool consumeOriginShifted() { // Clears the one-frame shift notification.
+    bool consumeOriginShifted() {
         const bool s = m_originShifted;
         m_originShifted = false;
         return s;
@@ -67,35 +64,27 @@ class Camera {
     float planetRadius = 6371000.0f;
 
     float skyGroundY = 0.0f;
-    // Lowest point of the sea's troughs, set by the renderer every frame while there is a sea. The
-    // atmosphere's ground is taken below it, so a trough never counts as underground.
+    // Below the lowest trough, so troughs never read as underground.
     float oceanGroundY = 3.0e38f;
     float terrainHeightFrequency = 0.0f;
 
-    // First instance-property index owned by the ocean. Every instance at or above it is an ocean
-    // tile, which is how the hit evaluator recognises one without an extra buffer read.
+    // Instances at or above this are ocean tiles.
     uint32_t oceanInstanceBase = 0xFFFFFFFFu;
     bool oceanEnabled = false;
 
-    // Per-pixel reconstruction responsivity the shading pass writes into the denoiser's mask: how
-    // readily it drops accumulated history. Ordinary surfaces interpolate between the two ends by
-    // roughness; water takes its own value, because its sun glitter moves every frame and history
-    // that suits a static surface smears it. All three mirrored from DLSSManager.
+    // DLSS responsivity mask values, mirrored from DLSSManager.
     float dlssResponsivityRough = -1.0f;
     float dlssResponsivityMirror = -0.5f;
     float dlssWaterResponsivity = 1.0f;
 
   private:
     ComPtr<ID3D12Resource> m_buffer;
-    ComPtr<ID3D12DescriptorHeap> m_constHeap;
     UINT m_bufferSize = 0;
 
     XMMATRIX m_viewMatrix = XMMatrixIdentity();
     XMMATRIX m_projMatrix = XMMatrixIdentity();
-    XMMATRIX m_projMatrixUnjittered = XMMatrixIdentity();
     XMMATRIX m_prevView = XMMatrixIdentity();
     XMMATRIX m_prevProj = XMMatrixIdentity();
-    XMMATRIX m_prevProjUnjittered = XMMatrixIdentity();
 
     float m_jitterX = 0.0f, m_jitterY = 0.0f;
     uint32_t m_jitterFrameIndex = 0;

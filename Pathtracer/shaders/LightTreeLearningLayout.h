@@ -10,8 +10,7 @@
 #define LT_BLEND_FEEDBACK 1
 
 #define LT_SURFACE_FILTER 1
-// Borrow a neighbouring cell at the same level when a place has none of its own, instead of
-// falling back to the shared root. Set to 0 to take the lookup back to the root fallback.
+// 1: borrow a same-level neighbour cell before the root fallback.
 #define LT_BORROW_NEIGHBOURS 0
 #define LT_GLOBAL_CELLS 6u
 #define LT_CELL_CAPACITY (LT_GRID_CAPACITY + LT_GLOBAL_CELLS)

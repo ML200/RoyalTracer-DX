@@ -10,18 +10,7 @@ bool SharcScatterHasSpread(uint strategy, uint matID, half roughness)
     return false;
 }
 
-// The solid angle of a GGX refraction lobe into or out of solid glass (SharcLobeConeAngle), eta the
-// IOR ratio etai / etat across the surface. Snell turns a microfacet's tilt into (1 - eta) of it in
-// deviation where a reflection turns it into twice it, so head-on the lobe is 3% of the reflection
-// lobe entering glass and 6% leaving it, more toward grazing views. Smooth glass maps the normals'
-// lobe (3 pi alpha^2) through the Jacobian of Snell's law at the macro normal; rough glass
-// saturates at a size set by |1 - eta| alone (a lobe and its reverse are the same size) that halves
-// toward grazing. A fit to the numerically integrated VNDF refraction lobe, given that the sampler
-// refracted, over roughness 0.06 to 1, all views and eta 1/2.4 to 2.4: within 16% rms and never
-// over by more than 1.63x; at grazing views it comes out up to 1.9x small, the side on which the
-// cache answers later. Leaving glass past the critical angle, where only steep microfacets refract,
-// it is mostly small too and at most 2x large. The reflection lobe used for refractions before was
-// 27x too large rms, up to 484x, and let the cache answer right behind frosted glass.
+// GGX refraction lobe solid angle, eta = etai / etat; fit to the VNDF lobe.
 float SharcRefractionSolidAngle(half roughness, float cosView, float eta)
 {
     const float a = max((float)roughness * (float)roughness, 1e-3f);
@@ -33,20 +22,7 @@ float SharcRefractionSolidAngle(half roughness, float cosView, float eta)
     return smooth * pow(1.0f + pow(smooth / rough, 1.5f), -1.0f / 1.5f);
 }
 
-// The cone of a picked lobe for the cache test (SharcConeRamp): the solid angle the lobe actually
-// covers, one definition for every lobe, 1 / integral(p^2) with p its density over the directions
-// it can reach, normalized to one (the inverse of the density a direction drawn from it expects).
-// The kind of a lobe and its roughness enter only through that size. The cosine lobe covers
-// 1.5 pi (SHARC_DIFFUSE_CONE); a GGX lobe (the coat's too) of roughness 0.7 about as much, 0.8
-// 1.2 times as much and 1 the whole hemisphere, from any view. A glossy lobe narrows towards
-// grazing, about with the cosine of the view down to a floor the horizon sets; a rough one hardly
-// does. The GGX size is a fit to the numerically integrated VNDF reflection lobe, within 13% rms
-// over roughness 0.1 to 1 and all views: 12 pi alpha^2 at a glossy lobe, 2 pi at roughness 1. The
-// sheen fit is within 23%. A refraction into or out of solid glass (refractEta, the IOR ratio
-// across the surface, 0 otherwise) has a lobe of its own (SharcRefractionSolidAngle); thin glass
-// transmits the mirrored reflection lobe. Taken from the lobe itself, never from the density of
-// the one direction drawn from it. Returned as the full angle of the circular cone with that solid
-// angle (pi/4 angle^2), so the cones of successive lobes add up along the path.
+// Full cone angle of the lobe's solid angle 1 / int p^2 (fits); refractEta 0 = none.
 float SharcLobeConeAngle(uint strategy, uint matID, half roughness, float cosView, float refractEta = 0.0f)
 {
     if (strategy == 0u) return SHARC_DIFFUSE_CONE;
@@ -67,20 +43,17 @@ float SharcLobeConeAngle(uint strategy, uint matID, half roughness, float cosVie
     return 2.0f * sqrt(solidAngle * INV_PI);
 }
 
-// Restrict cache updates to stable, sufficiently diffuse surfaces.
 bool SharcMaterialEligible(HitContext ctx, SamplingP sp, float3 geometricNormal)
 {
-    // Water's direct-highlight model differs from its continuation response.
+    // Water's highlight model differs from its continuation response.
     if (LoadIsOceanMaterial(ctx.matID)) return false;
     if (ctx.mediumMatID != MEDIUM_INVALID || LoadIsSSS(ctx.matID)) return false;
     if (LoadKd_w(ctx.matID) < 1.0f - EPSILON) return false;
     if (!HasBroadShare(sp, ctx.hitLocalPr, ctx.hitLocalPm)) return false;
-    // Normal maps tilt the shading normal well away from the face on ordinary diffuse surfaces;
-    // only a normal bent far over (grazing clamps, broken tangents) keeps a surface out.
+    // Loose: only rejects badly bent normals, not normal maps.
     return dot(ctx.hitNormal, geometricNormal) > 0.5f;
 }
 
-// Estimate the diffuse layer transmission used by cache reweighting.
 float SharcLayerTransmission(SamplingP sp, HitContext ctx, float3 view)
 {
     const float3 N = normalize(ctx.hitNormal);
@@ -96,7 +69,6 @@ float SharcLayerTransmission(SamplingP sp, HitContext ctx, float3 view)
             ctx.hitLocalPr, ctx.hitLocalPm);
     return saturate(gate);
 }
-// Build the packed cache surface from the current hit context.
 SharcSurface SharcMakeSurface(HitContext ctx, float3 geometricNormal)
 {
     SharcSurface s;

@@ -46,7 +46,7 @@ class IncrementalTLAS {
     }
 
     void update(const std::vector<Leaf>& leaves, uint32_t slotCount) {
-        // Reuse leaf slots and refit parents; rebuild when fragmentation grows.
+        // Refit in place; rebuild once fragmented.
         if (m_nodes.empty()) {
             rebuild(leaves, slotCount);
             return;
@@ -85,9 +85,6 @@ class IncrementalTLAS {
     }
     const std::vector<LightTLASNodeGpu>& nodes() const { return m_gpu; }
     const std::vector<LightTreeTrail>& trails() const { return m_trails; }
-    uint32_t live_leaves() const { return m_liveLeaves; }
-    uint32_t tombstones() const { return m_tombstones; }
-    uint32_t max_depth() const { return m_maxDepth; }
 
   private:
     struct Node {
@@ -120,7 +117,7 @@ class IncrementalTLAS {
         return b;
     }
     void remove(uint32_t slot) {
-        // Tombstones keep slot trails stable until the next rebuild.
+        // Tombstone keeps trails stable until rebuild.
         const uint32_t n = m_leafOfSlot[slot];
         Node& nd = m_nodes[n];
         const XMFLOAT3 c = aabbCenter(nd.aabb);

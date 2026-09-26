@@ -76,7 +76,6 @@ inline float3 AgXSoftGamutClamp(float3 c) {
     return c;
 }
 
-// Apply the AgX tone curve after exposure and gamut handling.
 float3 AgX(float3 color) {
 
     color = mul(kAgXInputMatrix, color);
@@ -143,7 +142,6 @@ float3 TonemappedCleanAt(int2 p, float exposure) {
     return AgX(c * exposure);
 }
 
-// Sharpen the exposed neighborhood while preserving finite values.
 float3 RcasSharpen(uint2 pix, float exposure, float3 e, float sharpness) {
 
     const float3 b = TonemappedCleanAt(int2(pix) + int2( 0, -1), exposure);
@@ -203,7 +201,6 @@ float3 DlssInputDebugView(uint2 px, uint layer)
 }
 
 [numthreads(8, 4, 1)]
-// Combine denoised layers, tone mapping, and output dithering.
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= IMG_W || DTid.y >= IMG_H) return;

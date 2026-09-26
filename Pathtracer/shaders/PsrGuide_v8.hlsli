@@ -1,25 +1,21 @@
 #pragma once
 
-// Primary surface replacement for the DLSS-RR guides. Delta chains (smooth metal, thin glass,
-// clear glass) are followed along their dominant lobe to the first surface with a diffuse or rough
-// share, an emitter, or the sky. The camera pass walks the primary reflection, the shading pass
-// walks the primary transmission, and the shading pass mixes the reflector's guides with both chain
-// ends by their reflectance shares.
+// Primary surface replacement for the DLSS-RR guides.
 
-// Share of a near-delta lobe that a single probe ray represents.
+// Lobe share one probe ray represents.
 inline float PsrRoughnessFade(float roughness)
 {
     return 1.0f - smoothstep(DLSS_PSR_ROUGH_FULL, DLSS_PSR_ROUGH_END, roughness);
 }
 
-// Near-delta reflectors, glass included; subsurface keeps the legacy guides.
+// Near-delta reflectors incl. glass; SSS keeps the legacy guides.
 inline bool PsrCandidateMaterial(uint matID, float pr)
 {
     if (LoadIsSSS(matID)) return false;
     return pr < DLSS_PSR_ROUGH_END || (LoadPc(matID) > 0.0f && LoadPcr(matID) < DLSS_PSR_ROUGH_END);
 }
 
-// Thin glass and clear glass are looked through; anything with a diffuse share stops the chain.
+// Thin or clear glass; any diffuse share stops the chain.
 inline bool PsrSeeThroughMaterial(uint matID)
 {
     return !LoadIsSSS(matID) && (LoadIsThinGlass(matID) || LoadKd_w(matID) < EPSILON);
@@ -32,7 +28,7 @@ inline float3x3 PsrIdentity()
                     0.0f, 0.0f, 1.0f);
 }
 
-// Householder reflection through the plane with normal n.
+// Householder reflection.
 inline float3x3 PsrReflectionMatrix(float3 n)
 {
     return float3x3(1.0f - 2.0f * n.x * n.x, -2.0f * n.x * n.y, -2.0f * n.x * n.z,
@@ -40,24 +36,23 @@ inline float3x3 PsrReflectionMatrix(float3 n)
                     -2.0f * n.z * n.x, -2.0f * n.z * n.y, 1.0f - 2.0f * n.z * n.z);
 }
 
-// End of a delta chain, described where the primary ray would see it: along that ray at the chain's
-// path length, with the end normal mapped through every mirror in the chain.
+// Delta-chain end as seen along the primary ray.
 struct PsrChainEnd
 {
-    float3   xVirtual;    // end surface as seen along the primary ray
-    float3   xHit;        // actual end position (equals xVirtual for the sky)
-    float3   xFirst;      // first hit as seen along the primary ray: the plain probe
-    uint     instFirst;   // instance of that first hit, 0xFFFFFFFF for the sky
-    float3   nVirtual;    // end normal mapped through the mirror chain
+    float3   xVirtual;    // end as seen along the primary ray
+    float3   xHit;        // actual end (xVirtual for the sky)
+    float3   xFirst;      // first hit along the primary ray (plain probe)
+    uint     instFirst;   // 0xFFFFFFFF for the sky
+    float3   nVirtual;    // end normal through the mirror chain
     float3   Kd;
     float    Pr;
     float    Pm;
-    float3   throughput;  // product of the lobe factors along the chain
+    float3   throughput;  // product of the lobe factors
     uint     instID;      // 0xFFFFFFFF for the sky
     uint     flags;       // DLSS_PSR_FLAG_*
     uint     bounces;     // segments traced
-    float    paneF;       // Fresnel of a thin pane that ended the reflection chain
-    float3x3 M;           // mirror chain transform for end-surface vectors
+    float    paneF;       // Fresnel of a pane ending the chain
+    float3x3 M;           // mirror chain transform
 };
 
 inline PsrChainEnd PsrChainSurface(float3 x, float3 n, float3 kd, float pr, float pm, uint instID)
@@ -88,10 +83,7 @@ inline PsrChainEnd PsrChainSky(float3 primaryHit, float3 primaryDir, float pathL
     return e;
 }
 
-// Walk from `origin` along `dir` through delta-only surfaces until the first surface with a diffuse
-// or rough share, an emitter, or the sky. `M` is the mirror transform of the vertices before the
-// walk. Without `evaluate` the first hit is reported unshaded, which is all a plain probe needs.
-// With `stopAtThinGlass` a pane ends the walk and is reported with its Fresnel.
+// Without `evaluate`, only the unshaded first hit (plain probe).
 inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID, float3x3 M,
                                      float3 primaryHit, float3 primaryDir, bool evaluate, uint maxBounces,
                                      bool stopAtThinGlass)
@@ -121,8 +113,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
             const uint ci = q.CandidateInstanceID();
             const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
             const uint cm = GetMatIDFast(ci, cp);
-            // The chain walk hits glass like the path tracer and alpha tests cutouts; the plain probe
-            // keeps its cheap rule and passes through glass, as it always did.
+            // Chain: path-tracer glass/cutout rule; probe: cheap alpha rule.
             const bool commit = evaluate
                 ? (LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON ||
                    AlphaCandidateOccludes(ci, cp, q.CandidateTriangleBarycentrics()))
@@ -171,8 +162,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
             break;
         }
 
-        // A pane ending the reflection chain shows its transmission close behind it and a reflection of
-        // distant surroundings; the shading pass approximates that reflection's motion from paneF.
+        // A pane ends the chain; shading derives its reflection motion from paneF.
         const bool thin = LoadIsThinGlass(matID);
         if (thin && stopAtThinGlass)
         {
@@ -184,8 +174,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
             break;
         }
 
-        // Only delta-only surfaces continue: metal reflects, glass transmits. Choosing between a pane's
-        // reflection and transmission per pixel would flip near grazing incidence and tear the guides.
+        // Metal reflects, glass transmits; a per-pixel choice would tear the guides.
         const bool clear = !thin && LoadKd_w(matID) < EPSILON;
         const bool metal = pm >= 0.5f;
         if (pr >= DLSS_PSR_ROUGH_END || LoadIsSSS(matID) || !(thin || clear || metal)) break;
@@ -235,7 +224,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
     return e;
 }
 
-// Packed chain end for the scratch slice: normal, albedo, throughput, and roughness/metalness/flags/bounces.
+// Chain end as packed into the probe slice.
 struct PsrProbe { float3 nVirtual; float3 Kd; float3 throughput; float Pr; float Pm; uint flags; uint bounces; float paneF; };
 
 inline float4 PsrProbePack(PsrChainEnd e)
@@ -263,7 +252,7 @@ inline PsrProbe PsrProbeUnpack(float4 v)
     return p;
 }
 
-// Current-to-previous pixel motion of the sky along this pixel's view ray.
+// Current-to-previous, in pixels.
 inline float2 SkyMotionVector(uint2 px, float2 dims)
 {
     const float2 d           = ((float2(px) + 0.5f) / dims) * 2.0f - 1.0f;
@@ -284,7 +273,6 @@ inline float2 SkyMotionVector(uint2 px, float2 dims)
     return mv;
 }
 
-// Motion of a world position attached to an instance, or of the sky when there is none.
 inline float2 SurfaceMotionVector(uint2 px, float2 dims, float3 x, uint instID)
 {
     if (instID == 0xFFFFFFFFu) return SkyMotionVector(px, dims);
@@ -299,8 +287,7 @@ inline float2 SurfaceMotionVector(uint2 px, float2 dims, float3 x, uint instID)
     return (prevPix.x > -1e8f && curPix.x > -1e8f) ? (prevPix - curPix) : float2(0.0f, 0.0f);
 }
 
-// Motion of a chain end: the end surface moves with its instance and that motion is carried through
-// the mirror chain to the virtual point. Mirrors along the chain are taken as static.
+// Mirrors along the chain are assumed static.
 inline float2 PsrChainMotionVector(uint2 px, float2 dims, PsrChainEnd e)
 {
     if (e.instID == 0xFFFFFFFFu) return SkyMotionVector(px, dims);
@@ -313,8 +300,7 @@ inline float2 PsrChainMotionVector(uint2 px, float2 dims, PsrChainEnd e)
     return (prevPix.x > -1e8f && curPix.x > -1e8f) ? (prevPix - curPix) : float2(0.0f, 0.0f);
 }
 
-// Previous-frame pixel of a single mirror image. The reflected hit moves with its own instance and is
-// then mirrored through the reflector's previous plane, so both motions are covered.
+// Covers both the hit's and the mirror's motion.
 inline float2 PsrVirtualPrevPixel(float3 xVirtual, uint instHit, float3 xMirror, float3 nMirror,
                                   uint instMirror, float2 dims)
 {
@@ -325,7 +311,7 @@ inline float2 PsrVirtualPrevPixel(float3 xVirtual, uint instHit, float3 xMirror,
     const float3 localM = mul(instanceProps[instMirror].objectToWorldInverse, float4(xMirror, 1.0f));
     const float3 prevM  = mul(instanceProps[instMirror].prevObjectToWorld, float4(localM, 1.0f));
 
-    // Rebuild the previous plane normal from two transformed tangents; this survives non-uniform scale.
+    // Via transformed tangents: survives non-uniform scale.
     const float3   localN = WorldToObjectNrm(instMirror, nMirror);
     const float3   localT = normalize(cross(localN, abs(localN.y) < 0.9f ? float3(0, 1, 0) : float3(1, 0, 0)));
     const float3   localB = cross(localN, localT);

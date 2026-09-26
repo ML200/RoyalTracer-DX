@@ -1,6 +1,5 @@
 #pragma once
-// Diffuse reuse (Bitterli 2022 confidence weighting): samples, reservoirs, links, target function and
-// MIS terms. Pure functions only; the buffers and rays live in RestirLite_v8.hlsli.
+// Pure diffuse reuse math (Bitterli et al. 2020; Bitterli 2022 confidence weights).
 
 
 
@@ -38,7 +37,6 @@ bool LiteSameSample(LiteSample a, LiteSample b)
     return a.instance == b.instance && all(a.position == b.position);
 }
 
-// Quantize radiance before storing compact spatial candidates.
 float3 LiteQuantizeRadiance(float3 L)
 {
     return UnpackRGB9E5(PackRGB9E5(max(L, 0.0f) / LITE_RADIANCE_SCALE)) * LITE_RADIANCE_SCALE;
@@ -129,7 +127,6 @@ LiteLink LiteLinkFrom(float dist, float cosX, float cosY, bool infinite)
     return l;
 }
 
-// Evaluate geometry terms between receiver and reused sample.
 LiteLink LiteConnect(LiteReceiver r, LiteSample s, float3 yWorld, float3 nyWorld)
 {
     LiteLink l;
@@ -165,8 +162,6 @@ float LiteTarget(float3 albedo, LiteSample s, LiteLink l, float3 yWorld, float v
 
 
 // Bitterli 2022 pairwise MIS.
-
-// Compute the partner reservoir MIS correction.
 float LiteMisPartner(float Mi, float pii, float Mc, float pci, float O, float Msum)
 {
     const float num = O * pii;

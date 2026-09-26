@@ -11,7 +11,6 @@ float Luminance(float3 c) {
 
 
 [numthreads(8, 8, 1)]
-// Reduce luminance samples into exposure statistics.
 void main(uint3 DTid : SV_DispatchThreadID, uint GIdx : SV_GroupIndex)
 {
 

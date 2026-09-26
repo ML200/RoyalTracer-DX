@@ -17,27 +17,6 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-bool find_int_field(const std::string& text, const std::string& key, uint32_t& out) {
-    const std::string needle = std::string("\"") + key + "\"";
-    auto pos = text.find(needle);
-    if (pos == std::string::npos) return false;
-    pos = text.find(':', pos + needle.size());
-    if (pos == std::string::npos) return false;
-    ++pos;
-    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n' || text[pos] == '\r')) ++pos;
-    int64_t v = 0;
-    bool   any = false;
-    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
-        v = v * 10 + (text[pos] - '0');
-        ++pos;
-        any = true;
-    }
-    if (!any) return false;
-    if (v < 0 || v > 0x7FFFFFFF) return false;
-    out = static_cast<uint32_t>(v);
-    return true;
-}
-
 void sphere_to_equiangular(const DVec3& p,
                            uint8_t& face, double& u, double& v) {
     const double ax = std::fabs(p.x);

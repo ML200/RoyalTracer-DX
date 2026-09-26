@@ -37,17 +37,14 @@ struct DeviceContext {
 
     UINT64 SubmitPlanetCompute(UINT64 waitCopyValue);
     UINT64 PlanetComputeCompleted() const;
-    UINT64 PlanetComputeLastSignaled() const;
-    void PlanetCopyCpuWait(UINT64 value);
     void PlanetComputeCpuWait(UINT64 value);
     ID3D12CommandQueue* PlanetComputeQueue() const { return planetComputeQueue.Get(); }
 
     ID3D12Device10* Device() const { return device.Get(); }
-    // Streamline hands out a proxy device; removal state and DRED data live on the native one.
+    // Non-proxied device, for removal state and DRED.
     ID3D12Device* NativeDevice() const { return nativeDevice ? nativeDevice.Get() : device.Get(); }
     ID3D12GraphicsCommandList10* CmdList() const { return cmdList.Get(); }
     ID3D12CommandQueue* CmdQueue() const { return cmdQueue.Get(); }
-    IDXGISwapChain3* SwapChain() const { return swapChain.Get(); }
     ID3D12Resource* BackBuffer() const { return renderTargets[frameIndex].Get(); }
     D3D12_CPU_DESCRIPTOR_HANDLE CurrentRTV() const;
     D3D12_CPU_DESCRIPTOR_HANDLE DSV() const;
@@ -55,7 +52,6 @@ struct DeviceContext {
     UINT BufferCount() const { return bufferCount; }
     UINT Width() const { return width; }
     UINT Height() const { return height; }
-    float AspectRatio() const { return (float)width / (float)height; }
 
     sl::FrameToken* frameToken = nullptr;
     sl::ViewportHandle viewportHandle = sl::ViewportHandle(0);

@@ -102,7 +102,6 @@ public:
     void free(uint64_t offset, uint64_t count);
     uint64_t used() const { return m_used; }
     uint64_t capacity() const { return m_capacity; }
-    size_t   fragments() const { return m_free.size(); }
 private:
     struct Span { uint64_t first, count; };
     std::vector<Span> m_free;
@@ -125,25 +124,17 @@ public:
     VoxelStreamer();
     ~VoxelStreamer() override;
 
-    // Initializes GPU pools and worker state for asynchronous chunk streaming.
     void init(ID3D12Device5* device, DeviceContext* ctx, World* world, const StreamerConfig& cfg);
     bool enabled() const { return m_world != nullptr; }
 
     void set_placement(const Placement& p) { m_placement = p; }
     const Placement& placement() const { return m_placement; }
 
-    // Drop the world's water from the mesh and let the renderer's wave surface stand in for it.
-    // Changing this rebuilds every resident chunk, so it is a setting rather than a per-frame one.
+    // Remeshes every resident chunk; a setting, not per-frame.
     void set_hide_water(bool hide);
     bool hide_water() const { return m_hideWater; }
 
-    // Which parts of the world hold water, at section-column resolution, so the wave surface is
-    // built only there. One bit per column, set when any section of it has a water block in its
-    // palette - a handful of comparisons per section rather than a scan of the world's blocks.
-    //
-    // Past the loaded columns the answer is None: the world is what the sea stands for here, and
-    // letting it run on would put a tile the size of the map back into the scene, which is the
-    // thing this exists to prevent.
+    // Water per section column (palette test); None outside the loaded world.
     class WaterCoverage final : public ocean::ICoverage {
       public:
         void build(const World& world, const Placement& place);
@@ -169,7 +160,6 @@ public:
     void bind_omm(ID3D12Resource* indexBuffer, D3D12_GPU_VIRTUAL_ADDRESS ommArray, const OmmTable* table);
 
     void bind_lights(const LightBinding& b);
-    void unbind_lights();
     bool lights_bound() const { return m_lightsBound; }
     void set_light_slot_base(uint32_t base);
 
@@ -179,7 +169,6 @@ public:
     void on_light_tlas_published(uint32_t version, bool hasVoxelLeaves);
     bool has_live_lights() const { return m_lightTlasHasVoxels; }
 
-    // Selects the LOD cut and advances uploads, builds, and retirements.
     void begin_frame(const double camWorld[3]);
 
     void warm_up(const double camWorld[3]);
@@ -188,7 +177,6 @@ public:
     void record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) override;
     void append_instances(planet::TlasBuilder& tlas, InstanceProperties* props, const planet::DVec3& sceneOrigin,
                           uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) override;
-    // Keeps staging and BLAS resources alive until both fences retire.
     void on_submitted(uint64_t copyFence, uint64_t computeFence) override;
 
     void set_block(int x, int y, int z, BlockId id);

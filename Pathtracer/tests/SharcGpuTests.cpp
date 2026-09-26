@@ -81,7 +81,7 @@ struct Runner {
         }
         cache = Buffer(uint64_t(SHARC_BUFFER_BYTES), D3D12_HEAP_TYPE_DEFAULT);
         output = Buffer(4u * 1024u * 1024u, D3D12_HEAP_TYPE_DEFAULT);
-        // Path-state planes of the 53x45 test image (2688 padded pixels) plus one training spill lane per thread.
+        // 53x45 test image (2688 padded pixels) plus one training spill lane per thread.
         pathState = Buffer(uint64_t(PS_PATH_STATE_BYTES) * 2688u + uint64_t(SHARC_CAPACITY) * 48u, D3D12_HEAP_TYPE_DEFAULT);
         readback = Buffer(2048, D3D12_HEAP_TYPE_READBACK);
         constants[6] = Bits(0.125f); constants[7] = Bits(0.01f); constants[8] = Bits(3.0f);
@@ -398,14 +398,13 @@ int main(int argc, char** argv) try {
     Require(r.Query(20)[3] == 0, "Invalid training position populated the cache");
     std::cout << "PASS: sparse 60-frame revisits accumulate evidence, poisoned history repairs, invalid input rejected\n";
     {
-        // A light going out: no path may end in the old light, and the history must follow within
-        // a few updates (a plain 64-update history would still hold 94% of it after four).
+        // Light goes out: no path ends in the old light, history follows within a few updates.
         auto light = [&](float radiance, int frames, uint32_t mode = 40u) {
             r.constants[17] = Bits(radiance); r.Train({mode}, frames);
         };
         r.Reset(); light(100.0f, 40);
         auto lit = r.Query(40);
-        // The query record holds the mean as half floats: one step at 100 is 0.0625.
+        // Half-float mean: one step at 100 is 0.0625.
         for (int i = 0; i < 64; ++i)
             Require(lit[i * 8 + 3] == 1 && std::abs(lit[i * 8] - 100.0f) < 0.5f, "A steady light was not cached");
         Require(lit[4] > 0.999f && lit[5] == 0, "A steady light was not converged");

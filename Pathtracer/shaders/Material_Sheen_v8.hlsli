@@ -1,3 +1,4 @@
+// Charlie sheen (Conty Estevez & Kulla 2017).
 static const float  SHEEN_R      = 0.20f;
 static const float3 SHEEN_COLOR  = float3(1,1,1);
 
@@ -68,7 +69,6 @@ inline float3 SHEEN_SampleHalfVector(uint seed, float3 N, out float NdotH, out f
     return H;
 }
 
-// Evaluate the grazing-angle sheen contribution.
 inline float3 EvaluateBRDF_SHEEN(
     uint   mID,
     float3 normal,
@@ -133,7 +133,6 @@ inline float Sampling_Weight_SHEEN(
     return saturate(w * aV);
 }
 
-// Sample the sheen lobe and return its direction.
 inline float3 SampleBRDF_SHEEN(
     uint    mID,
     float3  outgoing,

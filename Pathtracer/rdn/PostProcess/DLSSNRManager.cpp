@@ -22,7 +22,7 @@ std::wstring ExeDirectory() {
     return s.substr(0, s.find_last_of(L"\\/"));
 }
 LONG VerifySignature(const std::wstring& path) {
-    // Verification uses cached revocation data so startup remains offline.
+    // Cache-only retrieval keeps startup offline.
     WINTRUST_FILE_INFO file{};
     file.cbStruct = sizeof(file);
     file.pcwszFilePath = path.c_str();
@@ -240,7 +240,7 @@ bool DLSSNRManager::EnsureTextures(ID3D12Device* device) {
 bool DLSSNRManager::Evaluate(ID3D12GraphicsCommandList* cmd, ID3D12Device* device, ID3D12Resource* color,
                              UINT subresource, ID3D12Resource* depth, ID3D12Resource* motion, UINT rw, UINT rh) {
 #if PATHTRACER_DLSSNR_NATIVE
-    // The native bridge owns feature state across frames; recreate it on tuning changes.
+    // Feature persists; tuning changes recreate it.
     if (!settings.enabled || m_status.backend == BackendState::eFailed ||
         m_status.backend == BackendState::eRuntimeMissing) {
         m_forceReset = true;

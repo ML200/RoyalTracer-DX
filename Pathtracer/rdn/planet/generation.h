@@ -20,7 +20,7 @@ struct GenerationParams {
     CellCutParams  cells{};
 };
 
-// Shared ownership keeps geometry alive across generation swaps.
+// Shared so geometry outlives generation swaps.
 struct GeoSlot {
     TerrainGeoPool* pool       = nullptr;
     uint32_t        leaf_off   = TERRAIN_GEO_INVALID;
@@ -52,7 +52,6 @@ struct Generation {
     std::vector<CellInstance> cells;
     uint32_t                  leaf_count     = 0;
     uint64_t                  triangle_count = 0;
-    // A generation is drawable once at least one cell has geometry.
     bool valid() const { return !cells.empty(); }
 };
 
@@ -67,15 +66,13 @@ public:
         m_vtxVA = vtxVA; m_idxVA = idxVA; m_combinedVertexCount = combinedVertexCount;
     }
 
-    // Starts planning asynchronously against the currently live generation.
+    // Plans asynchronously, diffing against live.
     void begin(ID3D12Device5* device, const GenerationParams& params,
                const CameraView& cam, const Generation* live,
                const IHeightmapSource& heightmap, WorkerPool& workers);
 
-    // Advances planning, tessellation, and completed resource state.
     void poll();
 
-    // Records at most budget builds and seals their resources on submission.
     uint32_t record_ready_blas(ID3D12GraphicsCommandList4* compute_cl,
                                uint32_t budget);
 
@@ -84,7 +81,6 @@ public:
 
     State    state()        const { return m_state; }
     bool     active()       const { return m_state != State::Idle; }
-    bool     all_recorded() const;
     bool     done()         const;
     uint32_t dirty_total()  const { return (uint32_t)m_dirty.size(); }
     uint32_t dirty_built()  const;
@@ -92,7 +88,6 @@ public:
     uint32_t dirty_recorded() const;
     uint32_t dirty_tessellating() const;
 
-    float    blas_record_ms() const { return m_lastBlasRecordMs; }
     float    plan_ms()        const { return m_planMs.load(std::memory_order_acquire); }
 
     Generation take();
@@ -137,8 +132,6 @@ private:
     };
     std::vector<Batch> m_batches;
     Batch              m_pending;
-
-    float              m_lastBlasRecordMs = 0.0f;
 };
 
 }

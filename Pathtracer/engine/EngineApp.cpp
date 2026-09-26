@@ -17,7 +17,6 @@ void EngineApp::OnInit() {
         for (auto& mesh : meshes) if (mesh.minecraft) mesh.path = surveyWorld;
     std::vector<ModelEntry> models;
     const MeshDefinition* world = nullptr;
-    // A scene may stream at most one Minecraft world.
     for (const MeshDefinition& m : meshes) {
         std::error_code ec;
         const bool isWorld =
@@ -50,7 +49,6 @@ void EngineApp::OnInit() {
     m_sceneManager.SyncToRendererInitial(m_renderer.GetScene());
     m_renderer.InitSceneGPU();
 
-    m_renderer.SetFlyCam(&m_flyCam);
     m_flyCam.SetCamera(&m_renderer.GetCamera());
 
     ThrowIfFailed(m_renderer.GetContext().CmdList()->Close());

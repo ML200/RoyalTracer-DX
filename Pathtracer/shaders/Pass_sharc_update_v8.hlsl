@@ -3,11 +3,9 @@
 #include "SharcTraining_v8.hlsli"
 #include "OceanVolume.hlsli"
 
-// Cache training: one strided path per tile that deposits its radiance into the cache entries it
-// touches and observes the guide lobes along the way. Stays a single reordered kernel; the path
-// tracer proper lives in Pass_pt_trace_v8.hlsl.
+// Cache and guide training: one strided path per tile.
 
-// Update passes remap pixels into a strided training schedule.
+// Strided, phase-rotated training pixel.
 uint2 PtPixel()
 {
     uint2 pixel = DispatchRaysIndex().xy;
@@ -20,8 +18,7 @@ uint2 PtPixel()
 
 uint GuideLane() { return DispatchRaysIndex().y * DispatchRaysDimensions().x + DispatchRaysIndex().x; }
 
-// Diffuse cache hits reweight throughput before specular continuation. The cone of the lobes that
-// led here decides whether the path may end in the cache, as in the path tracer (SharcConeRamp).
+// Diffuse cache hits reweight throughput for specular continuation.
 bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
     bool sssEntered, uint pathSeed, uint depth, uint maxBounces, float coneWidth, float coneAngle,
     inout SamplingP spPath, out bool cacheSurface, out bool diffuseCached, inout float3 throughput,
@@ -79,7 +76,7 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
     return true;
 }
 
-// Path sampling flags of the training path (bit-compatible with the path tracer's).
+// Bit-compatible with the path tracer's flags.
 static const uint PT_PS_DEPTH_SHIFT   = 0u;
 static const uint PT_PS_MIS_NONE      = 1u << 7u;
 static const uint PT_PS_DIFF_SHIFT    = 8u;
@@ -102,13 +99,12 @@ uint PtPsSample(uint ps)    { return (ps >> PT_PS_SAMPLE_SHIFT) & 0xFu; }
 uint PtPsGuideDepth(uint ps){ return (ps >> PT_PS_GUIDE_SHIFT) & 0xFu; }
 uint PtPsWith(uint ps, uint flag, bool on) { return on ? (ps | flag) : (ps & ~flag); }
 
-// Reorder key of a vertex: its instance, and whether the path behind it still carries much.
+// SER hint: instance, low suffix throughput bit.
 uint SharcReorderHint(uint instID, float suffixLuma)
 {
     return ((0x40u | (instID & 0x3Fu)) << 1u) | (suffixLuma < 0.25f ? 1u : 0u);
 }
 
-// Each bounce combines cache, direct-light, and BSDF estimators.
 [shader("raygeneration")]
 void Pass_sharc_update_v8()
 {
@@ -135,8 +131,7 @@ void Pass_sharc_update_v8()
 
     const SDRecord sd = load_SD(g_sample_current, sampleIdx);
 
-    // The normals and the medium state of the context are rebuilt at the top of each iteration
-    // (see the reorder there); the rest carries over.
+    // Normals and medium state are rebuilt each iteration.
     HitContext ctx = (HitContext)0;
     ctx.hitPos         = sd.x1;
     ctx.matID          = sd.matID;
@@ -152,14 +147,14 @@ void Pass_sharc_update_v8()
     uint    hitNormalPk  = PackNormal(sd.n1_s);
     uint    geoNormalPk  = PackNormal(gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz);
     float3  geometricNormal = 0.0f;
-    float   hitT = 0.0f;   // length of the segment that reached the current vertex
+    float   hitT = 0.0f;   // incoming segment length
     uint    reorderHint = SharcReorderHint(sd.instID, training.suffixLuma);
     float pathSpread = 0.0f;
-    float coneWidth  = 0.0f;   // cone of the path's lobes for the cache test: width here, full angle
+    float coneWidth  = 0.0f;   // lobe cone for the cache test: width, full angle
     float coneAngle  = 0.0f;
     float pathDist   = length(sd.x1 - InitOrigin());   // one training path stands for a tile of pixels
     bool waterDirectSegment = false;
-    bool sunOwnedSegment = false;   // a surface in the water sampled the sun for this specular chain
+    bool sunOwnedSegment = false;   // underwater NEE took the sun for this specular chain
     bool waterMedium = (sd.flags & SD_FLAG_CAMERA_WATER) != 0u;
     bool waterScatterUsed = false;
     g_regularizeRoughness = 0.0f;
@@ -167,12 +162,7 @@ void Pass_sharc_update_v8()
     [loop]
     for (;;)
     {
-        // The one reorder point, at the top of every iteration, the primary one included (sorted
-        // by the instance of the camera record) and the subsurface continuation too. Pass median
-        // on bistro (RTX 5090, 600 frames): 1.21 ms, against 1.27 ms with the reorder at the end
-        // of an iteration and 1.36 ms without the one before the first bounce. The context
-        // crosses it compact: the normals packed, the medium state rebuilt below from the camera
-        // record, the subsurface exit, or the side and length of the hit.
+        // Single reorder point, primary included; the context crosses it packed.
 #if SHARC_SER_REORDER
         dx::MaybeReorderThread(reorderHint, 8u);
 #endif
@@ -236,15 +226,13 @@ void Pass_sharc_update_v8()
         const bool performNEE = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
 
-        // --- the lobe of this sample: one group is picked and evaluated, for the light sample
-        // and the scatter alike (see EvaluateLobe). A wide pick takes the light sample, divided by
-        // the probability of the pick; the water surface takes one on every pick. ---
+        // One picked lobe group serves NEE and scatter (EvaluateLobe).
         const uint  strategy = SelectSamplingStrategy(spPath, sBsdf);
         const uint  group    = LobeGroupOf(strategy, ctx.hitLocalPr);
         const float groupP   = LobeGroupP(spPath, group, ctx.hitLocalPr);
         const bool  neeTaken = performNEE && (waterDirect || SharcScatterHasSpread(strategy, ctx.matID, ctx.hitLocalPr));
 
-        // --- light sampling first: both shadow traversals run before any scatter state exists ---
+        // NEE first: shadow rays before any scatter state exists.
         float3 directSum = float3(0, 0, 0);
         float3 directBroad = float3(0, 0, 0);
         if (neeTaken)
@@ -263,8 +251,7 @@ void Pass_sharc_update_v8()
                 bool   sampled = false;
                 OceanWaterSun waterSun = (OceanWaterSun)0;
 
-                // Only the sun is worth widening the water's lobe for, and only a picked GGX lobe
-                // widens; see PtInlineNee.
+                // Only the sun widens a picked water GGX lobe (PtInlineNee).
                 const bool sunTech = tech == 1u;
                 const half neePr = (waterDirect && sunTech && group == LOBE_GROUP_SPEC)
                     ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness())
@@ -297,7 +284,7 @@ void Pass_sharc_update_v8()
                 else
                 {
                     float2 rSun = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
-                    // A surface in the water takes the sun refracted by the surface; see PtInlineNee.
+                    // Underwater: sun refracted by the surface (PtInlineNee).
                     if (waterMedium)
                     {
                         if (OceanSampleWaterSun(ctx.hitPos, rSun, waterSun))
@@ -356,8 +343,7 @@ void Pass_sharc_update_v8()
         }
         GuideRootsAddSource(GuideLane(), PtPsRoots(ps), directSum);
 
-        // --- the scatter: one sample of the picked lobe, guide cones for the broad group, one
-        // evaluation of that group ---
+        // Scatter: picked lobe, guide cones for the broad group.
         uint   guideEntry = GUIDE_INVALID;
         uint   guideParent = GUIDE_INVALID;
         uint   guideRoot = GUIDE_ROOTS;
@@ -383,7 +369,7 @@ void Pass_sharc_update_v8()
                 }
                 if (GUIDE_TRAIN)
                 {
-                    // Built after the lobe sample: the cones overlap neither the sampler nor the evaluation.
+                    // Built after the lobe sample; overlaps neither sampler nor evaluation.
                     const GuideSet guide = GuideBuildFrom(guideEntry, guideParent, ctx.hitPos, ctx.hitNormal, true);
                     if (guide.q > 0.0f)
                     {
@@ -400,7 +386,6 @@ void Pass_sharc_update_v8()
                 }
             }
 
-            // The group's density, with the guide mixed in, times the probability of the pick.
             lobe = EvaluateLobe(spPath, group, ctx.matID, ctx.hitNormal, ctx.hitNormal, dir, -rayDir,
                 ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
             pdfTotal = groupP * (guideQ > 0.0f ? max(lerp(lobe.pdf, guidePdf, guideQ), 0.0f) : lobe.pdf);
@@ -449,7 +434,6 @@ void Pass_sharc_update_v8()
         if (!any(updateWeight > 0.0f))
             break;
 
-        // The broad part of this scatter: all of a broad pick, none of another.
         const float3 broadWeight = group == LOBE_GROUP_BROAD ? updateWeight : 0.0f;
         const float3 updateWeightBroad = training.fresh != SHARC_INVALID ? broadWeight : updateWeight;
 
@@ -479,14 +463,12 @@ void Pass_sharc_update_v8()
         rayDir   = dir;
         rayDirPk = PackNormal(dir);
 
-        // Offset the next ray toward its outgoing shading side.
         const float3 offsetN = (dot(dir, ctx.hitNormal) >= 0.0f) ? ctx.hitNormal : -ctx.hitNormal;
         const float3 rayOrigin = offset_ray(ctx.hitPos, offsetN);
 
         throughput *= updateWeight;
 
         float rrWeight = 1.0f;
-        // Russian roulette scales surviving paths after the configured depth.
         if (depth >= (uint)sharc_trainRrDepth)
         {
             uint sRr = RcBounceSeed(pathSeed, (uint)depth, RC_STREAM_RR);
@@ -519,7 +501,7 @@ void Pass_sharc_update_v8()
         bool waterAbsorbed = false;
         if (waterMedium) {
             uint sVolume = RcBounceSeed(pathSeed, depth, 0x57415452u);
-            // At most one new event, then extinction to its actual endpoint.
+            // At most one new event, then extinction to the endpoint.
             [loop] for (uint leg=0u; leg<2u; ++leg) {
                 const OceanFlight flight = OceanSampleWaterSegment(rayB.Origin,rayB.Direction,
                     hit.distance,waterScatterUsed,sVolume);
@@ -609,8 +591,7 @@ void Pass_sharc_update_v8()
 
         if (!terminate)
         {
-            // The side of the hit decides the medium state, which the next iteration rebuilds
-            // from PT_PS_FLIP_IOR and the segment length.
+            // Next iteration rebuilds the medium from PT_PS_FLIP_IOR and hitT.
             const bool   transmissive_n = LoadKd_w(matID_n) < 1.0f - EPSILON;
             const bool   flipIOR_n      = hinfo_n.backface && transmissive_n && !LoadIsThinGlass(matID_n);
 

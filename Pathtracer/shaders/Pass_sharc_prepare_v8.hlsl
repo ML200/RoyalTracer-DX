@@ -10,7 +10,7 @@ bool SharcInstanceMoved(uint instance)
 }
 
 [numthreads(SHARC_GROUP_SIZE, 1, 1)]
-// Evict stale or moved entries and reset invalidated history.
+// Evict stale or moved entries.
 void main(uint3 tid : SV_DispatchThreadID)
 {
     const uint instance = SharcPrepareIndex(tid.x);

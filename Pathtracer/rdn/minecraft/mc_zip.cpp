@@ -54,7 +54,6 @@ bool ZipArchive::open_memory(std::vector<uint8_t> bytes, std::string* err) {
     return index(err);
 }
 
-// Indexes central-directory entries without inflating their payloads.
 bool ZipArchive::index(std::string* err) {
     m_entries.clear();
     const size_t n = m_data.size();
@@ -90,7 +89,6 @@ bool ZipArchive::index(std::string* err) {
     return true;
 }
 
-// Reads and decompresses one stored or deflated entry.
 bool ZipArchive::read(const std::string& name, std::vector<uint8_t>& out) {
     out.clear();
     const auto it = m_entries.find(name);

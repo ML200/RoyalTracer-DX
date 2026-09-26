@@ -41,8 +41,7 @@ MeshSplitResult AssetLoader::SplitOpaqueAlpha(const std::vector<UINT>& indices, 
 }
 
 std::vector<LoadedMesh> AssetLoader::SplitMeshSpatial(LoadedMesh mesh, UINT maxTris) {
-    // Survey every sufficiently large mesh and split only when its predicted
-    // traversal cost improves substantially, or the hard triangle limit requires it.
+    // Split only for a clear cost win or above maxTris.
     const UINT triCount = (UINT)mesh.indices.size() / 3;
     auto keep = [&]() {
         std::vector<LoadedMesh> out;
@@ -101,8 +100,7 @@ std::vector<LoadedMesh> AssetLoader::SplitMeshSpatial(LoadedMesh mesh, UINT maxT
     else
         std::nth_element(triIdx.begin(), midIt, triIdx.end(), [&](UINT a, UINT b) { return axisVal(a) < axisVal(b); });
 
-    // Coordinates far from the origin can round a bin boundary onto an endpoint.
-    // Always make progress, even when a candidate split collapses numerically.
+    // Precision can collapse a split; fall back to the median.
     if (midIt == triIdx.begin() || midIt == triIdx.end()) {
         if (triCount <= maxTris) return keep();
         midIt = triIdx.begin() + triCount / 2;
@@ -324,9 +322,7 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             merged.vertices = std::move(mVerts);
             merged.indices = std::move(idx);
             merged.perTriMaterialIDs = std::move(mat);
-            // Static submeshes that move with this model remain mergeable. Survey
-            // their combined geometry so distant parts do not create enormous,
-            // mostly empty BLAS bounds. Shared meshes retain instancing above.
+            // Split so distant parts don't bloat BLAS bounds.
             auto pieces = SplitMeshSpatial(std::move(merged), MAX_TRIS_PER_MESH);
             for (auto& piece : pieces) {
                 auto split = SplitOpaqueAlpha(piece.indices, piece.perTriMaterialIDs, scene.materials);
@@ -356,7 +352,6 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             const UINT thisTris = (UINT)srcMesh.indices.size() / 3;
             const UINT curTris = (UINT)(mOpaqueIdx.size() + mAlphaIdx.size()) / 3;
 
-            // Flush merged geometry before crossing the per-BLAS triangle cap.
             if (curTris > 0 && curTris + thisTris > MAX_TRIS_PER_MESH)
                 flushMerged();
 
@@ -414,8 +409,7 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             const auto& instance = scene.instances[i];
             const auto& mesh = scene.meshes[instance.meshIndex];
             bvh::Bounds b;
-            // Transform the local root's eight corners, not just mesh vertices:
-            // a rotated BLAS can have a larger TLAS bound than its geometry.
+            // Box corners, not vertices: the TLAS bounds the BLAS box.
             const auto& local = meshBounds[instance.meshIndex - model.meshStart];
             for (UINT corner = 0; local.valid() && corner < 8; ++corner) {
                 const XMFLOAT3 v{(corner & 1) ? local.hi[0] : local.lo[0],
@@ -489,7 +483,7 @@ void AssetLoader::CreateBindlessTextures(std::vector<TextureData>& textures, UIN
                                          ID3D12GraphicsCommandList* cmdList,
                                          std::vector<ComPtr<ID3D12Resource>>& outGpuTextures,
                                          const FlushFn& flushAndReset) {
-    // Upload heaps remain retained until each submitted batch is flushed.
+    // Kept alive until each batch is flushed.
     std::vector<ComPtr<ID3D12Resource>> batchUploadHeaps;
     UINT batchCount = 0;
     UINT64 batchBytes = 0;

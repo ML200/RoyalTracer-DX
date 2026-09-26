@@ -10,14 +10,13 @@
 namespace {
 constexpr uint32_t RETIRE_FRAMES = 8;
 
-// Packs a translation-only transform in D3D12's row-major layout.
+// D3D12 3x4 row-major.
 inline void make_translation(float m[12], const planet::DVec3& t) {
     m[0]=1.f; m[1]=0.f; m[2]=0.f;  m[3]=(float)t.x;
     m[4]=0.f; m[5]=1.f; m[6]=0.f;  m[7]=(float)t.y;
     m[8]=0.f; m[9]=0.f; m[10]=1.f; m[11]=(float)t.z;
 }
 
-// Converts cell-local geometry metadata into renderer instance properties.
 inline void fill_terrain_props(InstanceProperties& p, const planet::CellInstance& c,
                                const planet::DVec3& origin,
                                uint32_t matIDBase, uint32_t triLightBase) {
@@ -104,7 +103,6 @@ void StreamOrchestrator::init(ID3D12Device5* device, DeviceContext* ctx,
         m_terrainTableMapped[i].node_lo = (uint32_t)(INVALID_NODE & 0xFFFFFFFFull);
         m_terrainTableMapped[i].node_hi = (uint32_t)(INVALID_NODE >> 32);
         m_terrainTableMapped[i].changed = 0;
-        m_terrainNodePrev[i] = INVALID_NODE;
     }
 
     {
@@ -184,7 +182,6 @@ void StreamOrchestrator::assign_stable_ids(Generation& g) {
     m_ids.retain([&liveNodes](uint64_t node) { return liveNodes.count(node) != 0; });
 }
 
-// Advances generation state, chooses visible cells, and queues GPU work.
 void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam) {
     m_frame       = frame_index;
     m_sceneOrigin = cam.scene_origin;
@@ -265,7 +262,6 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
     }
 }
 
-// Submits uploads and BLAS work while preserving queue fence ordering.
 void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t scene_count,
                                      uint32_t terrain_hit_group, uint32_t external_hit_group) {
     m_ctx->ResetPlanetLists();
@@ -437,7 +433,7 @@ void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t sc
     bool externalRefit = false;
     if (m_external)
         m_external->append_instances(m_tlas, props, m_sceneOrigin, external_hit_group, externalForce, externalRefit);
-    // Ocean tiles share the terrain hit group; per-instance flags select their material classification.
+    // Ocean uses the terrain hit group; instance flags pick its material.
     if (m_external2)
         m_external2->append_instances(m_tlas, props, m_sceneOrigin, terrain_hit_group, externalForce, externalRefit);
 

@@ -5,11 +5,7 @@
 // 44 initial cut size, 48 normal, 60 last split, 64 request lock, 68 last fed frame,
 // 72 created frame, 76 request source, 80 requested key, 96 requested position,
 // 112 requested normal.
-// Cluster statistics (LT_STATS_BYTES): the learned weight, the mean and second moment of the
-// rewards of its picks with their (forgetting) count, the picks of the open batch, and the
-// power prior.
 
-// Hash cell keys before bucket probing.
 uint LTC_Hash(uint v) { v^=v>>16;v*=0x7feb352du;v^=v>>15;v*=0x846ca68bu;return v^(v>>16); }
 
 uint LTC_KeyAddress(uint slot) { return lt_bufferBase+slot*LT_KEY_BYTES; }
@@ -32,16 +28,13 @@ float3 LTC_CameraPosition() {
     return mul(viewI,float4(0,0,0,1)).xyz;
 }
 float3 LTC_CameraForward() { return mul(viewI,float4(0,0,1,0)).xyz; }
-// True when the cell lies behind the plane of the camera by more than its own width, so that a
-// cell straddling the plane is not churned by a small turn. A view without an orientation, as
-// the offline fixtures supply, leaves every cell in front.
+// Behind the camera plane by more than its width; no view = in front.
 bool LTC_Behind(float3 x,float width) {
     const float3 f=LTC_CameraForward();
     const float l2=dot(f,f);
     if(!(l2>0.25f)) return false;
     return dot(x-LTC_CameraPosition(),f)*rsqrt(l2)<-width;
 }
-// Map camera distance to a clamped adaptive grid level.
 float LTC_ContinuousLevel(float3 x) {
     float width=max(lt_cellSize,1e-4f);
     float growth=max(lt_lodScale,0.001f);
@@ -66,22 +59,14 @@ bool LTC_Enabled() { return (rs_flags & (LT_FLAG_LEARNING|RS_FLAG_NO_MESH_LIGHTS
 
 bool LTC_UseSurfaceLearning() { return LTC_Enabled(); }
 
-// The response a light sample trains the cut with. A cut serves every pixel that sees its cell, so
-// it has to learn what the cell receives. A broad pick trains with its own value, which hardly
-// depends on where the surface is seen from. A glossy pick smoother than the training floor trains
-// as a white diffuse surface would, with the cosine alone: its own value holds the lights its
-// pixels see mirrored, which move across a cell with the view, so the cells of one polished floor
-// learned different lights and showed as patches of different noise. It still teaches the cut
-// which lights reach the cell and which are blocked.
+// Glossy picks below the training floor train as white diffuse (view-independent).
 float3 LTC_TrainShare(float roughness,uint matID,float3 value,bool broadPick) {
     const float lo=lt_learnRoughness;
     const bool smoothCoat=LoadPc(matID)>0.01f && LoadPcr(matID)<lo;
     return (broadPick || (roughness>=lo && !smoothCoat))?value:INV_PI;
 }
 static const uint LTC_EXPIRED_SCORE=0x40000000u;
-// Ranks a cell the camera has turned away from above every cell still in front, however long
-// those have been idle, while leaving it below the expiry bands: it is the first slot a new
-// cell takes, but nothing discards it while no one needs the room.
+// Behind-camera cells are replaced first, but stay below the expiry bands.
 static const uint LTC_BEHIND_SCORE=0x20000000u;
 bool LTC_Replaceable(uint cell,bool underPressure=false) {
     return LTC_Index(cell)<LT_GRID_CAPACITY && (g_sharc.Load(cell)!=1u ||
@@ -97,11 +82,7 @@ void LTC_UpdateRetention(uint cell) {
         float3 x=asfloat(g_sharc.Load3(cell+32u))-sceneOriginWorld;
         uint desired=LTC_Level(x),age=LTC_Now()-g_sharc.Load(cell+24u);
         bool distant=level+1u<desired;
-        // Once a cell has gone idle, the camera having turned away from it puts it ahead of every
-        // idle cell still in front, whatever their ages, and it gives its slot up for good on the
-        // short timer rather than after the ten-second history. Idleness still comes first: a
-        // cell that paths reach this frame is never a victim, however far behind the camera it
-        // is, or a view that faces a wall would recycle the whole grid every frame.
+        // Idleness first; idle behind-camera cells expire on the short timer.
         bool behind=LTC_Behind(x,max(lt_cellSize,1e-4f)*exp2(float(level)));
         bool stale=distant||behind;
         uint aged=min(age,LTC_BEHIND_SCORE-1u),flags=behind?LTC_BEHIND_SCORE:0u;
@@ -113,8 +94,7 @@ void LTC_UpdateRetention(uint cell) {
     }
     g_sharc.Store(cell+20u,score);
 }
-// Probe the fixed-size hash table for an exact key. A bucket's keys are contiguous, so all of
-// them are loaded before any is compared: one round trip per bucket instead of one per probe.
+// Loads a bucket's keys before comparing: one round trip per bucket.
 bool LTC_FindExact(uint4 key,out uint cell) {
     cell=0u;
     [unroll] for(uint bucket=0u;bucket<LT_CELL_PROBES/LT_BUCKET_SIZE;++bucket) {
@@ -126,23 +106,14 @@ bool LTC_FindExact(uint4 key,out uint cell) {
     }
     return false;
 }
-// A place with no cell of its own and no ancestor within LT_PARENT_LEVELS borrows a neighbouring
-// grid cell at its own level before it falls back to the shared root. The surface runs on into
-// the neighbour and the key holds the same quantized normal, so the neighbour sees much the same
-// lights, where the root stands for the whole scene at once and is a poor proposal anywhere. The
-// four neighbours across the normal are the ones a surface reaches; the two along it are where
-// the surface has just left. `own` is false for a borrowed cell, so the caller keeps asking for
-// one of its own and hands the borrowed cut to it as the starting point.
+// Own cell or ancestor, else (own = false) a neighbour or the root.
 bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell,out bool own) {
     own=true;
     [loop] for(uint parent=0;parent<LT_PARENT_LEVELS && level+parent<=LT_MAX_LEVEL;++parent)
         if(LTC_FindExact(LTC_KeyAtLevel(x,n,level+parent),cell)) return true;
     own=false;
 #if LT_BORROW_NEIGHBOURS
-    // Only the two sides the receiver stands nearest, one per axis across its normal and the
-    // nearer one first. A surface that runs on into a neighbour crosses the boundary it is
-    // closest to, and every lookup that misses reaches this point, so the cost of looking is
-    // kept to two probes rather than all four sides.
+    // Only the two nearest sides across the normal, nearer first.
     const uint axis=LTC_NormalFace(n)/2u;
     const float width=max(lt_cellSize,1e-4f)*exp2(float(level));
     const float3 within=frac((x+sceneOriginWorld)/width)-0.5f;
@@ -166,10 +137,8 @@ bool LTC_Find(float3 x,float3 n,out uint cell,out bool own) {
 bool LTC_Find(float3 x,float3 n,out uint cell) {
     bool own;return LTC_Find(x,n,cell,own);
 }
-// `own` and `ownCoarse` are false when that cell was borrowed from a neighbour or is the shared
-// root, which is what tells the sampler to keep asking for a cell of this place's own.
+// own/ownCoarse false: borrowed or root, keep requesting a cell.
 struct LTC_Proposal { uint fine,coarse;float blend;bool own,ownCoarse; };
-// Select fine and ancestor cells for a blended proposal.
 bool LTC_GetProposal(float3 x,float3 n,out LTC_Proposal proposal,bool warmup=false) {
     proposal=(LTC_Proposal)0;if(!LTC_Enabled()) return false;
     float level=LTC_ContinuousLevel(x);
@@ -228,8 +197,7 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
     }
     uint old;g_sharc.InterlockedCompareExchange(candidate+64u,0u,1u,old);
     if(old!=0u) return;
-    // Without a close ancestor the new cell starts from a learned neighbour at its own level
-    // rather than from the shared root: the surrounding cells usually see the same lights.
+    // No close ancestor: seed from the best learned neighbour, not the root.
     {
         uint level=LTC_KeyLevel(key);
         if(index>=LT_GRID_CAPACITY || LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)))>level+1u) {
@@ -249,7 +217,7 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
     g_sharc.Store3(candidate+112u,asuint(n));
     g_sharc.Store(candidate+76u,index);
 
-    // Borrowing must not keep the lender alive: its own place decides how long it stays.
+    // Borrowing must not keep the lender alive.
     if(feedSource) g_sharc.InterlockedExchange(sourceCell+68u,sharc_frame,old);
 }
 void LTC_RequestRefinement(float3 x,float3 n,uint parentCell,uint desired) {
@@ -367,7 +335,6 @@ uint LTC_ClusterForTriangle(uint cell,uint count,uint tri,uint slot) {
     return LTC_Contains(LTC_LoadNode(a),tri,slot)?a:LT_SENTINEL;
 }
 
-// Evaluate a triangle PDF inside one frozen cut.
 float LTC_CellPdf(float3 x,float3 n,uint cell,uint tri,uint slot,out uint token) {
     token=0u;
     uint node=0u,start=LT_SENTINEL,depth=0u;float probability=1.0f;
@@ -380,7 +347,7 @@ float LTC_CellPdf(float3 x,float3 n,uint cell,uint tri,uint slot,out uint token)
     }
     return probability*LT_PdfSubtree(x,n,tri,slot,node,start,depth);
 }
-// The training token LTC_CellPdf hands out, without the tree walk that its pdf needs.
+// LTC_CellPdf's token without the tree walk.
 uint LTC_CellToken(uint cell,uint tri,uint slot) {
     uint count=cell==LT_SENTINEL?0u:g_sharc.Load(cell+4u);
     if(count==0u || count>LT_CUT_MAX) return 0u;
@@ -397,7 +364,6 @@ uint LTC_RefreshToken(float3 x,float3 n,uint cell,uint tri,uint slot,uint ticket
     uint count=g_sharc.Load(parent+4u),a=LTC_ClusterForTriangle(parent,count,tri,slot);
     return a==LT_SENTINEL?0u:LTC_ClusterIndex(a)+1u;
 }
-// Sample the learned mixture, then attach training tokens.
 LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true) {
 
     LTC_Proposal proposal=(LTC_Proposal)0;
@@ -412,9 +378,7 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
             if(request==0u) {
                 desired=LTC_Level(x);
                 uint index=LTC_Index(proposal.fine);
-                // A borrowed neighbour sits at this very level, so its key level would say there
-                // is nothing left to ask for. It counts as no cell at all here, exactly like the
-                // shared root, and its cut seeds the cell this place is still waiting for.
+                // A borrowed neighbour counts as no cell, like the root.
                 uint parentLevel=(index>=LT_GRID_CAPACITY || !proposal.own)
                     ?min(desired+LT_PARENT_LEVELS,LT_MAX_LEVEL+1u):LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)));
                 if(parentLevel<=desired) continue;
@@ -436,10 +400,7 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
         cell=useCoarse?proposal.coarse:proposal.fine;
         uint count=g_sharc.Load(cell+4u);
         if(count!=0u && count<=LT_CUT_MAX) {
-            // One independent draw per lane. Splitting the unit interval between the lanes of a
-            // wave that share a cell covers the cut more evenly per batch, but a wave covers a
-            // tile of pixels, so the stratum a pixel is given follows its place in that tile and
-            // the cluster it picks with it, which reads as stripes across the cell.
+            // Independent per lane; wave-stratified draws show as stripes.
             float target=RandomFloatSingle(rng);
             uint lo=0u,hi=count-1u;
             [loop] while(lo<hi) {
@@ -457,8 +418,7 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
     LT_Sample sample=LT_SampleSubtree(x,n,rng,node,start,sampleSlot);
     if(cell!=LT_SENTINEL) {
         sample.pdf*=probability;
-        // A pick that finds no light (the cluster lies behind the receiver) still trains its
-        // cluster, with the zero reward that such a pick is worth.
+        // Picks that find no light still train, with zero reward.
         sample.learningToken=uint2(LTC_Token(cell,chosen),0u);
     }
     if(!learned || sample.id==LT_SENTINEL) return sample;
@@ -474,14 +434,14 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
             sample.learningToken.y=useCoarse?sample.learningToken.x:otherToken;
             if(useCoarse) sample.learningToken.x=otherToken;
         } else {
-            // Warm-up only: the coarse cell is trained, its pdf does not enter the sample.
+            // Warm-up: coarse cell trains, its pdf stays out.
             sample.learningToken.y=LTC_CellToken(pdfCell,sample.id,sampleSlot);
         }
     } else sample.learningToken.y=LTC_RefreshToken(x,n,proposal.fine,sample.id,sampleSlot,refreshTicket);
     return sample;
 }
 
-// Match learned sampling with its mixture PDF.
+// Must match LT_SampleLight.
 float LT_PdfSelectTriangle(float3 x,float3 n,uint tri,uint inst,bool useLearning=true) {
     const uint slot=LT_SlotOfInstance(inst);
     if(tri==LT_SENTINEL || slot==LT_SENTINEL || (rs_flags & RS_FLAG_NO_MESH_LIGHTS)!=0u) return 0;
@@ -536,7 +496,6 @@ float2 LTC_BatchMoments(uint cluster) {
     uint address=LTC_BatchAddress(cluster);
     return float2(LTC_ReadAccumulator(address),LTC_ReadAccumulator(address+LT_ACCUMULATOR_BYTES));
 }
-// Accumulate bounded reward moments for a selected cluster.
 void LT_TrainToken(uint token,float contributionOverPdf) {
     if(token==0u || !LTC_Enabled()) return;
     uint a=LTC_TokenAddress(token);

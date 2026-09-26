@@ -5,13 +5,12 @@
 
 namespace {
 void SetInitialPanelPosition(ImVec2 offset) {
-    // Multi-viewports use desktop coordinates; keep new panels inside the main window.
+    // Multi-viewport positions are in desktop space.
     const ImVec2 origin = ImGui::GetMainViewport()->Pos;
     ImGui::SetNextWindowPos(ImVec2(origin.x + offset.x, origin.y + offset.y), ImGuiCond_FirstUseEver);
 }
 
-// Beaufort force from the 10 m wind, so the speed slider reads as a sea state rather than as a
-// bare number. Upper bound of each force, m/s.
+// Beaufort force; upper bounds in m/s at 10 m.
 int BeaufortForce(float windSpeed) {
     static const float kUpper[] = {0.5f, 1.5f, 3.3f, 5.5f, 7.9f, 10.7f, 13.8f, 17.1f, 20.7f, 24.4f, 28.4f, 32.6f};
     for (int i = 0; i < (int)(sizeof(kUpper) / sizeof(kUpper[0])); ++i)
@@ -28,10 +27,7 @@ const char* BeaufortName(int force) {
     return kNames[std::clamp(force, 0, 12)];
 }
 
-// The ocean owns one block of material slots: whitecap-coverage ramps from the water to solid
-// foam, one per density of the bubble cloud under it, then the opaque slot its diagnostic views
-// shade with. Edits land on the water and are broadcast across the block exactly as the generated
-// path writes it, so no step of the ramps disagrees about the optics.
+// Must match the generated block (Scene::ReserveOcean).
 void BroadcastWaterMaterial(Scene& scene, UINT base, float foamAlbedo) {
     auto& m = scene.materials;
     if ((size_t)base + OCEAN_MATERIAL_COUNT > m.size() || m.sssEnable.size() < m.size())
@@ -91,7 +87,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    // An empty frame lets ImGui close detached windows when the editor is hidden.
+    // Empty frame so ImGui closes detached windows.
     if (!m_visible) {
         ImGui::Render();
         return;
@@ -269,23 +265,20 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
         return;
     }
 
-    // Anything staged here stays staged until it is committed; outside the staging window the
-    // panel follows the sea state the system actually holds, so a scene or fixture edit shows up.
+    // Follow the live sea state unless an edit is staged.
     if (!m_waterRespecPending && !ImGui::IsAnyItemActive())
         m_waterParams = oceanSystem.GetParams();
 
     ocean::Params& p = m_waterParams;
     const auto& st = oceanSystem.GetStats();
-    bool cheap = false;  // takes effect on the next frame
-    bool respec = false; // re-bakes the spectrum, so it commits on release
+    bool cheap = false;  // applies next frame
+    bool respec = false; // re-bakes; commits on release
 
     const int force = BeaufortForce(p.windSpeed);
     ImGui::Text("Beaufort %d, %s", force, BeaufortName(force));
     ImGui::TextDisabled("Hs %.2f m | sea level %.2f m | %u tiles, %.2fM tris | bake %.0f ms", st.significantWaveHeight,
                         st.surfaceY, st.tiles, (double)st.triangles / 1.0e6, st.bakeMs);
 
-    // This work sits on the streaming compute queue the graphics queue waits on, so it never shows
-    // up in a per-pass profile of the render passes - it lands in the frame's GPU wait instead.
     if (st.gpuTotalMs > 0.0f) {
         ImGui::Text("GPU %.2f ms per frame, before a ray is traced", st.gpuTotalMs);
         if (ImGui::IsItemHovered()) {
@@ -303,9 +296,7 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
             }
             ImGui::EndTooltip();
         }
-        // The two that scale with the tile budget, called out because they are the ones a scene
-        // can do something about. Every resident tile is rebuilt or refitted every frame, its
-        // vertices having moved, so this triangle count is paid in full each time.
+        // The two stages that scale with tile count.
         ImGui::TextDisabled("  tessellation %.2f ms + structures %.2f ms: %.2fM triangles every frame",
                             st.gpuStageMs[2], st.gpuStageMs[3], (double)st.triangles / 1.0e6);
         ImGui::SetItemTooltip("Tiles times %u triangles each (OCEAN_TILE_GRID is %u quads per edge).\n"
@@ -385,7 +376,7 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
                           "0 is the symmetric sea, 1 the physical wave; past that each band runs up against its\n"
                           "own steepness limit and stops. It never moves the surface sideways, so it lifts a\n"
                           "crest without folding it.");
-    // The wind's own contribution is invisible in the slider values, so show what the sea gets.
+    // Effective values, including the wind's share.
     ImGui::TextDisabled("in use: short waves x%.2f sideways, crest strain %.2f, spread x%.2f", st.horizontalGain,
                         st.crestStrain, 1.0 / ocean::DirectionalFocus(p));
     ImGui::SetItemTooltip("The short waves' horizontal displacement gain (the long ones keep the physical 1),\n"
@@ -486,8 +477,6 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
     ImGui::SetItemTooltip("Optional diffuse contribution at the surface. Clear water needs none: the colour\n"
                           "comes from transmission into the volume.");
 
-    // Material adjustments, moved here from the material inspector: the ocean's slots are
-    // generated from the optics above, and hand edits take the whole block over.
     const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
                              ? (int)scene.oceanMatIndex
                              : -1;
@@ -636,8 +625,7 @@ void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
                               "and the camera test skip the height field wherever they lie outside it.");
     }
 
-    // Respectral changes re-bake four 512^2 cascades on the CPU, so they are staged while a
-    // widget is held and committed once it is let go. The cheap ones land the same frame.
+    // Spectrum re-bakes wait for widget release.
     if (m_waterRespecPending || respec) {
         m_waterRespecPending = true;
         if (!ImGui::IsAnyItemActive()) {
@@ -867,11 +855,9 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
         for (int i = 0; i < IM_ARRAYSIZE(values); ++i)
             if ((uint32_t)dlss.rrPresets[DLSSManager::kPresetDLAA] == values[i])
                 preset = i;
-        if (ImGui::Combo("Model", &preset, presets, IM_ARRAYSIZE(presets))) {
-            dlss.rrLinkPresets = true;
+        if (ImGui::Combo("Model", &preset, presets, IM_ARRAYSIZE(presets)))
             for (auto& p : dlss.rrPresets)
                 p = (sl::DLSSDPreset)values[preset];
-        }
         ImGui::SliderFloat("Temporal response (rough)", &dlss.rrResponsivityRough, -1.0f, 1.0f, "%.3f",
                            ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -1299,8 +1285,7 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         }
     }
 
-    // The ocean's block of materials is generated, not authored: it is edited from the water panel
-    // (Experimental > Water), which mirrors every change across the block.
+    // Ocean block is edited from the Water panel.
     const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
         ? (int)scene.oceanMatIndex : -1;
     if (waterMat >= 0 && m_selectedMat >= waterMat && m_selectedMat < waterMat + OCEAN_MATERIAL_COUNT)

@@ -1,6 +1,5 @@
 #pragma once
-// Diffuse reuse against the scene: world-space samples, visibility, the reuse tables in the cache
-// buffer, the park state in the path-state buffer and the per-pixel reservoirs.
+// Diffuse reuse: buffers, rays and park state.
 #include "Sharc_v8.hlsli"
 #include "RestirLiteMath_v8.hlsli"
 
@@ -19,7 +18,6 @@ float3 LiteWorldNormal(LiteSample s)
     return s.instance == LITE_INF ? s.normal : ObjectToWorldNrm(s.instance, s.normal);
 }
 
-// Store surface samples in object space with a packed normal.
 LiteSample LiteSampleSurface(uint instance, float3 worldPos, float3 worldNormalFacing, float3 radiance, uint kind)
 {
     LiteSample s;
@@ -139,7 +137,6 @@ void LiteParkPointLoad(uint px, out LiteSample s, out float pdf)
     pdf = asfloat(b.y);
 }
 
-// Apply weighted reservoir replacement to one compact candidate.
 void LiteAddCandidate(uint px, LiteSample c, float3 tint, float phat, float w, inout uint seed)
 {
     if (!(w > 0.0f) || !(phat > 0.0f) || isinf(w)) return;
@@ -200,8 +197,7 @@ LiteGen LiteGenEmpty()
     return g;
 }
 
-// Continue the reservoir of an earlier sample of the pixel; one left empty starts afresh, since its
-// park state belongs to another frame.
+// Empty reservoirs start afresh: their park state is another frame's.
 LiteGen LiteGenLoad(uint px)
 {
     const LiteReservoir r = LiteLoad(g_liteReservoirs, px);
@@ -232,7 +228,6 @@ void LiteGenCandidate(inout LiteGen g, float3 albedo, LiteSample c, float3 yWorl
     }
 }
 
-// Commit generated candidates after the full pixel estimate is known.
 void LiteGenCommit(uint px, LiteGen g)
 {
     LiteReservoir r;

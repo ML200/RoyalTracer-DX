@@ -79,7 +79,7 @@ void VerifyLightPacking(Runner& runner) {
                 Require(r.w == 1, "GPU packed cone lost angular support");
             }
         }
-        // The disabled path must preserve full-precision values, with no mesh header.
+        // Disabled compaction: full precision, no mesh header.
         auto fullWords = lt::EncodeLightBLAS(nodes, false, leafBase);
         Require(fullWords.size()*sizeof(uint32_t) == expected.size()*sizeof(expected[0]),
                 "Disabled compaction allocated a header or used the wrong stride");
@@ -97,7 +97,7 @@ void VerifyLightPacking(Runner& runner) {
         }
         runner.compactNodes=true;
     }
-    // The streamed builder must also retain only reachable nodes and leaf trails.
+    // The streamed builder also keeps only reachable nodes and leaf trails.
     std::vector<LightTriangle> tris(257);
     for (uint32_t i = 0; i < tris.size(); ++i) {
         auto& t = tris[i];

@@ -36,8 +36,7 @@ LT_BlasFrame LT_LoadBlasFrame(uint offset) {
     return f;
 }
 float LT_BoundRound(float value,bool upper) {
-    // Cover interpolation rounding when a mesh extent is small relative to its
-    // local-coordinate offset. The integer quantizer also expands one grid unit.
+    // 2 ulps outward to cover interpolation rounding.
     if(value==0.0f) return asfloat(upper?2u:0x80000002u);
     return asfloat(asuint(value)+((value>0.0f)==upper?2u:0xfffffffeu));
 }

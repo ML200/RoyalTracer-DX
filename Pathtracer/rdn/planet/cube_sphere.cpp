@@ -32,7 +32,6 @@ constexpr EdgeLink EDGE_LINK[6][4] = {
 };
 }
 
-// Encodes face, level, and coordinates into a stable node key.
 uint64_t pack_node_id(const QuadNode& n) {
     const uint32_t lo = (uint32_t)(n.face & 0x7u)
                       | ((uint32_t)(n.lod & 0x1Fu) << 3)
@@ -70,7 +69,7 @@ QuadNode parent_node(const QuadNode& n) {
     return p;
 }
 
-// Walks across edges, including cube-face seam remapping.
+// Crosses cube-face seams.
 QuadNode neighbor_node(const QuadNode& n, QuadEdge edge) {
     const uint32_t N = 1u << n.lod;
 
@@ -98,7 +97,6 @@ QuadNode neighbor_node(const QuadNode& n, QuadEdge edge) {
     return r;
 }
 
-// Maps equiangular face coordinates onto the unit sphere.
 DVec3 cube_to_sphere_dir(uint8_t face, double s, double t) {
     const DVec3 cube = FACE_A[face] + FACE_U[face] * s + FACE_V[face] * t;
     return normalize(cube);

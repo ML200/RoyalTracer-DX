@@ -1,10 +1,7 @@
 #include "Includes_v8.hlsli"
 #include "PtDefer_v8.hlsli"
 
-// Light sampling for the deferred vertex: pick one triangle from the light tree, resolve the point
-// on it and the sun sample, and trace both shadow rays. No material evaluation happens here. Each
-// part of the light record is stored as soon as it is known, so almost nothing stays live across
-// the tree walk and the two traversals.
+// Deferred-vertex light and sun samples with shadow rays; stored early to cut live state.
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
@@ -27,7 +24,6 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint blueIndex = (uint)time * PtSampleCount() + s;
     const bool useLearnedLights = LTC_UseSurfaceLearning();
 
-    // --- the pick: its token and the tree pdf of a pending emitter hit go out right away ---
     LT_Sample pick;
     pick.id = LT_SENTINEL;
     pick.inst = LT_SENTINEL;
@@ -46,7 +42,6 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
     DvStoreLightPick(pixelIdx, pick.learningToken, emitterPdfArea);
 
-    // --- the point on the picked triangle ---
     uint sPoint = RcBounceSeed(pathSeed, depth, PT_STREAM_LIGHT_POINT);
     const LT_LightSampleResult light = LT_SamplePointOnLightTree(pos, pick, sPoint);
     const float3 toLight = light.position - pos;
@@ -55,14 +50,13 @@ void main(uint3 tid : SV_DispatchThreadID)
     DvStoreLightMesh(pixelIdx, light.objID, lightValid ? light.pdfSolidAngle : 0.0f,
         light.position, light.normal, light.emission);
 
-    // --- the sun ---
     float2 rSun = float2(RandomFloatSingle(sPoint), RandomFloatSingle(sPoint));
     if (blue) rSun = PtBlue2(pixel, blueIndex, depth, BN_PAIR_SUN);
     const SunSampleResult sun = SampleSun(rSun, pos + sceneOriginWorld);
     const bool sunValid = dot(n, sun.direction) > 1e-6f && sun.pdf > 1e-20f;
     DvStoreLightSun(pixelIdx, sun.direction, sunValid ? sun.radiance : float3(0, 0, 0), sun.pdf);
 
-    // --- visibility: one traversal for both targets, each result stored as it arrives ---
+    // One traversal call site for both targets.
     [loop]
     for (uint target = 0u; target < 2u; ++target)
     {

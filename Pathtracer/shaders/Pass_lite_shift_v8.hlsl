@@ -1,11 +1,7 @@
 #include "Includes_v8.hlsli"
 #include "RestirLite_v8.hlsli"
 
-// Spatial reuse, first half: for every reuse partner of the pixel, the target value of the
-// partner sample at this receiver and its visibility. Samples already resolved for this receiver
-// (the own one and earlier partners) are reused by identity. Only that identity and the packed
-// result are kept, indexed statically, so the cache stays in registers and the visibility
-// traversal runs with little around it.
+// Spatial reuse, first half: partner targets and visibility at this receiver.
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
@@ -66,7 +62,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             const LiteLink l = LiteConnect(rcv, ri.s, y, ny);
             if (LiteLinkValid(l))
             {
-                // The target value before visibility: the only value the traversal has to preserve.
+                // Target before visibility: the only value live across the trace.
                 const float phatDry = Luma(rcv.albedo * ri.s.radiance) * LITE_INV_PI * l.geom;
                 float visLuma = 0.0f;
                 bool  found = false;

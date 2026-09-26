@@ -4,8 +4,7 @@
 
 #define SUN_FRAMECOUNT time
 
-// Model constants. The scene-driven values (location, time, turbidity, intensities, step counts)
-// come from the camera constants through the aliases in Globals_v8.hlsli.
+// Scene-driven values are aliased in Globals_v8.hlsli.
 static const float  SUN_FPS                 = 90.0f;
 static const float  SUN_ANGULAR_DEG         = 0.53f;
 static const float3 SUN_COLOR_VAL           = float3(1.0f, 0.99f, 0.98f);
@@ -67,7 +66,6 @@ inline bool WorldPosIsUnderground(float3 worldPos)
     return length(WorldToPlanet(worldPos)) < ATMOS_BOTTOM_RADIUS - SKY_UNDERGROUND_EPS_KM;
 }
 
-// Clamp the observer above the planet for atmospheric queries.
 inline void SetSkyObserver(float3 worldPos)
 {
     float3 P = WorldToPlanet(worldPos);
@@ -182,7 +180,6 @@ inline float3 ENU_ToWorld(float east, float north, float up)
     return SafeNormalize(east * E + north * N + up * WORLD_UP);
 }
 
-// Map simulation time through local sunrise and sunset.
 inline float GetSolarTimeHours()
 {
     float tReal = (float)SUN_FRAMECOUNT / SUN_FPS;
@@ -254,7 +251,6 @@ inline float DensityOzone(float altKm)
         : max(0.0f, -altKm / 15.0f + 8.0f / 3.0f);
 }
 
-// Evaluate altitude-dependent Rayleigh, Mie, and ozone terms.
 inline MediumSample SampleMedium(float altKm)
 {
     MediumSample m;
@@ -282,6 +278,7 @@ inline float PhaseRayleigh(float cosTheta)
     return (3.0f / (16.0f * PI)) * (1.0f + cosTheta * cosTheta);
 }
 
+// Cornette & Shanks 1992.
 inline float PhaseMieCS(float cosTheta, float g)
 {
     float g2 = g * g;
@@ -297,15 +294,7 @@ inline float PhaseMieTwoLobe(float cosTheta)
     return lerp(p1, p2, ATMOS_MIE_LOBE2_WEIGHT);
 }
 
-// The halo around the sun is the forward lobe of that phase function, and a phase function knows
-// only which way the ray points - not how much atmosphere is in front of the surface it ends on.
-// Left alone it puts the same aureole on a wall a few metres away as on the sky behind it.
-//
-// Fading the lobe towards its isotropic average over the first kilometres ties the halo to path
-// length, the way the rest of the aerial perspective already is. Both phase functions integrate
-// to one over the sphere, so this redistributes the Mie in-scatter rather than removing it: a
-// near surface gets the plain haze, and anything far enough to have real aerial perspective gets
-// the full halo. The sky keeps it in full, its path being tens of kilometres either way.
+// Aureole fades in with path length; both phases integrate to one.
 static const float ATMOS_MIE_PHASE_ISOTROPIC = 1.0f / (4.0f * PI);
 
 inline float AureoleDepthFade(float pathLengthKm)
@@ -403,7 +392,6 @@ inline float3 ComputeTransmittanceToTopRMu(float r, float mu)
     return exp(-od);
 }
 
-// Block ground intersections before sampling solar transmittance.
 inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 {
     float t0, t1;
@@ -480,7 +468,6 @@ void AtmosphereSourceQuadrature(float3 extinction,float ds,float u,out float dis
     distance=tau<.001f ? ds*(u+.5f*tau*u*(u-1)) : -log(max(1e-20f,1-u*proposal*mass))/proposal;
     weight=mass*exp(-(extinction-proposal)*distance);
 }
-// Integrate in-scattering with squared-distance atmospheric segments.
 float3 IntegrateScattering(float3 viewDir, float3 sunDir,
                            out float3 transmittanceOut, out bool hitPlanetOut,
                            float maxDistanceKm = -1.0f,uint stepCount = ATMOS_VIEW_STEPS,
@@ -522,7 +509,6 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
 
     float cosTheta = dot(V, L);
     float phR = PhaseRayleigh(cosTheta);
-    // Tie the aureole to the atmosphere this ray actually crosses; see AureoleDepthFade.
     float phM = lerp(ATMOS_MIE_PHASE_ISOTROPIC, PhaseMieTwoLobe(cosTheta), AureoleDepthFade(totalDist));
 
     float3 totalInScatter = float3(0, 0, 0);
@@ -595,7 +581,6 @@ inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
     return TransmittanceToSun(P, L, Rb, Rt);
 }
 
-// Use jittered coarse segments for surface aerial perspective.
 float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
                                 uint2 pixel,
                                 out float3 transmittanceOut)
@@ -626,7 +611,7 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
 
     float cosTheta = dot(V, L);
     float phR = PhaseRayleigh(cosTheta);
-    // Same depth fade as IntegrateScattering, so the two agree on where the halo begins.
+    // Same fade as IntegrateScattering.
     float phM = lerp(ATMOS_MIE_PHASE_ISOTROPIC, PhaseMieTwoLobe(cosTheta), AureoleDepthFade(totalDist));
 
     float3 totalInScatter = float3(0, 0, 0);
@@ -783,7 +768,7 @@ inline SunState ComputeSunState()
     return SkyBakeLoadSunState();
 }
 
-// Sample the finite solar disk with its uniform solid-angle PDF.
+// Uniform in solid angle over the sun disk.
 SunSampleResult SampleSun(float2 u, float3 receiverWorld)
 {
     SunState S = ComputeSunState();
@@ -992,9 +977,7 @@ float3 EvaluateSky(float3 rayDir)
     return EvaluateSkyBackground(rayDir);
 }
 
-// The sky's irradiance on a horizontal plane, the sun's disk left out, in the units of
-// EvaluateSkyBackground: the day sky summed over the bake (SkyBakeLoadIrradiance), handing over
-// to the night base through twilight as the background does. Stars are left out.
+// Horizontal-plane sky irradiance, without sun disk and stars.
 float3 EvaluateSkyIrradiance()
 {
     if (SkyObserverIsUnderground()) return float3(0.0f, 0.0f, 0.0f);

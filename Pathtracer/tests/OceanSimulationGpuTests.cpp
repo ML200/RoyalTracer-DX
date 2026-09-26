@@ -56,7 +56,6 @@ struct Runner {
     }
     void Barrier(ID3D12Resource*r){auto b=CD3DX12_RESOURCE_BARRIER::UAV(r);cmd->ResourceBarrier(1,&b);}
     void Flush(){Check(cmd->Close());ID3D12CommandList* list[]={cmd.Get()};queue->ExecuteCommandLists(1,list);Check(queue->Signal(fence.Get(),++serial));Check(fence->SetEventOnCompletion(serial,event));Require(WaitForSingleObject(event,30000)==WAIT_OBJECT_0,"GPU timeout");Check(alloc->Reset());Check(cmd->Reset(alloc.Get(),nullptr));}
-    // Every slice of one mip of a half-float array, widened to float.
     std::vector<XMFLOAT4> ReadHalf(ID3D12Resource*r,int mip=0){
         auto d=r->GetDesc();const int n=N>>mip;std::vector<XMFLOAT4> result;
         for(UINT slice=0;slice<d.DepthOrArraySize;++slice){
@@ -85,18 +84,16 @@ struct Runner {
         constexpr float L=64;
         auto h0=Texture(C,1,DXGI_FORMAT_R32G32B32A32_FLOAT,OCEAN_SRV_H0,0,false);
         auto fft=Texture(C*2,1,DXGI_FORMAT_R32G32B32A32_FLOAT,0,OCEAN_UAV_FFT);
-        // Written as parity 1, so the kernels have to follow the parity rather than a fixed array.
+        // Parity 1, so a kernel writing a fixed array fails.
         auto history=Texture(C,OCEAN_MIP_LEVELS,DXGI_FORMAT_R16G16B16A16_FLOAT,OCEAN_SRV_DISP0,OCEAN_UAV_DISP0_MIPS);
         auto disp=Texture(C,OCEAN_MIP_LEVELS,DXGI_FORMAT_R16G16B16A16_FLOAT,OCEAN_SRV_DISP1,OCEAN_UAV_DISP1_MIPS);
         auto deriv=Texture(C,OCEAN_MIP_LEVELS,DXGI_FORMAT_R16G16B16A16_FLOAT,OCEAN_SRV_DERIV,OCEAN_UAV_DERIV_MIPS);
         OceanParamsGPU P{};P.choppiness=0.8f;P.cascadeLength={L,L,L,L};P.dispParity=1;
-        // The short-wave chop ramps up across the test lattice and fades again past it, so every
-        // part of the profile is exercised.
+        // Band spans the lattice, exercising the whole chop profile.
         P.chopBand={float(std::log2(.15)),float(std::log2(.5)),float(std::log2(.8)),1.5f};
         auto params=Buffer(sizeof(P),D3D12_HEAP_TYPE_UPLOAD);void* ptr;Check(params->Map(0,nullptr,&ptr));memcpy(ptr,&P,sizeof(P));params->Unmap(0,nullptr);
         D3D12_SHADER_RESOURCE_VIEW_DESC ps{};ps.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;ps.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;ps.Buffer.NumElements=1;ps.Buffer.StructureByteStride=sizeof(P);dev->CreateShaderResourceView(params.Get(),&ps,At(OCEAN_SRV_PARAMS));
-        // Every cascade gets its own random spectrum; the kernels rebuild the wave vector of node
-        // (x, z) as ((x, z) - N/2) 2 pi / L and its frequency from deep-water dispersion.
+        // Kernels use k = ((x, z) - N/2) 2 pi / L and deep-water dispersion.
         std::vector<XMFLOAT4> initial(C*N*N);std::mt19937 gen(11);std::normal_distribution<double> random;
         for(int c=0;c<C;++c){std::vector<std::complex<double>> a(N*N);
             for(int z=1;z<N;++z)for(int x=1;x<N;++x){if(x==N/2&&z==N/2)continue;a[z*N+x]=.015*std::complex<double>(random(gen),random(gen));}
@@ -122,11 +119,10 @@ struct Runner {
             }
         }
         for(auto v:Hist)Require(v.x==0&&v.y==0&&v.z==0&&v.w==0,"The history array must not be written");
-        // The fields are stored in half precision: 11 significant bits bound the error near 5e-4.
+        // fp16 storage: 11 significant bits bound the error near 5e-4.
         double relative=std::sqrt(err2/ref2),parseval=std::abs(meanSquare/(N*N)/spectral-1);
         std::cout<<"Production GPU FFT versus double DFT relative L2 "<<relative<<", Parseval "<<parseval<<", reference imaginary residual "<<std::sqrt(imag2/ref2)<<'\n';
         Require(relative<2e-3 && parseval<3e-3 && std::sqrt(imag2/ref2)<1e-5,"FFT/derivative/Parseval/Hermitian check");
-        // First mip level of both pyramids is the box average of the level below.
         push.u0=1;push.u1=1;Dispatch(2,1,1,C);Barrier(disp.Get());Barrier(deriv.Get());
         auto DM=ReadHalf(disp.Get(),1),GM=ReadHalf(deriv.Get(),1);const int n=N/2;
         for(int c=0;c<C;++c)for(int z=0;z<n;++z)for(int x=0;x<n;++x){XMFLOAT4 d{},g{};

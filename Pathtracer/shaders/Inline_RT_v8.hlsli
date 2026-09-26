@@ -1,5 +1,4 @@
-// No shader stage carries data through the payload: the raygens read their hits from the hit
-// object and shade them themselves. The one field keeps the struct valid.
+// Carries no data; one field keeps the struct valid.
 struct [raypayload] TracePayload
 {
     uint unused : read(caller) : write(caller);
@@ -7,8 +6,7 @@ struct [raypayload] TracePayload
 
 static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
 
-// The reorder point of each raygen. Any of them can be compiled out (e.g. -D PT_SER_REORDER=0 via
-// RDN_SHADER_DEFINES) to weigh what the reorder costs in saved live state against what it buys.
+// Per-raygen reorder toggles (e.g. PT_SER_REORDER=0 via RDN_SHADER_DEFINES).
 #ifndef CAMERA_SER_REORDER
 #define CAMERA_SER_REORDER 1
 #endif
@@ -19,7 +17,7 @@ static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
 #define SHARC_SER_REORDER 1
 #endif
 
-// Material context of a path vertex, shared by the passes that shade one.
+// Material context of a path vertex.
 struct HitContext {
     float3 hitPos;
     float3 hitNormal;
@@ -43,17 +41,14 @@ struct HitInfo {
     bool   backface;
     uint   lightID;
     float2 uv;
-    float  uvFootprint;   // width of the ray beam at the hit, in texture coordinates of the surface
+    float  uvFootprint;   // beam width at the hit, in UV units
 
-    // The ocean resolves its own shading state from the wave cascades rather than from textures,
-    // because the roughness it needs depends on the ray footprint. These carry that result past
-    // the material fetch the other surfaces use.
+    // Ocean state from the cascades (roughness depends on the footprint).
     bool   isOcean;
     float3 oceanKd;
     float  oceanPr;
     uint   oceanMaterialOffset;
-    // The foam cover and bubble-cloud density the material step is dithered from (OceanSurface),
-    // for the reconstruction's albedo guide.
+    // For the reconstruction's albedo guide (OceanSurface).
     float  oceanFoam;
     float  oceanBubbles;
 };
@@ -65,6 +60,7 @@ uint ResolveSurfaceMaterial(uint matID, HitInfo hit)
 }
 
 
+// Self-intersection offset (Waechter & Binder 2019, Ray Tracing Gems).
 static const float RTG_ORIGIN      = 1.0f / 32.0f;
 static const float RTG_FLOAT_SCALE = 1.0f / 65536.0f;
 static const float RTG_INT_SCALE   = 256.0f;
@@ -82,18 +78,7 @@ inline float3 offset_ray(float3 p, float3 n)
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
-// Every ray handed to the hardware passes this check first, whether it goes through
-// HitObject::TraceRay (TraceRayChecked below) or a RayQuery. NaN or Inf in any component, a
-// direction far from unit length, an origin outside the representable scene, or extents that
-// are inverted, negative or infinite make the traversal undefined and have hung the GPU before.
-// Such a ray is never traced: the caller treats it as a miss (or as occluded) instead.
-//
-// The test works on the bit patterns. DXC compiles every float compare, isnan and isinf with
-// fast-math flags, under which the driver may assume no value is ever NaN or Inf and drop exactly
-// these tests; integer compares on asuint() stay. The magnitude bits of a float order like its
-// absolute value, and NaN and Inf lie above every finite magnitude, so one bound per component
-// rejects them together with values that are merely too large. A non-negative finite float is at
-// most 0x7F7FFFFF with the sign bit clear, and those order like their values.
+// Bad rays can hang the GPU. Integer tests: fast-math may drop float NaN/Inf checks.
 static const float RAY_ORIGIN_LIMIT = 5.0e7f;
 
 inline bool IsRayDescValid(RayDesc r)
@@ -106,7 +91,7 @@ inline bool IsRayDescValid(RayDesc r)
     if (any(direction > asuint(2.0f))) return false;            // NaN, Inf, or far from unit length
     if (tMin > 0x7F7FFFFFu || tMax > 0x7F7FFFFFu) return false;  // negative, NaN or Inf extents
     if (tMax <= tMin) return false;                             // inverted or empty extents
-    // Every component is finite and bounded from here on, so the float test is exact.
+    // All finite from here, so the float test is safe.
     const float d2 = dot(r.Direction, r.Direction);
     return d2 >= 0.25f && d2 <= 4.0f;
 }
@@ -118,10 +103,7 @@ inline bool IsRayValid(float3 origin, float3 direction, float tMax)
     return IsRayDescValid(r) && tMax > 1e-4f;
 }
 
-// The hit-object trace of every raygen. An invalid ray is swapped for a well-formed one with an
-// empty instance mask, which the hardware answers with a miss, so the caller sees a plain miss
-// instead of undefined traversal. No reorder happens here: each raygen keeps its single reorder
-// point, and the closest-hit and miss shaders are never invoked.
+// An invalid ray becomes an empty-mask ray, i.e. a plain miss. No reorder here.
 inline dx::HitObject TraceRayChecked(RaytracingAccelerationStructure bvh, uint rayFlags, uint instanceMask, RayDesc ray)
 {
     if (!IsRayDescValid(ray))
@@ -184,7 +166,7 @@ inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
     ray.Direction = direction;
     ray.TMin      = 0.001f;
     ray.TMax      = dist*0.998f;
-    // Endpoints closer than the ray's own start offset touch: nothing fits between them.
+    // Endpoints closer than TMin touch.
     if (ray.TMax <= ray.TMin) return true;
     if (!IsRayDescValid(ray)) return false;
 
@@ -228,7 +210,7 @@ inline float3 ThinGlassShadowTr(uint matID, uint instID, uint primID, float3 dir
     return (1.0f - F) * LoadTf(matID);
 }
 
-// Previous/current displacement difference at a vertex of the current stitched topology.
+// Previous minus current displacement at a stitched vertex.
 float3 OceanVertexMotion(uint instID, float2 uv) {
     const float size = asfloat(instanceProps[instID]._pad[1]);
     const uint stitch = instanceProps[instID]._pad[0];
@@ -238,7 +220,7 @@ float3 OceanVertexMotion(uint instID, float2 uv) {
     const float2 origin = float2(instanceProps[instID].objectToWorld[0][3], instanceProps[instID].objectToWorld[2][3]);
     const OceanParamsGPU P = OceanParams();
     const uint current = OceanDispSlot(P), previous = OceanPrevDispSlot(P);
-    // Built from the same grid points and widths as the vertex itself (Ocean_Tiles_v8.hlsl).
+    // Must match the vertex build (Ocean_Tiles_v8.hlsl).
     const float2 qLo = origin + float2(src.lo) * step;
     const float wLo = OceanGeometryWidth(qLo, P);
     float3 delta = OceanDisplacementFrom(qLo, wLo, previous) - OceanDisplacementFrom(qLo, wLo, current);
@@ -254,8 +236,7 @@ float3 OceanPreviousHit(uint instID, uint primID, float2 bary, float3 hitPos) {
     const float3 a = OceanVertexMotion(instID, (float2)BTriVertex[indices[base]].texCoord);
     const float3 b = OceanVertexMotion(instID, (float2)BTriVertex[indices[base+1]].texCoord);
     const float3 c = OceanVertexMotion(instID, (float2)BTriVertex[indices[base+2]].texCoord);
-    // prevView is already rebased by Camera::PollSceneOrigin. Both positions must remain in
-    // the CURRENT scene-origin frame; adding originDelta here would apply the rebase twice.
+    // Current origin frame; prevView is already rebased (Camera::PollSceneOrigin).
     return hitPos + a * (1-bary.x-bary.y) + b * bary.x + c * bary.y;
 }
 
@@ -279,7 +260,7 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
     ray.Direction = direction;
     ray.TMin      = 0.001f;
     ray.TMax      = dist * 0.998f;
-    // Endpoints closer than the ray's own start offset touch: nothing fits between them.
+    // Endpoints closer than TMin touch.
     if (ray.TMax <= ray.TMin) return 1.0.xxx;
     if (!IsRayDescValid(ray)) return 0.0.xxx;
 
@@ -307,11 +288,7 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
             else if (LoadKd_w(cMatID) < 1.0f - EPSILON)
             {
                 const float3 nW = CandidateGeoNormalW(cInstID, cPrimID);
-                // Which way the connection crosses the interface decides the index ratio, and with
-                // it whether it can cross at all: past the critical angle a ray leaving water is
-                // turned back entirely. Schlick on its own has no such angle, so it used to hand
-                // the sun through a surface that should have reflected all of it - which is where
-                // the isolated bright pixels below the surface came from.
+                // Crossing direction sets the IOR ratio; past the critical angle, TIR blocks it.
                 const float ior = max(LoadNi(cMatID), 1.0f);
                 const bool leaving = dot(direction, nW) > 0.0f;
                 tr *= 1.0f - FresnelDielectricTIR(-direction, nW, leaving ? ior : 1.0f,
@@ -406,10 +383,8 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     return Nopt;
 }
 
-// The angle one pixel of the render subtends; times the path length it is the beam width.
 float PixelConeAngle() { return 2.0f / max(projection._m11 * float(IMG_H), 1e-6f); }
 
-// The mip whose texels match a beam of the given width in texture coordinates.
 float TexFootprintLod(Texture2D<float4> tex, float uvFootprint)
 {
     uint w, h;
@@ -417,7 +392,6 @@ float TexFootprintLod(Texture2D<float4> tex, float uvFootprint)
     return log2(max(uvFootprint * float(max(w, h)), 1e-8f)) + PT_TEXTURE_LOD_BIAS;
 }
 
-// Sample and sanitize material albedo for the beam width at the hit.
 float3 EvaluateAlbedo(uint matID, float2 uv, float uvFootprint)
 {
     float3 albedo = LoadKd_rgb(matID);
@@ -431,7 +405,7 @@ float3 EvaluateAlbedo(uint matID, float2 uv, float uvFootprint)
     return albedo;
 }
 
-// Fetch roughness and metalness with material-specific texture rules.
+// Returns (roughness, metalness).
 float2 EvaluatePBRProperties(uint matID, float2 uv, float uvFootprint)
 {
 
@@ -462,10 +436,7 @@ inline void RefetchMaterialUV(uint matID, float2 uv, out float3 localKd, out flo
     localPm = pbr.y;
 }
 
-// Beauty water uses the editable scene material, like other surfaces. Procedural ocean
-// evaluation supplies the wave normal averaged over the ray footprint and, as a floor on the
-// authored roughness, the spread of the ripples that average removed. Direct lights widen their
-// own highlight lobe on top of that; that widening stays out of continuation and guides.
+// Ocean: scene material, roughness floored by the footprint-filtered ripple spread.
 inline void RefetchMaterial(uint matID, HitInfo hit, out float3 localKd, out float localPr, out float localPm)
 {
     [branch]
@@ -524,8 +495,7 @@ inline uint LightRecordOf(uint instID, uint primID)
     return gTriToLightId[base + primID];
 }
 
-// Interpolate hit attributes and derive the complete shading state. `footprint` is the width of
-// the ray beam at the hit in world units; the textures are read at the mip that matches it.
+// footprint: beam width at the hit, world units; selects texture mips.
 HitInfo EvalSurfaceStateImpl(
     uint   instID,
     uint   primID,
@@ -615,7 +585,7 @@ HitInfo EvalSurfaceStateImpl(
     float3 geoNormW;
     float3 tangentW_geom;
     float3 bitangentW_geom;
-    float  uvPerWorld;   // texture coordinates per world unit along the triangle
+    float  uvPerWorld;   // UV per world unit
 
     {
         const float3x4 M = instanceProps[instID].objectToWorld;
@@ -651,18 +621,17 @@ HitInfo EvalSurfaceStateImpl(
 
     float3 viewDir = viewIsDir ? originOrDir : (posW - originOrDir);
     viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
-    // The beam stretches across the surface at grazing angles.
+    // Grazing angles stretch the beam.
     hit.uvFootprint = footprint * uvPerWorld / max(abs(dot(viewDir, geoNormW)), 0.05f);
 
     [branch]
     if (IS_OCEAN_INSTANCE(instID))
     {
-        // Area-equivalent grazing footprint, retained for diagnostics only.
+        // Area-equivalent grazing footprint.
         const float cosV = max(abs(dot(viewDir, geoNormW)), 1e-3f);
         const float width = footprint * rsqrt(cosV);
 
-        // UVs retain the undisplaced material coordinates even on stitched tile edges.
-        // Sampling at posW.xz would shift the normals/foam away from their own crests.
+        // Sample at the undisplaced UV position; posW.xz would shift off the crests.
         const float tileSize = asfloat(instanceProps[instID]._pad[1]);
         const float2 tileOrigin = float2(instanceProps[instID].objectToWorld[0][3],
                                          instanceProps[instID].objectToWorld[2][3]);
@@ -670,9 +639,7 @@ HitInfo EvalSurfaceStateImpl(
         const OceanSurface sea = OceanEvalSurface(oceanPosition, width, uv, tileSize);
 
         normW = sea.normal;
-        // Keep the shading normal on the visible side of the triangle the ray actually hit: the
-        // cascades are filtered at a different width than the tessellation, so the two can
-        // disagree by more than the interpolated normal ever would.
+        // Keep it on the hit triangle's side; cascades and mesh are filtered differently.
         if (dot(normW, geoNormW) < 0.0f)
             normW = normalize(normW - 2.0f * dot(normW, geoNormW) * geoNormW);
 
@@ -726,7 +693,6 @@ HitInfo EvalSurfaceStateImpl(
     return hit;
 }
 
-// Evaluate a surface from a ray origin and barycentric hit.
 HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3 origin, float footprint = 0.0f)
 {
     return EvalSurfaceStateImpl(instID, primID, bc2, origin, false, footprint);

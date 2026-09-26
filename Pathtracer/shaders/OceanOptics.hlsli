@@ -1,12 +1,6 @@
 #pragma once
 
-// Artistic direct-light filter only. Continuation, environment reflection and DLSS
-// guides retain the authored roughness and full-resolution wave normal.
-//
-// A clear sea is authored mirror-flat, which leaves the sun sampler and NEE a delta lobe: the
-// glitter track then resolves as isolated fireflies that no amount of sampling clears up. The
-// floor is the lobe width direct lighting alone works with, so it trades highlight sharpness
-// against how noisy the sun track is. It is supplied by the caller, from the ocean parameters.
+// Direct light only (sun fireflies); paths and guides keep the authored roughness.
 float OceanHighlightRoughness(float authoredRoughness, float lobeRoughness) {
     return max(authoredRoughness, lobeRoughness);
 }
@@ -14,13 +8,7 @@ bool OceanDirectLightingOwnsRay(bool directLighting, float outgoingCosine) {
     return directLighting && outgoingCosine > 0.0f;
 }
 
-// Proposal probability only. Both GGX sampling and PDF evaluation call this function;
-// Fresnel/BSDF energy is unchanged. Preserve absent lobes and total internal reflection.
-//
-// Both lobes get half the samples whenever both exist. Following the Fresnel ratio instead
-// starves whichever lobe is weak at that angle, and the weight that corrects for it is what
-// arrives as isolated bright pixels: the transmitted lobe looking straight down into the water,
-// where reflection is a couple of per cent, and the reflected one at grazing angles.
+// Lobe proposal probability only, shared by sampling and pdf; 50/50 avoids fireflies.
 float OceanReflectionProbability(float reflection, float transmission) {
     if (reflection <= 0.0f) return 0.0f;
     if (transmission <= 0.0f) return 1.0f;
@@ -30,6 +18,7 @@ float OceanReflectionProbability(float reflection, float transmission) {
 float3 OceanMediumTransmittance(float3 sigmaT, float distanceM) {
     return exp(-max(sigmaT, 0.0f) * max(distanceM, 0.0f));
 }
+// Henyey & Greenstein 1941
 float OceanPhase(float cosTheta, float g) {
     g = clamp(g, -0.95f, 0.95f);
     const float d = max(1.0f + g*g - 2.0f*g*clamp(cosTheta, -1.0f, 1.0f), 1e-4f);
@@ -40,9 +29,7 @@ struct OceanFlight {
     float3 weight;
     bool scattered;
 };
-// RGB mixture free flight: event density is mean(sigma_t * Tr), and the
-// discrete probability of reaching geometry is mean(Tr). Absorption is in
-// sigma_t; sigma_s in the numerator accounts for absorption versus scattering.
+// RGB mixture free flight; pdf is the mean over channels.
 OceanFlight OceanFreeFlight(float3 sigmaA, float3 sigmaS, float limit, bool used, float2 u) {
     OceanFlight f;
     f.distance = max(limit, 0.0f);
@@ -71,6 +58,6 @@ float OceanSamplePhaseCosine(float g, float u) {
 }
 bool OceanScatterUsedAfterSurface(bool used, bool incomingWater, bool outgoingWater,
     bool waterSurface, bool thinTransmission) {
-    // Internal reflection retains the budget. An object bounce or fresh entry resets it.
+    // Kept through internal reflection; an object bounce or entry resets it.
     return used && incomingWater && outgoingWater && (waterSurface || thinTransmission);
 }

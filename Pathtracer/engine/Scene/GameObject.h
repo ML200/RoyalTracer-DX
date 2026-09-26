@@ -7,5 +7,4 @@ struct GameObject {
     uint32_t id = 0;
     Transform transform;
     UINT meshIndex = 0;
-    bool active = true;
 };

@@ -23,8 +23,7 @@ void module_and_offset(uintptr_t addr, wchar_t* out, size_t cap) {
     }
 }
 
-// dbghelp symbols are initialized once per process; a second SymInitialize fails, so the crash
-// filter and the call-stack logging share this.
+// Once per process: a second SymInitialize fails.
 bool EnsureSymbols(HANDLE process) {
     static bool initialized = false, ok = false;
     if (!initialized) {

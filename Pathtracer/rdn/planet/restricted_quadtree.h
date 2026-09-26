@@ -19,7 +19,6 @@ struct QuadtreeParams {
 
 class RestrictedQuadtree {
 public:
-    // Selects balanced detail under the configured triangle budget.
     void select(const QuadtreeParams& params, const CameraView& cam,
                 const IHeightmapSource* heightmap = nullptr);
 
@@ -28,7 +27,7 @@ public:
 
     bool is_leaf(uint64_t node_id) const { return m_set.contains(node_id); }
 
-    // Returns neighboring detail, including cube-face seam handling.
+    // Crosses cube-face seams.
     uint8_t neighbor_lod(const QuadNode& leaf, QuadEdge edge) const;
 
     int adjacent_leaves(const QuadNode& leaf, QuadEdge edge, uint64_t out[2]) const;

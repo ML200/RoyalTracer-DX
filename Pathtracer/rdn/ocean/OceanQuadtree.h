@@ -8,26 +8,15 @@
 
 namespace ocean {
 
-// Camera-driven quadtree over the world XZ plane. The root is pinned to absolute world space
-// rather than to the camera, so a tile covers the same square of ocean from frame to frame: its
-// vertices keep their buffer slot, and its acceleration structure can be refitted as the waves
-// move instead of rebuilt.
-//
-// Adjacent tiles may differ by up to kMaxLevelStep levels. The finer side interpolates its edge
-// onto the coarser one's (see OceanStitchSource), so no crack opens, and the looser the balance
-// the more the detail can fall away where nothing looks closely - a 2:1 tree has to step down one
-// level per tile width from everything the camera sees, which spreads the in-view detail around
-// most of the circle.
-
 struct TileDesc {
     uint8_t level = 0;
     uint32_t ix = 0;
     uint32_t iy = 0;
-    double minX = 0.0; // absolute world coordinates of the tile's low corner
+    double minX = 0.0; // absolute world low corner
     double minZ = 0.0;
     double size = 0.0;
     uint32_t stitch = 0; // OCEAN_STITCH_BITS per edge: levels to the coarser neighbour
-    uint32_t slot = 0;   // persistent geometry and acceleration-structure slot
+    uint32_t slot = 0;   // persistent geometry/BLAS slot
 };
 
 inline uint64_t TileKey(uint8_t level, uint32_t ix, uint32_t iy) {
@@ -36,8 +25,7 @@ inline uint64_t TileKey(uint8_t level, uint32_t ix, uint32_t iy) {
 
 namespace detail {
 
-// Distance from the camera to the nearest point of a tile's footprint. Using the footprint rather
-// than its centre keeps the level from oscillating when the camera sits over a tile edge.
+// To the nearest footprint point, not the centre: no LOD flicker on tile edges.
 inline double TileDistance(double minX, double minZ, double size, const planet::DVec3& cam, double seaLevel) {
     const double dx = std::max({minX - cam.x, 0.0, cam.x - (minX + size)});
     const double dz = std::max({minZ - cam.z, 0.0, cam.z - (minZ + size)});
@@ -45,8 +33,7 @@ inline double TileDistance(double minX, double minZ, double size, const planet::
     return std::sqrt(dx * dx + dz * dz + dy * dy);
 }
 
-// The camera's four side planes, widened by `margin` on the tangent of each half-angle, with no
-// near or far limit. Tested against spheres in camera-relative double coordinates.
+// Four side planes, half-angle tangents scaled by margin; no near/far.
 struct ViewCone {
     double F[3] = {0.0, 0.0, 1.0};
     double R[3] = {1.0, 0.0, 0.0};
@@ -95,17 +82,13 @@ struct ViewCone {
 
 } // namespace detail
 
-// How much geometry a stretch of sea gets, as tile edge over distance. Shared between tile
-// selection and the per-point filter width the tessellator uses, so the two describe one rule.
+// Tile edge over distance; shared by tile selection and the tessellator's filter width.
 struct LodRule {
     detail::ViewCone view;
     double ratio = 0.5;     // in view
     double offscreen = 4.0; // multiplier outside the view
-    double nearKeep = 24.0; // in-view detail regardless of direction nearer than this
-    // Past this distance even the tallest waves stand less than a pixel above their troughs, so
-    // their silhouettes can no longer be told from a smoother surface and the ratio grows with
-    // distance. Zero keeps it constant out to the horizon.
-    double silhouette = 0.0;
+    double nearKeep = 24.0; // in-view detail in every direction within this
+    double silhouette = 0.0; // waves sub-pixel past this; ratio grows with distance, 0 = off
 
     LodRule(const Params& p, const planet::CameraView& cam, double silhouetteDistance)
         : view(cam, 1.2), ratio(std::max(0.02, (double)p.lodFactor)),
@@ -122,37 +105,26 @@ struct LodRule {
     }
 };
 
+// Root pinned to world XZ, so tiles keep their slot and BLAS across frames.
 class Quadtree {
   public:
-    // Adjacent tiles may differ by this many levels. Two already lets the detail fall away where
-    // nothing looks closely; more buys almost nothing further on an open sea.
+    // Max level step between neighbours; edges stitched by OceanStitchSource.
     static constexpr int kMaxLevelStep = 2;
     static_assert((OCEAN_TILE_GRID >> kMaxLevelStep) << kMaxLevelStep == OCEAN_TILE_GRID,
                   "A coarser neighbour's vertices must land on the tile's own grid");
     static_assert(kMaxLevelStep <= (int)OCEAN_STITCH_MASK, "Stitch field too narrow");
 
-    // Chooses the visible leaves for this camera and assigns each a persistent slot.
-    // `coverage`, when given, decides which tiles become geometry at all; see ocean::ICoverage.
-    // `silhouetteDistance` is LodRule::silhouette.
+    // silhouetteDistance: LodRule::silhouette.
     void Select(const Params& p, const planet::CameraView& cam, uint32_t maxTiles,
                 const ICoverage* coverage = nullptr, double silhouetteDistance = 0.0);
 
     const std::vector<TileDesc>& Tiles() const { return m_tiles; }
     uint32_t SelectedLeafCount() const { return m_leafCount; }
     uint32_t DroppedCount() const { return m_dropped; }
-    // Tile edge over distance the selection settled on; above Params::lodFactor when the budget
-    // made it back the detail off.
+    // Above Params::lodFactor when the budget forced coarser tiles.
     double EffectiveLodFactor() const { return m_lodFactor; }
-    // Slots whose tile left the view this frame; their acceleration structures must be rebuilt
-    // rather than refitted when the slot is handed to a different tile.
+    // Slot changed tile this frame: rebuild, don't refit.
     bool SlotIsNew(uint32_t slot) const { return slot < m_slotNew.size() && m_slotNew[slot] != 0; }
-
-    void Reset() {
-        m_slotOf.clear();
-        m_freeSlots.clear();
-        m_slotNew.clear();
-        m_tiles.clear();
-    }
 
   private:
     uint32_t AcquireSlot(uint64_t key, uint32_t maxTiles, bool& isNew);
@@ -216,24 +188,14 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
         iy = (uint32_t)(key & 0xFFFFFFFull);
     };
 
-    // Detail follows the view. The camera sees the sea along silhouettes and at the resolution of
-    // its pixels; everything else is seen only by secondary rays, through reflections, shadows
-    // and refraction that are blurred and noisy by construction and never graze a silhouette. A
-    // widened frustum, so a tile is refined before it turns into view, picks the in-view ratio;
-    // the rest takes the coarser one. The whole sea stays in the scene either way.
     LodRule rule(p, cam, silhouetteDistance);
     auto inView = [&](double x, double z, double s) {
-        // The tile's square at sea level, fattened by the tallest a wave can plausibly stand.
+        // Tile bounding sphere, padded 10 m for wave height.
         return rule.view.Intersects(x + 0.5 * s - cam.position_world.x, seaLevel - cam.position_world.y,
                                     z + 0.5 * s - cam.position_world.z, s * 0.70710678 + 10.0);
     };
 
-    // Keep the complete finite ocean in the ray-visible scene, including behind the camera.
-    // Quality selection may coarsen geometry; visibility is never restricted to primary rays.
-    // A coverage test is the one thing that does remove a tile: where the world holds no water,
-    // the sea has nothing to stand for and every ray would pay to traverse it regardless.
-    // Coverage has already pruned the empty regions during the descent; this is the safety net
-    // for a tile that reached the emission list some other way, such as through balancing.
+    // Only coverage removes tiles, never the view; catches balancing splits.
     auto isVisible = [&](double x, double z, double s) {
         return coverage == nullptr || coverage->Test(x, z, s) != Coverage::None;
     };
@@ -244,14 +206,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
     };
     std::vector<Node> stack;
 
-    // A camera high above the water sees far more ocean than one at deck level. Rather than drop
-    // tiles when the budget runs out - which would leave holes along the horizon, where the sky
-    // would show straight through - back the detail off and select again.
-    //
-    // Edge a partially covered tile is split down to. Small enough that a tile's box no longer
-    // reaches across the scene, large enough that a coastline does not cost hundreds of them. It
-    // coarsens alongside the level of detail when the budget is tight, so the two back off
-    // together rather than this one fighting the budget on its own.
+    // Split edge for partially covered tiles; coarsens with the LOD.
     double coverageSplit = std::max((double)minTile * 2.0, 256.0);
     for (int attempt = 0;; ++attempt) {
         m_set.clear();
@@ -265,16 +220,12 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
             nodeMin(n.level, n.ix, n.iy, x, z, s);
             const double dist = detail::TileDistance(x, z, s, cam.position_world, seaLevel);
 
-            // Where the world has no water at all, the whole subtree goes: no geometry, no
-            // instance, and nothing for a ray crossing that ground to step into.
             const Coverage cov = coverage ? coverage->Test(x, z, s) : Coverage::Full;
             if (cov == Coverage::None)
                 continue;
 
             const bool canSplit = (n.level < maxLevel) && (s > minTile * 1.5);
-            // A tile straddling a shoreline is split past what distance alone would ask for,
-            // until it is small enough that its bounding box hugs the water instead of reaching
-            // across the land beside it. Distance may still split it further.
+            // Split shoreline tiles until their boxes hug the water.
             const bool splitForCoverage = cov == Coverage::Partial && s > coverageSplit;
             if (canSplit && (splitForCoverage || s > rule.Ratio(dist, inView(x, z, s)) * std::max(dist, 1.0))) {
                 stack.push_back({(uint8_t)(n.level + 1), n.ix * 2u + 0u, n.iy * 2u + 0u});
@@ -286,8 +237,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
             m_set.insert(TileKey(n.level, n.ix, n.iy));
         }
 
-        // Count what would actually be emitted. Balancing only ever adds leaves, so leave headroom
-        // for the tiles it will split.
+        // Leave headroom: balancing only adds leaves.
         uint32_t visibleCount = 0;
         for (uint64_t key : m_set) {
             uint8_t level;
@@ -304,8 +254,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
         coverageSplit *= 1.4;
     }
 
-    // Returns the selected leaf covering a cell, which is that cell or one of its ancestors.
-    // A miss means the region is subdivided further than the query level.
+    // Selected leaf at or above a cell; misses where the region is finer.
     auto coveringLeaf = [&](uint8_t level, int64_t nx, int64_t ny, uint8_t& outLevel) -> bool {
         if (nx < 0 || ny < 0)
             return false;
@@ -323,8 +272,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
         return false;
     };
 
-    // Balance: a leaf whose neighbour is more than kMaxLevelStep levels coarser forces that
-    // neighbour to split; splitting can expose new imbalances, so this runs to a fixed point.
+    // Balance to kMaxLevelStep, iterated to a fixed point.
     const int kEdgeDX[4] = {-1, 1, 0, 0};
     const int kEdgeDY[4] = {0, 0, -1, 1};
     for (int pass = 0; pass < 64; ++pass) {
@@ -355,9 +303,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
         }
     }
 
-    // Balancing may consume more than the reserved headroom. Retry the complete selection
-    // at a coarser LOD before assigning slots instead of dropping tiles and opening holes.
-    // Increasing the LOD factor eventually selects just the root, which fits any positive budget.
+    // Over budget: retry coarser rather than drop tiles; the root always fits.
     if (m_set.size() > maxTiles) {
         Params coarser = p;
         coarser.lodFactor = (float)(rule.ratio * 1.4);
@@ -367,7 +313,6 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
     m_leafCount = (uint32_t)m_set.size();
     m_lodFactor = rule.ratio;
 
-    // Assign nearby tiles first. The complete balanced selection now fits the tile budget.
     struct Candidate {
         uint64_t key;
         double dist;
@@ -388,8 +333,7 @@ inline void Quadtree::Select(const Params& p, const planet::CameraView& cam, uin
     std::sort(visible.begin(), visible.end(),
               [](const Candidate& a, const Candidate& b) { return a.dist < b.dist; });
 
-    // Retire disappeared tiles BEFORE allocating their replacements. Waiting until the end
-    // can exhaust the pool on a camera jump even when the new selection fits the budget.
+    // Free vanished tiles' slots first, or a camera jump can starve the pool.
     std::unordered_set<uint64_t> retained;
     for (const auto& c : visible) retained.insert(c.key);
     for (const auto& old : m_slotOf)
