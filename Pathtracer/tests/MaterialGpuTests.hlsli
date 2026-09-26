@@ -1,5 +1,4 @@
 #include "Constants_v8.hlsli"
-float Avg3(float3 v) { return (v.x + v.y + v.z) / 3.0f; }
 float LoadKd_w(uint m) { return m == 5u || m == 6u || m == 10u ? 0.0f : 1.0f; }
 bool LoadIsOceanMaterial(uint m) { return m == 10u; }
 float LoadNi(uint m) { return m == 0u ? 1.0f : 1.5f; }
@@ -66,9 +65,9 @@ void materialCheck(uint3 tid : SV_DispatchThreadID)
         SharcDescriptor descriptor = (SharcDescriptor)0;
         surface.normal = surface.geometricNormal = descriptor.normal = descriptor.geometricNormal = n;
         descriptor.demodulator = 1.0f;
-        float3 ratio = exp2(float3(RandomFloatSingle(seed), RandomFloatSingle(seed), RandomFloatSingle(seed)) * 1.6f - 0.8f);
+        float3 ratio = exp2(float3(RandomFloatSingle(seed), RandomFloatSingle(seed), RandomFloatSingle(seed)) * 5.0f - 2.5f);
         surface.demodulator = ratio;
-        float referenceWeight = 1.0f - smoothstep(0.3f, 0.7f,
+        float referenceWeight = 1.0f - smoothstep(SHARC_SIMILAR_ALBEDO.x, SHARC_SIMILAR_ALBEDO.y,
             max(abs(log2(ratio.x)), max(abs(log2(ratio.y)), abs(log2(ratio.z)))));
         worst = max(worst, abs(referenceWeight - SharcSurfaceWeight(descriptor, surface, 0.0f, 1.0f)));
         SamplingP p = CalculateStrategyProbabilities(m, v, n, etaI, etaT, kd, rough, metal);

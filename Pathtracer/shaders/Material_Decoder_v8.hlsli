@@ -29,11 +29,6 @@ inline float LoadKd_w(uint matID)
     return f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
 }
 
-inline float4 LoadKd(uint matID)
-{
-    return float4(LoadKd_rgb(matID), LoadKd_w(matID));
-}
-
 inline float LoadNi(uint matID)
 {
     return FORCE_DIFFUSE ? 1.0f : f16tof32(g_mat[matID].w_Ni >> 16);
@@ -49,11 +44,6 @@ inline float4 LoadPrPmPsPc(uint matID)
         float((p >>  8) & 0xFFu) * (1.0f / 255.0f),
         float((p >> 16) & 0xFFu) * (1.0f / 255.0f),
         float((p >> 24) & 0xFFu) * (1.0f / 255.0f));
-}
-
-inline float LoadPr(uint matID)
-{
-    return FORCE_DIFFUSE ? 1.0f : float(g_mat[matID].PrPmPsPc & 0xFFu) * (1.0f / 255.0f);
 }
 
 inline float LoadDiffuseRoughness(uint matID)
@@ -97,17 +87,6 @@ inline float LoadAniso(uint matID)
 inline float LoadAnisoRot(uint matID)
 {
     return float((g_mat[matID].Pcr_Aniso_Rot_AlphaTh >> 16) & 0xFFu) * (1.0f / 255.0f);
-}
-
-inline float3 LoadPcrAnisoAnisor(uint matID)
-{
-    const uint p = g_mat[matID].Pcr_Aniso_Rot_AlphaTh;
-    const uint rawA = (p >> 8) & 0xFFu;
-    const int  aS   = (int)(rawA << 24) >> 24;
-    return float3(
-        float( p        & 0xFFu) * (1.0f / 255.0f),
-        float(aS)                * (1.0f / 127.0f),
-        float((p >> 16) & 0xFFu) * (1.0f / 255.0f));
 }
 
 inline float LoadAlphaThreshold(uint matID)

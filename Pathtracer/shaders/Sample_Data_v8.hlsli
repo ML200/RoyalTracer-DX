@@ -173,11 +173,3 @@ SDRecord load_SD(RWByteAddressBuffer buf, uint pixelIdx)
     return r;
 }
 
-void load_SD_header(RWByteAddressBuffer buf, uint pixelIdx,
-                    out uint flags, out uint matID, out float pr, out float pm)
-{
-    const uint4 a = buf.Load4(pixelBaseAddr_SD(pixelIdx) + 4u);
-    flags = a.x;
-    matID = a.y;
-    UnpackFloat2x16(a.w, pr, pm);
-}

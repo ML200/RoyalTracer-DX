@@ -74,19 +74,6 @@ inline float G1_SmithGGX_Aniso(float NdotV, float TdotV, float BdotV, float ax, 
     return 2.0f * NdotV / (NdotV + sqrt(a2));
 }
 
-inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
-{
-    return G1_SmithGGX(NdotV, alpha) * G1_SmithGGX(NdotL, alpha);
-}
-
-inline float G2_SmithGGX_Aniso(float NdotV, float TdotV, float BdotV,
-                                float NdotL, float TdotL, float BdotL,
-                                float ax, float ay)
-{
-    return G1_SmithGGX_Aniso(NdotV, TdotV, BdotV, ax, ay)
-         * G1_SmithGGX_Aniso(NdotL, TdotL, BdotL, ax, ay);
-}
-
 inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 {
     if (abs(N.z) < 0.999f)

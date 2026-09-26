@@ -268,7 +268,7 @@ if(PATHTRACER_ENABLE_DLSSNR)
         endif()
         file(SHA256 "${DLSSNR_RUNTIME_FILE}" _nr_hash)
         if(NOT _nr_hash STREQUAL "e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e")
-            message(FATAL_ERROR "Unrecognized DLSS-NR binary. This experimental bridge is pinned to the tested signed 310.8.0 runtime; see docs/DLSS5.md.")
+            message(FATAL_ERROR "Unrecognized DLSS-NR binary. This experimental bridge is pinned to the tested signed 310.8.0 runtime.")
         endif()
         add_custom_target(copy_dlssnr_runtime ALL
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Pathtracer>/dlssnr"

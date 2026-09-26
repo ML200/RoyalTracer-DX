@@ -48,7 +48,6 @@ uint4 LTC_KeyAtLevel(float3 x,float3 n,uint level) {
     uint3 normal=(uint3)clamp(floor(n*3.0f+3.5f),0.0f,6.0f);
     return uint4(asuint(grid),normal.x+7u*normal.y+49u*normal.z+((level+1u)<<9u));
 }
-uint4 LTC_Key(float3 x,float3 n) { return LTC_KeyAtLevel(x,n,LTC_Level(x)); }
 uint LTC_KeyLevel(uint4 key) { return (key.w>>9u)-1u; }
 uint LTC_Slot(uint4 k) { return LTC_Hash(k.x^LTC_Hash(k.y)^LTC_Hash(k.z)^LTC_Hash(k.w))&(LT_GRID_CAPACITY-1u); }
 uint LTC_Probe(uint4 key,uint probe) {
@@ -127,9 +126,6 @@ bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell,out bool own) {
 #endif
     cell=LTC_Cell(LT_GRID_CAPACITY+LTC_NormalFace(n));
     return g_sharc.Load(cell)==1u;
-}
-bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell) {
-    bool own;return LTC_FindFrom(x,n,level,cell,own);
 }
 bool LTC_Find(float3 x,float3 n,out uint cell,out bool own) {
     cell=0u;own=false;return LTC_Enabled() && LTC_FindFrom(x,n,LTC_Level(x),cell,own);

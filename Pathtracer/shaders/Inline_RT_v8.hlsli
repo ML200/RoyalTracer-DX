@@ -59,7 +59,6 @@ uint ResolveSurfaceMaterial(uint matID, HitInfo hit)
         hit.oceanMaterialOffset : matID;
 }
 
-
 // Self-intersection offset (Waechter & Binder 2019, Ray Tracing Gems).
 static const float RTG_ORIGIN      = 1.0f / 32.0f;
 static const float RTG_FLOAT_SCALE = 1.0f / 65536.0f;
@@ -94,13 +93,6 @@ inline bool IsRayDescValid(RayDesc r)
     // All finite from here, so the float test is safe.
     const float d2 = dot(r.Direction, r.Direction);
     return d2 >= 0.25f && d2 <= 4.0f;
-}
-
-inline bool IsRayValid(float3 origin, float3 direction, float tMax)
-{
-    RayDesc r;
-    r.Origin = origin; r.Direction = direction; r.TMin = 0.0f; r.TMax = tMax;
-    return IsRayDescValid(r) && tMax > 1e-4f;
 }
 
 // An invalid ray becomes an empty-mask ray, i.e. a plain miss. No reorder here.
@@ -143,49 +135,6 @@ inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
     if (LoadInvertAlpha(matID)) alpha = 1.0f - alpha;
 
     return alpha >= LoadAlphaThreshold(matID);
-}
-
-inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
-{
-    const float3 link = B - A;
-    const float3 oA = offset_ray(A, dot( link, nA) >= 0.0f ? nA : -nA);
-    const float3 oB = offset_ray(B, dot(-link, nB) >= 0.0f ? nB : -nB);
-
-    const float3 conn = oB - oA;
-
-    if (dot(conn, link) <= 0.0f) return true;
-
-    const float dist = length(conn);
-
-    if (dist <= EPSILON) return true;
-
-    const float3 direction = conn / dist;
-
-    RayDesc ray;
-    ray.Origin    = oA;
-    ray.Direction = direction;
-    ray.TMin      = 0.001f;
-    ray.TMax      = dist*0.998f;
-    // Endpoints closer than TMin touch.
-    if (ray.TMax <= ray.TMin) return true;
-    if (!IsRayDescValid(ray)) return false;
-
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-
-    [loop]
-    for (uint i = 0u; q.Proceed() && i < 128u; ++i)
-    {
-        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-        {
-            const uint cInstID = q.CandidateInstanceID();
-            const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-            if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
-                q.CommitNonOpaqueTriangleHit();
-        }
-    }
-    return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
 inline float3 CandidateGeoNormalW(uint instID, uint primID)
@@ -302,7 +251,6 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
     }
     return (q.CommittedStatus() == COMMITTED_NOTHING) ? tr : 0.0.xxx;
 }
-
 
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
 {
@@ -471,11 +419,6 @@ inline dx::HitObject TraceRay_Custom(
     dx::MaybeReorderThread(hitObj, hint, 7u + lowHintBits);
 #endif
     return hitObj;
-}
-
-inline float3 EvalMissState(float3 rayDir, float3 sunDisk)
-{
-    return EvaluateSky(rayDir);
 }
 
 inline uint LightRecordOf(uint instID, uint primID)

@@ -1,7 +1,5 @@
 #include "Includes_v8.hlsli"
 
-static const float AE_KEY_VALUE   =  0.18f;
-
 static const float AE_LOG_LUM_MIN = -6.0f;
 static const float AE_LOG_LUM_MAX =  3.0f;
 static const float AE_ADAPT_TAU   =  0.3f;

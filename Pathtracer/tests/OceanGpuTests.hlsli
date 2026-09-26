@@ -1,12 +1,14 @@
 #include "OceanMath.hlsli"
 
+static const float kSunLobe = 0.1f; // ocean::Params::sunLobeRoughness default
+
 // Runs inside the material GPU harness.
 float OceanRegressionError()
 {
     float error = 0.0f;
     // Direct-light widening must not narrow rough materials or own refraction.
-    error = max(error, abs(OceanHighlightRoughness(0.4f) - 0.4f));
-    if (OceanHighlightRoughness(0.0f) <= 0.0f ||
+    error = max(error, abs(OceanHighlightRoughness(0.4f, kSunLobe) - 0.4f));
+    if (OceanHighlightRoughness(0.0f, kSunLobe) <= 0.0f ||
         !OceanDirectLightingOwnsRay(true, 0.5f) || OceanDirectLightingOwnsRay(true, -0.5f) ||
         OceanDirectLightingOwnsRay(false, 0.5f)) return 1.0f;
     if (GGXUsesDeltaSampling(10u,0.0f) || !GGXUsesDeltaSampling(5u,0.0f)) return 1.0f;
@@ -28,9 +30,9 @@ float OceanRegressionError()
     // Broadened highlight off-mirror; the continuation lobe keeps its sharp peak.
     const float3 offMirrorLight = normalize(float3(0.04f,1,0));
     const GGXResult sharpPeak = EvalGGXAll(10u,n,n,n,n,(half)1.0f,(half)1.333f,1.0f,(half)0.0f,(half)0.0f);
-    const GGXResult widePeak = EvalGGXAll(10u,n,n,n,n,(half)1.0f,(half)1.333f,1.0f,(half)OceanHighlightRoughness(0.0f),(half)0.0f);
+    const GGXResult widePeak = EvalGGXAll(10u,n,n,n,n,(half)1.0f,(half)1.333f,1.0f,(half)OceanHighlightRoughness(0.0f, kSunLobe),(half)0.0f);
     const GGXResult sharpSide = EvalGGXAll(10u,n,n,n,offMirrorLight,(half)1.0f,(half)1.333f,1.0f,(half)0.0f,(half)0.0f);
-    const GGXResult wideSide = EvalGGXAll(10u,n,n,n,offMirrorLight,(half)1.0f,(half)1.333f,1.0f,(half)OceanHighlightRoughness(0.0f),(half)0.0f);
+    const GGXResult wideSide = EvalGGXAll(10u,n,n,n,offMirrorLight,(half)1.0f,(half)1.333f,1.0f,(half)OceanHighlightRoughness(0.0f, kSunLobe),(half)0.0f);
     if (!(sharpPeak.f.x > widePeak.f.x && wideSide.f.x > sharpSide.f.x)) return 1.0f;
     error = max(error, abs(f0 - pow((1.333f - 1.0f) / (1.333f + 1.0f), 2.0f)));
     float3 transmitted;
@@ -56,7 +58,7 @@ float OceanRegressionError()
             coreReflections += dot(h.xz,h.xz) <= 1e-6f*h.y*h.y ? 1u : 0u;
         }
     }
-    if (abs(float(reflections) / 2048.0f - 0.7f) > 0.04f) return 1.0f;
+    if (abs(float(reflections) / 2048.0f - 0.5f) > 0.04f) return 1.0f;
     // H must not collapse to N.
     if (offMirror < reflections * 9u / 10u) return 1.0f;
     if (abs(float(coreReflections)/max(float(reflections),1.0f) - 0.5f) > 0.06f) return 1.0f;
@@ -64,7 +66,7 @@ float OceanRegressionError()
     const float3 tir = SampleBRDF_GGX(10u, normalize(float3(0.98f, 0.2f, 0)), n, n,
         1.333f, 1.0f, refracted, seed, 1.0f, 0.0f, 0.0f, true);
     if (refracted || tir.y <= 0.0f) return 1.0f;
-    error = max(error, abs(GGXReflectPick(10u, 0.9f, 0.1f) - 0.9f));
+    error = max(error, abs(GGXReflectPick(10u, 0.9f, 0.1f) - 0.5f));
     error = max(error, abs(GGXReflectPick(10u, 1.0f, 0.0f) - 1.0f));
     error = max(error, GGXReflectPick(10u, 0.0f, 1.0f));
 

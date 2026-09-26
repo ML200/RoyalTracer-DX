@@ -132,9 +132,6 @@ OceanSample OceanSampleSurface(float2 q, float widthM) {
 float3 OceanDisplacementFrom(float2 q, float widthM, uint dispSlot) {
     return OceanSampleSurfaceFrom(q, widthM, dispSlot, false).displacement;
 }
-float3 OceanDisplacement(float2 q, float widthM) {
-    return OceanDisplacementFrom(q, widthM, OceanDispSlot(OceanParams()));
-}
 float3 OceanNormalFromSample(OceanSample s, float2 curveGradient) {
     const float2 slope = OceanWarpedSlope(s.gradient - curveGradient, s.stretch);
     return normalize(float3(-slope.x, 1, -slope.y));

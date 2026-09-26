@@ -66,7 +66,6 @@ cbuffer Push : register(b1)
 SamplerState   g_sampler           : register(s0);
 SamplerState   g_sampler_LUT       : register(s1);
 
-SamplerState   g_samplerPoint      : register(s3);
 Texture2DArray g_LUT         : register(t33);
 
 float4 SampleMaterialTex(Texture2D<float4> tex, float2 uv, float level)
@@ -76,11 +75,6 @@ float4 SampleMaterialTex(Texture2D<float4> tex, float2 uv, float level)
 }
 
 Texture2D<float4> gSkyStars   : register(t40);
-
-Texture2DArray<float> g_terrainHeightmap : register(t45);
-
-Texture2DArray<float4> g_terrainSurfaceColor : register(t46);
-Texture2DArray<float4> g_terrainNormalMap    : register(t47);
 
 Texture2D<float4> g_skyTransmittanceLUT : register(t49);
 Texture2D<float4> g_skyMultiScatterLUT  : register(t51);
@@ -156,47 +150,13 @@ cbuffer CameraParams : register(b0)
 #define SUN_TURBIDITY       sunTurbidity
 #define SUN_INTENSITY_VAL   sunSunIntensity
 
-#define SKY_INTENSITY_VAL   (sunSunIntensity * sunSkyIntensity)
 #define SKY_INTENSITY       (sunSunIntensity * sunSkyIntensity)
 #define GLOBAL_EMISSION_STRENGTH globalEmissionStrength
 
 #define ATMOS_VIEW_STEPS              ((int)atmos_viewSteps)
-#define ATMOS_LIGHT_STEPS             ((int)atmos_lightSteps)
-#define ATMOS_AERIAL_VIEW_STEPS       ((int)atmos_aerialViewSteps)
-#define ATMOS_AERIAL_LIGHT_STEPS      ((int)atmos_aerialLightSteps)
 #define ATMOS_MULTI_SCATTER_FACTOR    atmos_multiScatterFactor
-#define ATMOS_EARTH_SHADOW_SOFTNESS   atmos_earthShadowSoftness
 #define ATMOS_HALO_DISTANCE_KM        atmos_haloDistanceKm
 #define SKY_GROUND_Y                  skyGroundY
-
-inline void SphereToEquiangularFaceUV(float3 dir, out int face, out float2 uv)
-{
-    float3 a = abs(dir);
-    float  ut, vt;
-    if (a.x >= a.y && a.x >= a.z) {
-        if (dir.x > 0.0f) { face = 0; ut = -dir.z / a.x; vt = -dir.y / a.x; }
-        else              { face = 1; ut =  dir.z / a.x; vt = -dir.y / a.x; }
-    } else if (a.y >= a.x && a.y >= a.z) {
-        if (dir.y > 0.0f) { face = 2; ut =  dir.x / a.y; vt =  dir.z / a.y; }
-        else              { face = 3; ut =  dir.x / a.y; vt = -dir.z / a.y; }
-    } else {
-        if (dir.z > 0.0f) { face = 4; ut =  dir.x / a.z; vt = -dir.y / a.z; }
-        else              { face = 5; ut = -dir.x / a.z; vt = -dir.y / a.z; }
-    }
-
-    const float kInv = 4.0f / 3.14159265358979f;
-    uv = float2(atan(ut), atan(vt)) * kInv * 0.5f + 0.5f;
-}
-
-inline float TerrainHeight(float3 dir)
-{
-    int    face;
-    float2 uv;
-    SphereToEquiangularFaceUV(dir, face, uv);
-
-    float km = g_terrainHeightmap.SampleLevel(g_sampler_LUT, float3(uv, (float)face), 0.0f);
-    return km * 1000.0f;
-}
 
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"
@@ -227,7 +187,6 @@ RWTexture2DArray<float4> gScratchPing        : register(u8);
 
 RWByteAddressBuffer g_liteReservoirs         : register(u4);
 RWByteAddressBuffer g_sample_current         : register(u6);
-RWByteAddressBuffer g_sample_last            : register(u7);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 RWByteAddressBuffer g_skyBake                : register(u25);
 
@@ -261,7 +220,6 @@ StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
 StructuredBuffer<uint4> gLT_TLAS                  : register(t9);
 StructuredBuffer<uint4> gLT_BLAS                  : register(t10);
-StructuredBuffer<BlasRangeGpu>     gLT_Range        : register(t11);
 Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 
 StructuredBuffer<LightSlotGpu>     gLT_Slot         : register(t7);

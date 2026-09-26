@@ -298,12 +298,6 @@ LT_Sample LT_SampleSubtree(float3 worldPos, float3 worldNormal, inout uint rng, 
     slotOut = slot;
     return s;
 }
-LT_Sample LT_SampleSubtree(float3 worldPos, float3 worldNormal, inout uint rng, uint startNode=0u, uint startSlot=LT_SENTINEL)
-{
-    uint ignored;
-    return LT_SampleSubtree(worldPos, worldNormal, rng, startNode, startSlot, ignored);
-}
-
 // Replays stored trails for the matching subtree PDF.
 float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode=0u, uint startSlot=LT_SENTINEL, uint startDepth=0u)
 {
@@ -464,8 +458,3 @@ LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSamp
     return result;
 }
 
-LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inout uint rng)
-{
-    const LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
-    return LT_SamplePointOnLightTree(refPos, treeSample, rng);
-}

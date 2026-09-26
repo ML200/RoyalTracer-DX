@@ -107,18 +107,6 @@ void LiteMarkEmpty(uint px)
     g_liteReservoirs.Store(LiteAddress(px) + 28u, 0u);
 }
 
-void LiteParkStore(uint px, float3 broadWeight, float pdf)
-{
-    g_pathStateBuffer.Store4(LiteParkAddress(px), uint4(asuint(broadWeight), asuint(pdf)));
-}
-
-void LiteParkLoad(uint px, out float3 broadWeight, out float pdf)
-{
-    const uint4 w = g_pathStateBuffer.Load4(LiteParkAddress(px));
-    broadWeight = asfloat(w.xyz);
-    pdf = asfloat(w.w);
-}
-
 void LiteParkPointStore(uint px, float3 positionObj, uint instance, uint normalPk, float pdf)
 {
     g_pathStateBuffer.Store4(LiteParkAddress(px), uint4(asuint(positionObj), instance));

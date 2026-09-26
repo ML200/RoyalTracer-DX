@@ -3,17 +3,11 @@
 static const uint  SSS_MAX_STEPS  = 64u;
 static const float SSS_MIN_RADIUS = 1e-3f;
 static const float SSS_RR_FLOOR   = 0.05f;
-static const float SSS_INV_PI     = 0.31830988618f;
 
 struct SSSWalkResult {
-    float3 entryDir;
-    float3 firstScatterPos;
-    float3 firstScatterDir;
-    float3 wRest;
     float3 wTotal;
     float3 exitPos;
     float3 exitNormal;
-    uint   nScatters;
     bool   valid;
 };
 
@@ -48,13 +42,6 @@ inline float3 SampleHenyeyGreenstein(float3 wo, float g, inout uint seed)
     return normalize(sinT * cos(phi) * T + sinT * sin(phi) * B + cosT * wo);
 }
 
-inline float EvaluatePhaseHG(float g, float cosTheta)
-{
-    const float gg    = g * g;
-    const float denom = 1.0f + gg - 2.0f * g * cosTheta;
-    return (1.0f - gg) / (4.0f * 3.14159265359f * max(denom * sqrt(max(denom, 1e-8f)), 1e-8f));
-}
-
 inline float3 SSS_ExitNormal(uint instID, uint primID, float2 bc, float3 dir)
 {
     const uint baseI = instanceProps[instID].indexBase;
@@ -86,14 +73,9 @@ inline SSSWalkResult SubsurfaceWalk(
     uint matID, inout uint seed)
 {
     SSSWalkResult r;
-    r.entryDir        = -entryNormal;
-    r.firstScatterPos = entryPos;
-    r.firstScatterDir = -entryNormal;
-    r.wRest           = float3(1, 1, 1);
     r.wTotal          = float3(1, 1, 1);
     r.exitPos         = entryPos;
     r.exitNormal      = entryNormal;
-    r.nScatters       = 0u;
     r.valid           = false;
 
     const float3 albedo  = saturate(LoadSSSAlbedo(matID));
@@ -102,11 +84,9 @@ inline SSSWalkResult SubsurfaceWalk(
     const float  sigma_t = 1.0f / radius;
 
     float3 dir = -CosineUnitVectorInHemisphere(entryNormal, seed);
-    r.entryDir = dir;
 
     float3 pos    = offset_ray(entryPos, -entryNormal);
     float3 wTotal = float3(1, 1, 1);
-    float3 wRest  = float3(1, 1, 1);
 
     [loop]
     for (uint step = 0u; step < SSS_MAX_STEPS; ++step)
@@ -134,7 +114,6 @@ inline SSSWalkResult SubsurfaceWalk(
 
             r.exitPos    = pos + dir * tHit;
             r.exitNormal = SSS_ExitNormal(instID, primID, q.CommittedTriangleBarycentrics(), dir);
-            r.wRest      = wRest;
             r.wTotal     = wTotal;
 
             r.valid      = true;
@@ -143,17 +122,7 @@ inline SSSWalkResult SubsurfaceWalk(
 
         pos += dir * dl;
         const float3 newDir = SampleHenyeyGreenstein(dir, g, seed);
-
-        if (r.nScatters == 0u) {
-            r.firstScatterPos = pos;
-            r.firstScatterDir = newDir;
-
-            r.entryDir = normalize(r.firstScatterPos - entryPos);
-        } else {
-            wRest *= albedo;
-        }
         wTotal *= albedo;
-        r.nScatters++;
         dir = newDir;
 
         const float p = max(wTotal.x, max(wTotal.y, wTotal.z));
@@ -162,7 +131,6 @@ inline SSSWalkResult SubsurfaceWalk(
             if (RandomFloatSingle(seed) > p) return r;
             const float inv = 1.0f / max(p, 1e-4f);
             wTotal *= inv;
-            wRest  *= inv;
         }
     }
 

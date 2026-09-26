@@ -1,8 +1,6 @@
 #pragma once
 // Pure diffuse reuse math (Bitterli et al. 2020; Bitterli 2022 confidence weights).
 
-
-
 static const uint  LITE_INF = 0xffffffffu;
 static const uint  LITE_EMPTY = 0xfffffffeu;
 static const uint  LITE_KIND_LIGHT = 0u;
@@ -31,11 +29,6 @@ struct LiteReservoir
 
 uint LiteAddress(uint px) { return px * LITE_RESERVOIR_BYTES; }
 bool LiteHasSample(LiteSample s) { return s.instance != LITE_EMPTY; }
-
-bool LiteSameSample(LiteSample a, LiteSample b)
-{
-    return a.instance == b.instance && all(a.position == b.position);
-}
 
 float3 LiteQuantizeRadiance(float3 L)
 {
@@ -87,7 +80,6 @@ void LiteStore(RWByteAddressBuffer buf, uint px, LiteReservoir r)
         PackNormal(r.s.normal), asuint(r.W), LitePackMeta(r.M, r.s.kind, r.tint)));
 }
 
-
 LiteSample LiteSampleDirection(float3 direction, float3 radiance)
 {
     LiteSample s;
@@ -105,7 +97,6 @@ struct LiteReceiver
     float3 n;
     float3 albedo;
 };
-
 
 struct LiteLink
 {
@@ -159,7 +150,6 @@ float LiteTarget(float3 albedo, LiteSample s, LiteLink l, float3 yWorld, float v
     if (!LiteLinkValid(l) || !(visibility > 0.0f)) return 0.0f;
     return Luma(albedo * s.radiance) * LITE_INV_PI * l.geom * visibility;
 }
-
 
 // Bitterli 2022 pairwise MIS.
 float LiteMisPartner(float Mi, float pii, float Mc, float pci, float O, float Msum)

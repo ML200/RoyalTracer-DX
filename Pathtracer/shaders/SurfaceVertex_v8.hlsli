@@ -10,7 +10,6 @@ struct SurfaceVertex {
     float  etai;
     float  etat;
     uint   matID;
-    float2 uv;
 };
 
 inline SurfaceVertex MakeVertex(float3 x1, float3 n_s, float3 viewOrigin,
@@ -25,7 +24,6 @@ inline SurfaceVertex MakeVertex(float3 x1, float3 n_s, float3 viewOrigin,
     v.Kd    = Kd;
     v.Pr    = Pr;
     v.Pm    = Pm;
-    v.uv    = float2(0.0f, 0.0f);
 
     const float matNi = LoadNi(matID);
     const float Kd_w  = LoadKd_w(matID);

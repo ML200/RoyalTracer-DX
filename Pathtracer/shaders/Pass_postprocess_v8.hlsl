@@ -22,25 +22,6 @@ inline float3 sRGBGammaCorrection(float3 color)
     return result;
 }
 
-float3 PBRNeutral(float3 color) {
-    const float startCompression = 0.8f - 0.04f;
-    const float desaturation = 0.15f;
-
-    float x = min(color.r, min(color.g, color.b));
-    float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
-    color -= offset;
-
-    float peak = max(color.r, max(color.g, color.b));
-    if (peak < startCompression) return max(color, 0.0f);
-
-    float d = 1.0f - startCompression;
-    float newPeak = 1.0f - d * d / (peak + d - startCompression);
-    color *= newPeak / peak;
-
-    float g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
-    return lerp(color, newPeak.xxx, g);
-}
-
 static const float3x3 kAgXInputMatrix = float3x3(
     0.842479062253094f,  0.0784335999999992f, 0.0792237451477643f,
     0.0423282422610123f, 0.878468636469772f,  0.0791661274605434f,
@@ -91,7 +72,6 @@ float3 AgX(float3 color) {
 
     return AgXSoftGamutClamp(color);
 }
-
 
 inline float3 DlssDecode(float3 r, float exposure) {
     return max(r, 0.0f) / max(exposure, 1e-8f);

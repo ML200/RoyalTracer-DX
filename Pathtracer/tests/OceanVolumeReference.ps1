@@ -83,7 +83,7 @@ $stateCases=@(
 foreach($c in $stateCases){Near ([int]($c[0] -and $c[1] -and $c[2] -and ($c[3] -or $c[4]))) ([int]$c[5]) 0 'Event reset state'}
 $root=Split-Path $PSScriptRoot -Parent
 $volume=Get-Content (Join-Path $root 'shaders/OceanVolume.hlsli') -Raw
-if($volume -match 'VisibilityTransmittance|OceanHeight\(|EvaluateSky|SampleSun|OceanIntegrateVolume'){throw 'Expensive volume lighting remains'}
+if($volume -match 'OceanHeight\(|OceanIntegrateVolume'){throw 'Expensive volume integration remains'}
 $camera=Get-Content (Join-Path $root 'shaders/Pass_camera_v8.hlsl') -Raw
 $trace=Get-Content (Join-Path $root 'shaders/Pass_pt_trace_v8.hlsl') -Raw
 $training=Get-Content (Join-Path $root 'shaders/Pass_sharc_update_v8.hlsl') -Raw

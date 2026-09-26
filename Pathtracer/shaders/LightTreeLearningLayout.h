@@ -9,7 +9,6 @@
 #define LT_GRID_CAPACITY 65536u
 #define LT_BLEND_FEEDBACK 1
 
-#define LT_SURFACE_FILTER 1
 // 1: borrow a same-level neighbour cell before the root fallback.
 #define LT_BORROW_NEIGHBOURS 0
 #define LT_GLOBAL_CELLS 6u

@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $RuntimePath = (Resolve-Path -LiteralPath $RuntimePath).Path
-if ((Get-FileHash -LiteralPath $RuntimePath -Algorithm SHA256).Hash -ne 'E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E') { throw 'Unrecognized NR runtime; see docs/DLSS5.md' }
+if ((Get-FileHash -LiteralPath $RuntimePath -Algorithm SHA256).Hash -ne 'E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E') { throw 'Unrecognized NR runtime' }
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     $install = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath

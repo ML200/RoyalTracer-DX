@@ -1,5 +1,4 @@
 inline float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
-inline float Avg3(float3 c) { return dot(c, float3(0.33333f, 0.33333f, 0.33333f)); }
 
 inline uint MapPixelID(uint2 dims, int2 lIndex)
 {
@@ -59,7 +58,6 @@ inline int2 UnmapPixelID(uint pixelID, uint2 dims)
     return int2(globalX, globalY);
 }
 
-
 // Ray Tracing Gems, chapter 32.
 float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 {
@@ -103,63 +101,6 @@ float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
     return mad(SpecularColor, max(0, scale), max(0, bias));
 }
 
-#define BOIL_GROUP_X 16
-#define BOIL_GROUP_Y 16
-#define BOIL_THREADS (BOIL_GROUP_X * BOIL_GROUP_Y)
-
-groupshared float gBoilValues[BOIL_THREADS];
-
-float BoilMultiplier(float strength)
-{
-    return 10.0f / clamp(strength, 1e-6f, 1.0f) - 9.0f;
-}
-
-bool BoilingFilter(
-    uint2 localIndex,
-    float filterStrength,
-    float v,
-    out float avgNonzero,
-    out float threshold)
-{
-    uint gsIdx = localIndex.x + localIndex.y * BOIL_GROUP_X;
-
-    gBoilValues[gsIdx] = v;
-    GroupMemoryBarrierWithGroupSync();
-
-    [unroll]
-    for (uint stride = 128u; stride > 0u; stride >>= 1u)
-    {
-        if (gsIdx < stride)
-        {
-            gBoilValues[gsIdx] += gBoilValues[gsIdx + stride];
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    float groupSum = gBoilValues[0];
-
-    GroupMemoryBarrierWithGroupSync();
-
-    gBoilValues[gsIdx] = (v > 0.0f) ? 1.0f : 0.0f;
-    GroupMemoryBarrierWithGroupSync();
-
-    [unroll]
-    for (uint stride2 = 128u; stride2 > 0u; stride2 >>= 1u)
-    {
-        if (gsIdx < stride2)
-        {
-            gBoilValues[gsIdx] += gBoilValues[gsIdx + stride2];
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    uint groupCnt = (uint)gBoilValues[0];
-
-    avgNonzero = (groupCnt > 0) ? (groupSum / float(groupCnt)) : 0.0f;
-    threshold  = avgNonzero * BoilMultiplier(filterStrength);
-
-    return (v > threshold);
-}
 
 float DLSS_GuideDepthFromWorldPos(float3 worldPos)
 {

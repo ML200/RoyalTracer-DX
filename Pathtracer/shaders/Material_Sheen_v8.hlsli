@@ -1,6 +1,5 @@
 // Charlie sheen (Conty Estevez & Kulla 2017).
 static const float  SHEEN_R      = 0.20f;
-static const float3 SHEEN_COLOR  = float3(1,1,1);
 
 static const float SHEEN_INVR    = 1.0f / SHEEN_R;
 static const float SHEEN_D_SCALE = (2.0f + SHEEN_INVR) * (0.5f * INV_PI);
@@ -48,7 +47,7 @@ inline float SHEEN_G_Charlie(float NdotV, float NdotL)
     return 1.0f / (1.0f + lambdaV + lambdaL);
 }
 
-inline float3 SHEEN_SampleHalfVector(uint seed, float3 N, out float NdotH, out float pdf_H)
+inline float3 SHEEN_SampleHalfVector(inout uint seed, float3 N, out float NdotH, out float pdf_H)
 {
     float u1  = RandomFloatSingle(seed);
     float u2  = RandomFloatSingle(seed);
