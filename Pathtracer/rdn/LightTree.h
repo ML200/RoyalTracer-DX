@@ -143,7 +143,7 @@ struct BlasRangeGpu {
     uint32_t triIndexCount;
 };
 
-// Per-instance transform and power scale for a shared mesh light tree.
+// One instance of a shared mesh light tree.
 struct LightSlotGpu {
     float worldToLocal[12];
     uint32_t instanceID;
@@ -195,12 +195,6 @@ static XMFLOAT3 max3(const XMFLOAT3& a, const XMFLOAT3& b) {
     return {(std::fmax)(a.x, b.x), (std::fmax)(a.y, b.y), (std::fmax)(a.z, b.z)};
 }
 
-static Aabb triAabb(const ::LightTriangle& t) {
-    Aabb a;
-    a.mn = min3(t.x, min3(t.y, t.z));
-    a.mx = max3(t.x, max3(t.y, t.z));
-    return a;
-}
 static Aabb unionAabb(const Aabb& a, const Aabb& b) {
     return {min3(a.mn, b.mn), max3(a.mx, b.mx)};
 }
@@ -221,9 +215,6 @@ static float clampf(float x, float lo, float hi) {
 static float safe_acosf(float x) {
     return std::acos(clampf(x, -1.f, 1.f));
 }
-static float safe_asinf(float x) {
-    return std::asin(clampf(x, -1.f, 1.f));
-}
 
 static XMFLOAT3 slerpUnit(const XMFLOAT3& a, const XMFLOAT3& b, float t) {
     float cosT = clampf(dot3(a, b), -1.f, 1.f);
@@ -242,7 +233,7 @@ struct Cone {
     float theta_e = LT_HALF_PI;
 };
 
-// Conservatively enclose both emission cones in one orientation bound.
+// Conservative cone union (Conty & Kulla 2018).
 static Cone coneUnion(const Cone& A, const Cone& B) {
     Cone a = A, b = B;
     if (b.theta_o > a.theta_o)
@@ -266,7 +257,7 @@ static Cone coneUnion(const Cone& A, const Cone& B) {
     if (theta_d < 1e-7f) {
         out.axis = a.axis;
     } else if (LT_PI - theta_d < 1e-7f) {
-        // Opposite axes need an explicit rotation plane instead of slerp.
+        // Opposite axes: slerp is undefined.
         XMFLOAT3 t = (std::fabs(a.axis.x) < 0.9f) ? XMFLOAT3{1, 0, 0} : XMFLOAT3{0, 1, 0};
         const auto perpendicular = normalize3(cross3(a.axis, t));
         const float angle = theta_o - a.theta_o;
@@ -280,7 +271,7 @@ static Cone coneUnion(const Cone& A, const Cone& B) {
     return out;
 }
 
-// SAOH angular measure; depends on cone width, not its axis.
+// SAOH orientation measure (Conty & Kulla 2018).
 static float orientationMeasure(const Cone& c) {
     const float theta_o = clampf(c.theta_o, 0.f, LT_PI);
     const float theta_w = (std::fmin)(theta_o + clampf(c.theta_e, 0.f, LT_PI), LT_PI);
@@ -326,17 +317,7 @@ static XMFLOAT3 transformNormalW(const XMFLOAT3& n, const XMFLOAT3X3& N33) {
     return normalize3(out);
 }
 
-static Aabb triAabbWorld(const ::LightTriangle& t, const XMFLOAT4X4& world) {
-    const XMFLOAT3 X = transformPointW(t.x, world);
-    const XMFLOAT3 Y = transformPointW(t.y, world);
-    const XMFLOAT3 Z = transformPointW(t.z, world);
-    Aabb a;
-    a.mn = min3(X, min3(Y, Z));
-    a.mx = max3(X, max3(Y, Z));
-    return a;
-}
-
-// Cone angles survive orthogonal transforms with uniform scale.
+// Similarity transforms preserve cone angles.
 static bool similarityTransform(const XMFLOAT4X4& w) {
     const XMFLOAT3 a{w._11, w._12, w._13}, b{w._21, w._22, w._23}, c{w._31, w._32, w._33};
     const float scale = (std::max)({dot3(a, a), dot3(b, b), dot3(c, c), 1e-20f});
@@ -358,7 +339,7 @@ static Aabb transformBounds(const Aabb& a, const XMFLOAT4X4& w) {
     return r;
 }
 
-// Equivalent uniform-scale area factor from the absolute determinant.
+// Area scale of the equivalent uniform scaling.
 static float areaScale(const XMFLOAT4X4& w) {
     const XMFLOAT3 a{w._11, w._12, w._13}, b{w._21, w._22, w._23}, c{w._31, w._32, w._33};
     const float det = std::fabs(dot3(a, cross3(b, c)));
@@ -451,9 +432,6 @@ class LightTreeBuilder {
         std::vector<ComPtr<ID3D12Resource>> staging;
     };
 
-    std::vector<BlasRangeGpu> m_cpuBlasRanges;
-
-    const std::vector<BlasRangeGpu>& GetCpuBLASRanges() const { return m_cpuBlasRanges; }
     const std::vector<LightTLASNodeGpu>& GetCpuTLASNodes() const { return m_tlas; }
     const std::vector<LightInstanceRef>& Slots() const { return m_slots; }
     const std::vector<LightSlotGpu>& SlotRecords() const { return m_slotGpu; }
@@ -463,7 +441,7 @@ class LightTreeBuilder {
         return it == m_blasOfMesh.end() ? UINT32_MAX : it->second;
     }
 
-    // Traversal trails identify individual triangles, so leaves cannot group them.
+    // Trails address single triangles: one per leaf.
     void enforceLeafInvariant() {
         if (m_cfg.maxLeafTris != 1u) {
             LT_WARN(L"maxLeafTris=" << m_cfg.maxLeafTris << L" ignored; BLAS leaves are fixed at 1 triangle.");
@@ -471,7 +449,7 @@ class LightTreeBuilder {
         }
     }
 
-    // Build shared mesh trees, then a tree over transformed light instances.
+    // Per-mesh trees, then one over light instances.
     void Build(const std::vector<::LightTriangle>& records, const std::vector<LightInstanceRef>& slots,
                const std::vector<InstanceXformCPU>& xforms, const Settings& cfg = {}) {
         LT_TIME_SCOPE(L"Build()");
@@ -516,7 +494,7 @@ class LightTreeBuilder {
         std::vector<uint32_t> leafTriLocal;
         std::vector<LightTreeTrail> trails;
     };
-    // Build one local tree and its per-triangle traversal trails.
+    // Also builds per-triangle traversal trails.
     static void BuildSingleBLAS(const std::vector<::LightTriangle>& tris, SingleBLAS& out, uint32_t bins = 32u) {
         out.nodes.clear();
         out.leafTriLocal.clear();
@@ -536,7 +514,7 @@ class LightTreeBuilder {
             tmp.push_back(makeTmpTri(tris[i], i));
         b.buildBLASRecursive_SAOH(tmp, blas, 0u, (uint32_t)tmp.size(), 0u, 0u);
 
-        // Breadth-first packing keeps siblings contiguous for GPU traversal.
+        // BFS order keeps siblings contiguous.
         std::vector<uint32_t> order;
         order.reserve(blas.nodes.size());
         std::vector<uint32_t> remap(blas.nodes.size(), 0xFFFFFFFFu);
@@ -561,7 +539,7 @@ class LightTreeBuilder {
         b.m_tris = nullptr;
     }
 
-    // Flatten mesh trees and rebase their leaf ranges into shared buffers.
+    // Flattens mesh trees into shared buffers.
     void UploadAll(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
         LT_TIME_SCOPE(L"UploadAll()");
         const uint32_t nodeWords = LightBLASNodeStride(m_cfg.compactGpuNodes) / sizeof(uint32_t);
@@ -608,8 +586,6 @@ class LightTreeBuilder {
                 triToBLAS[b.leafTriList[j]] = bIdx;
             }
         }
-
-        m_cpuBlasRanges = gpuRanges;
 
         m_gpu = {};
         m_gpu.BLASNodes = uploadVector(device, cmdList, gpuBlasNodes);
@@ -713,21 +689,17 @@ class LightTreeBuilder {
                     DXGI_FORMAT_R32G32_UINT, dst);
     }
 
-    // Call only after the recorded uploads have completed on the GPU.
+    // Only after the uploads complete on the GPU.
     void ReleaseStaging() {
         LT_TIME_SCOPE(L"ReleaseStaging()");
         LT_LOG(L"ReleaseStaging: " << m_gpu.staging.size() << L" upload buffers freed");
         m_gpu.staging.clear();
     }
 
-    ID3D12Resource* GetTLASGpuBuffer() const { return m_gpu.TLASNodes.Get(); }
-    ID3D12Resource* GetBLASBitTrailGpuBuffer() const { return m_gpu.BLASBitTrail.Get(); }
     bool CompactGpuNodes() const { return m_cfg.compactGpuNodes; }
-    uint32_t GetTLASBufferSize() const { return static_cast<uint32_t>(m_tlas.size() * LightTLASNodeStride(m_cfg.compactGpuNodes)); }
 
     const GpuBuffers& GetGpu() const { return m_gpu; }
 
-    uint32_t TLASNodeCount() const { return static_cast<uint32_t>(m_tlas.size()); }
     uint32_t BLASCount() const { return static_cast<uint32_t>(m_blas.size()); }
     uint32_t SlotCount() const { return static_cast<uint32_t>(m_slots.size()); }
 
@@ -1012,7 +984,7 @@ class LightTreeBuilder {
         A.sumP2 += B.sumP2;
     }
 
-    // Build four-way nodes using spatial, power, and orientation split costs.
+    // Builds four-way nodes.
     uint32_t buildBLASRecursive_SAOH(std::vector<TmpTri>& tmp, BLASBuild& out, uint32_t begin, uint32_t end,
                                      LightTreeTrail bitTrail, uint32_t depth, uint32_t destination = UINT32_MAX) {
         const uint32_t nodeIdx = destination == UINT32_MAX ? static_cast<uint32_t>(out.nodes.size()) : destination;
@@ -1053,7 +1025,7 @@ class LightTreeBuilder {
                 aggAdd(parentL, tmp[i]);
             const Aabb aabb = parentL.a;
             const XMFLOAT3 ext = aabbExtent(aabb);
-            // Balance deep subtrees before the packed traversal trail runs out.
+            // Median split before trail bits run out.
             if (LightTreeNeedsBalancedSplit(e0 - b0, depth)) {
                 axisOut = (ext.y > ext.x && ext.y >= ext.z) ? 1 : (ext.z > ext.x ? 2 : 0);
                 midOut = b0 + (e0 - b0) / 2u;
@@ -1198,7 +1170,7 @@ class LightTreeBuilder {
         pushOrSplitOnce(begin, mid);
         pushOrSplitOnce(mid, end);
 
-        // Reserve adjacent child slots before recursion appends their descendants.
+        // Contiguous child slots before recursing.
         nodeAt(nodeIdx).firstChild = static_cast<uint32_t>(out.nodes.size());
         nodeAt(nodeIdx).childCount = bucketCount;
         for (uint32_t i = 0; i < bucketCount; i++)
@@ -1210,7 +1182,7 @@ class LightTreeBuilder {
             buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e, childTrail, depth + 1u, desired);
         }
 
-        // Recursive growth may invalidate references into the node vector.
+        // Re-fetch: recursion may reallocate nodes.
         BLASNode& N = nodeAt(nodeIdx);
         N.triFirst = (std::numeric_limits<uint32_t>::max)();
         N.triCount = 0;
@@ -1223,7 +1195,7 @@ class LightTreeBuilder {
         return nodeIdx;
     }
 
-    // Bound each transformed mesh root without duplicating its triangle tree.
+    // Leaves bound transformed mesh roots; trees stay shared.
     void buildTLAS_SAOH() {
         LT_TIME_SCOPE(L"buildTLAS_SAOH()");
 
@@ -1245,7 +1217,7 @@ class LightTreeBuilder {
             it.p = r.power * scale;
             it.cone = r.cone;
             it.cone.axis = transformNormalW(r.cone.axis, normalXformFor(inst));
-            // Nonuniform scale can widen normals beyond the original cone.
+            // Nonuniform scale can widen the normal cone.
             if (!similarityTransform(world))
                 it.cone.theta_o = LT_PI;
 

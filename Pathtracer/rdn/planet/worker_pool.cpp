@@ -79,9 +79,4 @@ void WorkerPool::parallel_for(uint32_t count, const std::function<void(uint32_t)
     }
 }
 
-size_t WorkerPool::pending() {
-    std::lock_guard<std::mutex> lk(m_mutex);
-    return m_jobs.size();
-}
-
 }

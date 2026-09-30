@@ -35,7 +35,7 @@ void SpanAllocator::init(uint64_t capacity, uint64_t granularity) {
     if (capacity) m_free.push_back(Span{ 0, capacity });
 }
 
-// Allocates a best-fit aligned span from the free list.
+// Best fit.
 bool SpanAllocator::allocate(uint64_t count, uint64_t& offset) {
     count = align_up_u64(count, m_granularity);
     if (count == 0) count = m_granularity;
@@ -53,7 +53,6 @@ bool SpanAllocator::allocate(uint64_t count, uint64_t& offset) {
     return true;
 }
 
-// Returns a span and coalesces adjacent free ranges.
 void SpanAllocator::free(uint64_t offset, uint64_t count) {
     count = align_up_u64(count, m_granularity);
     if (count == 0) count = m_granularity;
@@ -78,7 +77,6 @@ VoxelStreamer::~VoxelStreamer() {
     if (m_staging && m_stagingMapped) m_staging->Unmap(0, nullptr);
 }
 
-// Creates persistent GPU pools and starts streaming worker resources.
 void VoxelStreamer::init(ID3D12Device5* device, DeviceContext* ctx, World* world, const StreamerConfig& cfg) {
     m_device = device;
     m_ctx = ctx;
@@ -226,10 +224,6 @@ void VoxelStreamer::bind_lights(const LightBinding& b) {
                 b.recordCapacity, b.nodeCapacity, b.slotBase);
 }
 
-void VoxelStreamer::unbind_lights() {
-    bind_lights(LightBinding{});
-}
-
 void VoxelStreamer::set_light_slot_base(uint32_t base) {
     if (m_lights.slotBase == base) return;
     m_lights.slotBase = base;
@@ -316,7 +310,6 @@ DirectX::XMMATRIX VoxelStreamer::placement_matrix(float tx, float ty, float tz) 
                        tx, ty, tz, 1.0f);
 }
 
-// Reserves all GPU spans needed by one chunk and its optional lights.
 bool VoxelStreamer::allocate_gpu(GpuChunk& g, uint32_t vtxCount, uint32_t idxCount, uint32_t triCount, uint64_t blasSize,
                                  uint32_t lightRecs, uint32_t lightNodes, bool* buildPoolFull) {
     std::lock_guard<std::mutex> lk(m_poolMutex);
@@ -466,7 +459,6 @@ ChunkMesher& VoxelStreamer::thread_mesher() {
     return *mesher;
 }
 
-// Meshes one chunk on a worker before scheduling its upload.
 void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
@@ -627,7 +619,6 @@ void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
     job->state.store(1, std::memory_order_release);
 }
 
-// Reclaims fence-retired staging, geometry, BLAS, and light allocations.
 void VoxelStreamer::reclaim() {
     const uint64_t computeDone = m_ctx->PlanetComputeCompleted();
     for (size_t i = 0; i < m_uploading.size(); ) {
@@ -882,7 +873,6 @@ void VoxelStreamer::adopt_cut(LodCut& cut, const double cam[3], float factor) {
     m_renderListChanged = true;
 }
 
-// Adopts the selected cut and schedules missing or stale chunks.
 void VoxelStreamer::select_and_schedule() {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
@@ -1078,6 +1068,7 @@ void VoxelStreamer::dispatch_jobs() {
         job->packed = k;
         job->version = c.version;
         job->params.flatMaterials = c.key.level >= m_cfg.flatColorLevel;
+        job->params.hideWater = m_hideWater;
         job->wantLights = m_cfg.lights && m_lightsBound && c.key.level <= m_cfg.lightMaxLevel;
         job->stagingSlot = slot;
         c.job = job;
@@ -1238,7 +1229,7 @@ void VoxelStreamer::update_stats() {
     s.lightChunksDropped = total.dropped;
     s.chunksTracked = (uint32_t)m_chunks.size();
     {
-        // Keep the LOD estimator's pool usage paired with its triangle census.
+        // Sampled with the census, for the LOD estimator.
         std::lock_guard<std::mutex> lk(m_poolMutex);
         s.vertexUsed = m_vtxAlloc.used();
         s.indexUsed = m_idxAlloc.used();
@@ -1264,7 +1255,6 @@ void VoxelStreamer::begin_frame(const double camWorld[3]) {
     update_stats();
 }
 
-// Records uploads, BLAS builds, compaction, and light-tree updates.
 void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) {
     m_stats.buildsThisFrame = 0;
     m_stats.copiesThisFrame = 0;
@@ -1438,7 +1428,7 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
 }
 
 void VoxelStreamer::append_instances(planet::TlasBuilder& tlas, InstanceProperties* props, const planet::DVec3& sceneOrigin,
-                                     uint32_t hitGroup, bool& forceRebuild) {
+                                     uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) {
     if (!m_world || !m_vertexGlobal) return;
     const bool originChanged = sceneOrigin.x != m_lastOrigin.x || sceneOrigin.y != m_lastOrigin.y || sceneOrigin.z != m_lastOrigin.z;
     m_lastOrigin = sceneOrigin;
@@ -1523,8 +1513,7 @@ void VoxelStreamer::append_instances(planet::TlasBuilder& tlas, InstanceProperti
 void VoxelStreamer::update_light_set(uint32_t) {
     const bool enabled = m_lightsBound && m_cfg.lights;
     const bool sameCamera = m_lightSelectionCam[0] == m_cam[0] && m_lightSelectionCam[1] == m_cam[1] && m_lightSelectionCam[2] == m_cam[2];
-    // An unchanged scene has the same selected lights. Avoid rebuilding and
-    // sorting the complete candidate list every frame, especially in large maps.
+    // Unchanged scene: reuse the last light selection.
     const bool reuse = !m_lightSetDirty && m_lightSelectionFrame == m_renderListFrame && sameCamera
         && m_lightSelectionEnabled == enabled && m_lightSelectionMaxTris == m_cfg.maxLightTris
         && m_lightSelectionMaxSlots == m_cfg.maxLightSlots && m_lightSelectionMaxLevel == m_cfg.lightMaxLevel
@@ -1594,7 +1583,6 @@ void VoxelStreamer::update_light_set(uint32_t) {
     m_stats.lightSelectionMs = std::chrono::duration<float,std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
-// Records copy and compute fences for pending uploads and builds.
 void VoxelStreamer::on_submitted(uint64_t copyFence, uint64_t computeFence) {
     m_lastCopyFence = copyFence;
     m_lastComputeFence = computeFence;
@@ -1631,6 +1619,7 @@ void VoxelStreamer::calibrate_estimates() {
         std::vector<uint32_t> tris(n, 0);
         MeshParams params;
         params.flatMaterials = L >= m_cfg.flatColorLevel;
+        params.hideWater = m_hideWater;
         m_workers->parallel_for((uint32_t)n, [&](uint32_t i) {
             ChunkMesh mesh;
             thread_mesher().mesh(unpack_node(sample[i]), params, mesh);
@@ -1690,6 +1679,32 @@ void VoxelStreamer::warm_up(const double camWorld[3]) {
     m_renderListChanged = true;
 }
 
+// Keeps the old GPU mesh until the new one is ready.
+void VoxelStreamer::remesh_chunk(Chunk& c) {
+    c.version++;
+    c.retryFrame = 0;
+    switch (c.state) {
+    case State::Uploading:
+    case State::Compacting:
+        c.remeshAfterUpload = true;
+        return;
+    case State::Meshed:
+        if (c.job) {
+            free_gpu(c.job->gpu);
+            if (c.job->stagingSlot >= 0) m_stagingSlots[(size_t)c.job->stagingSlot].inUse = false;
+        }
+        break;
+    case State::Ready:
+    case State::Empty:
+        c.rebuilding = c.gpu.valid();
+        break;
+    default:
+        break;
+    }
+    c.job.reset();
+    c.state = State::Pending;
+}
+
 void VoxelStreamer::set_block(int x, int y, int z, BlockId id) {
     if (!m_world) return;
     std::vector<uint64_t> stale;
@@ -1698,30 +1713,104 @@ void VoxelStreamer::set_block(int x, int y, int z, BlockId id) {
         if (m_world->store().chunk_occupied(unpack_node(k))) m_world->lod_tree_mut().add_occupied(k);
         auto it = m_chunks.find(k);
         if (it == m_chunks.end()) continue;
-        Chunk& c = it->second;
-        c.version++;
-        c.retryFrame = 0;
-        switch (c.state) {
-        case State::Uploading:
-        case State::Compacting:
-            c.remeshAfterUpload = true;
-            continue;
-        case State::Meshed:
-            if (c.job) {
-                free_gpu(c.job->gpu);
-                if (c.job->stagingSlot >= 0) m_stagingSlots[(size_t)c.job->stagingSlot].inUse = false;
-            }
-            break;
-        case State::Ready:
-        case State::Empty:
-            c.rebuilding = c.gpu.valid();
-            break;
-        default:
-            break;
-        }
-        c.job.reset();
-        c.state = State::Pending;
+        remesh_chunk(it->second);
     }
+}
+
+void VoxelStreamer::WaterCoverage::build(const World& world, const Placement& place) {
+    m_place = place;
+    m_bits.clear();
+    m_w = m_h = 0;
+    m_withWater = 0;
+
+    const VoxelStore& store = world.store();
+    const BlockRegistry& reg = world.registry();
+    int minSx, maxSx, minSz, maxSz;
+    if (!store.column_bounds(0, minSx, maxSx, minSz, maxSz))
+        return;
+
+    // Section columns, not chunks.
+    m_minCx = minSx;
+    m_minCz = minSz;
+    m_w = (uint32_t)(maxSx - minSx + 1);
+    m_h = (uint32_t)(maxSz - minSz + 1);
+    m_bits.assign(((size_t)m_w * m_h + 63) / 64, 0ull);
+
+    const int minSy = store.min_section_y(0);
+    const int maxSy = store.max_section_y(0);
+    for (int sx = minSx; sx <= maxSx; ++sx) {
+        for (int sz = minSz; sz <= maxSz; ++sz) {
+            bool water = false;
+            for (int sy = minSy; sy <= maxSy && !water; ++sy) {
+                const Section* s = store.section(0, sx, sy, sz);
+                if (!s)
+                    continue;
+                // Palette only; never reads blocks.
+                for (Voxel v : s->palette()) {
+                    if (reg.info(voxel_id(v)).water) { water = true; break; }
+                }
+            }
+            if (!water)
+                continue;
+            const size_t index = (size_t)(sz - minSz) * m_w + (size_t)(sx - minSx);
+            m_bits[index >> 6] |= 1ull << (index & 63);
+            ++m_withWater;
+        }
+    }
+}
+
+ocean::Coverage VoxelStreamer::WaterCoverage::Test(double minX, double minZ, double size) const {
+    if (m_bits.empty())
+        return ocean::Coverage::Full; // nothing surveyed: cull nothing
+
+    // World may be rotated/scaled: test the corners' bounding box.
+    double bx0 = 1e300, bx1 = -1e300, bz0 = 1e300, bz1 = -1e300;
+    for (int corner = 0; corner < 4; ++corner) {
+        const double sceneP[3] = {minX + ((corner & 1) ? size : 0.0), 0.0,
+                                  minZ + ((corner & 2) ? size : 0.0)};
+        double blockP[3];
+        m_place.to_blocks(sceneP, blockP);
+        bx0 = std::min(bx0, blockP[0]); bx1 = std::max(bx1, blockP[0]);
+        bz0 = std::min(bz0, blockP[2]); bz1 = std::max(bz1, blockP[2]);
+    }
+
+    const int64_t cx0 = (int64_t)std::floor(bx0 / SECTION_SIZE);
+    const int64_t cx1 = (int64_t)std::floor(bx1 / SECTION_SIZE);
+    const int64_t cz0 = (int64_t)std::floor(bz0 / SECTION_SIZE);
+    const int64_t cz1 = (int64_t)std::floor(bz1 / SECTION_SIZE);
+
+    // Wholly outside the world.
+    if (cx1 < m_minCx || cz1 < m_minCz || cx0 >= (int64_t)m_minCx + m_w || cz0 >= (int64_t)m_minCz + m_h)
+        return ocean::Coverage::None;
+
+    // Past the edge counts as dry: at best Partial.
+    bool anyOutside = cx0 < m_minCx || cz0 < m_minCz ||
+                      cx1 >= (int64_t)m_minCx + m_w || cz1 >= (int64_t)m_minCz + m_h;
+    const int64_t x0 = std::max<int64_t>(cx0, m_minCx), x1 = std::min<int64_t>(cx1, (int64_t)m_minCx + m_w - 1);
+    const int64_t z0 = std::max<int64_t>(cz0, m_minCz), z1 = std::min<int64_t>(cz1, (int64_t)m_minCz + m_h - 1);
+
+    bool any = false, all = !anyOutside;
+    for (int64_t cz = z0; cz <= z1; ++cz) {
+        for (int64_t cx = x0; cx <= x1; ++cx) {
+            const size_t index = (size_t)(cz - m_minCz) * m_w + (size_t)(cx - m_minCx);
+            if (m_bits[index >> 6] & (1ull << (index & 63))) any = true;
+            else all = false;
+            if (any && !all)
+                return ocean::Coverage::Partial;
+        }
+    }
+    if (!any)
+        return ocean::Coverage::None;
+    return all ? ocean::Coverage::Full : ocean::Coverage::Partial;
+}
+
+void VoxelStreamer::set_hide_water(bool hide) {
+    if (hide == m_hideWater)
+        return;
+    m_hideWater = hide;
+    // Every chunk depends on this.
+    for (auto& entry : m_chunks)
+        remesh_chunk(entry.second);
 }
 
 }

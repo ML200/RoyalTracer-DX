@@ -22,11 +22,7 @@ class CameraPathSimulator {
 
     bool IsActive() const { return m_isActive; }
 
-    size_t GetCurrentStepIndex() const { return m_currentStepIndex; }
-
     size_t GetLastCaptureIndex() const { return m_lastCaptureIndex + m_fileIndexOffset; }
-
-    std::wstring GetOutputDir() const { return m_outputDir.wstring(); }
 
     bool Update(float deltaTime, nv_helpers_dx12::Manipulator& camera, bool& outShouldCapture);
 

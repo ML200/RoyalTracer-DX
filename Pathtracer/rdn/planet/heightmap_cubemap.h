@@ -13,13 +13,11 @@ class HeightmapCubemap : public IHeightmapSource {
 public:
     HeightmapCubemap() = default;
 
-    // Loads elevation, surface color, and normal cubemap faces.
     bool load(const std::filesystem::path& terrain_dir);
 
     bool   loaded()         const { return m_resolution > 0; }
     uint32_t resolution()   const { return m_resolution; }
 
-    // Downsamples one face into elevation values expressed in kilometres.
     bool downsample_face_km(uint8_t face, uint32_t dst_resolution, float* out) const;
 
     float sample(const DVec3& dir_normalized, uint8_t lod) const override;

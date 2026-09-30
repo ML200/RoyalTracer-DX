@@ -4,10 +4,6 @@ struct STriVertex {
     half2  texCoord;
 };
 
-struct Attributes {
-    float2 bary;
-};
-
 // Must match the host-side instance layout.
 struct InstanceProperties
 {
@@ -54,7 +50,7 @@ struct MatPacked {
 
 #include "LightTreePacked.h"
 
-// Traversal values; the selected GPU layout is decoded by LightTreeDecode.hlsli.
+// Decoded form; see LightTreeDecode.hlsli.
 struct LightTLASNodeGpu
 {
     float3 bmin;     float power;
@@ -95,4 +91,3 @@ struct LightSlotGpu {
 };
 
 struct LT_Sample { uint id; uint inst; float pdf; uint2 learningToken; };
-struct LT_Path_Sample { float3 dir; float pdf; uint tri;};

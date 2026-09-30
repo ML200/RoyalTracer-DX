@@ -36,6 +36,12 @@ class GpuProfiler {
             return InvalidPass;
         }
         const UINT id = static_cast<UINT>(m_spans.size());
+        // PIX marker, so DRED dumps name the pass.
+        {
+            const std::wstring wide(name.begin(), name.end());
+            cmd->SetMarker(0u /* PIX_EVENT_UNICODE_VERSION */, wide.c_str(),
+                           static_cast<UINT>((wide.size() + 1u) * sizeof(wchar_t)));
+        }
         m_spans.push_back({std::move(name), cacheGroup});
         cmd->EndQuery(m_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2 + id * 2);
         return id;
@@ -53,7 +59,7 @@ class GpuProfiler {
         m_pending = true;
     }
 
-    // The caller completes the render fence before reading or reusing queries.
+    // Caller must wait on the render fence first.
     void Readback(FrameStats& stats) {
         stats.gpuPasses.clear();
         stats.gpuFrameMs = 0;

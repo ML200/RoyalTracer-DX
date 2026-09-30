@@ -24,6 +24,7 @@
 #include "../shaders/SharcLayout.h"
 #include "../shaders/RenderFlags.h"
 #include "../shaders/SkyBakeLayout.h"
+#include "../shaders/OceanLayout.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -64,28 +65,15 @@ struct ScopedTimer {
 
 static constexpr UINT FRAME_COUNT = 3;
 static constexpr UINT MAX_BACK_BUFFERS = 6;
-static constexpr UINT MAX_STACKS = 4;
-static constexpr UINT MAX_INDIRECT_COMMANDS = MAX_STACKS;
-static constexpr UINT SORT_BUCKETS = 65536;
-static constexpr UINT SCRATCH_LAYER_COUNT = 15;
+static constexpr UINT SCRATCH_LAYER_COUNT = 14;
 static constexpr int NUM_LUTS = 2;
 static constexpr int LUT_RESOLUTION = 16;
 static constexpr int NUM_SAMPLES_LUT = 32000;
 
 static constexpr UINT AUTOEXPOSE_HEAP_SLOT = 63;
-static constexpr UINT SKY_STARS_HEAP_SLOT = 64;
-static constexpr UINT TERRAIN_TABLE_HEAP_SLOT = 65;
-static constexpr UINT TERRAIN_HEIGHTMAP_HEAP_SLOT = 66;
-static constexpr UINT TERRAIN_SURFACE_COLOR_HEAP_SLOT = 67;
-static constexpr UINT TERRAIN_NORMAL_HEAP_SLOT = 68;
-static constexpr UINT SKY_TRANSMITTANCE_LUT_HEAP_SLOT = 69;
-static constexpr UINT SKY_MULTISCATTER_LUT_HEAP_SLOT = 70;
-
-static constexpr UINT CUMULUS_QUERY_HEAP_SLOT = 79;
-
-static constexpr UINT BLUE_NOISE_HEAP_SLOT = 86;
 static constexpr UINT BLUE_NOISE_MASK_SIZE = 128;
-static constexpr UINT BINDLESS_HEAP_START = 87;
+// Textures start above the OceanLayout.h range.
+static constexpr UINT BINDLESS_HEAP_START = 256;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
@@ -151,15 +139,13 @@ struct GeometryOffsets {
 };
 
 struct IntegratorSettings {
-    int integratorMode = 0;
-
     bool compactLightTree = false;
     bool lightTreeLearning = true;
     bool lightTreeReset = false;
     int lightTreeCellExponent = 0;
     float lightTreeLodScale = 0.05f;
 
-    float lightTreeLearnRoughness = 0.3f;
+    float lightTreeLearnRoughness = 0.8f;
     bool lightTreeDebug = false;
     bool sharcEnabled = true;
     bool sharcReset = false;
@@ -172,7 +158,8 @@ struct IntegratorSettings {
     int sharcHistoryFrames = 16;
     int sharcMaxAge = 512;
 
-    float sharcQueryFootprint = 0.5f;
+    float sharcQueryFootprint = 8.0f;
+    float sharcConvergenceThreshold = 0.5f;
 
     int sharcTrainBounces = 8;
     int sharcTrainRrDepth = 5;
@@ -181,7 +168,7 @@ struct IntegratorSettings {
     bool sharcGuideTrain = true;
     float sharcGuideMax = 0.75f;
     int sharcGuideLevelOffset = 2;
-    int sharcGuideFreshness = 32; // frames without new evidence after which a receiver guides at half strength
+    int sharcGuideFreshness = 32; // frames without evidence until half strength
     int sharcGuideDepth = 2;
 
     bool liteEnabled = true;
@@ -191,13 +178,8 @@ struct IntegratorSettings {
     int liteSpatMcap = 8;
     int liteSpatSlots = 3;
     float liteReuseSigma = 20.0f;
-
-    int tempMcapGI = 8;
-    int spatCountMaxGI = 2;
-    int spatCountMinGI = 2;
-    int spatRadMaxGI = 56;
-    int spatRadMinGI = 8;
-    int spatTriesGI = 8;
+    float liteNormalSimCos = 0.5f;
+    float litePlaneDist = 0.10f;
 
     int maxBounces = 32;
     int rrStartDepth = 2;
@@ -214,79 +196,13 @@ struct IntegratorSettings {
     float dlssDebugDepthFar = 50.0f;
 
     bool forceDiffuseMats = false;
-    bool enableTempGI = false;
-    bool enableSpatGI = false;
-    bool disableCorrReduction = false;
 
-    float corrReductionPow = 0.025f;
-
-    bool noSpecReproj = false;
-    bool disableReuseVis = false;
-    bool disableFinalVis = false;
-    float reuseRoughnessMin = 0.1f;
-    float reuseRoughnessMax = 0.3f;
-
-    float reconnectRoughnessMin = 0.15f;
-
-    float rejNormalDot = 0.36f;
-    float rejDistance = 0.10f;
-
-    float tempNormalSimCos = 0.5f;
-    float tempPlaneDist = 0.10f;
-    float tempJacClamp = 1.0f;
-
-    float ucwClampMax = 10000.0f;
-
-    int spmisReuseN = 2;
-    int spmisRisN = 8;
-    int spmisMcap = 20;
-    int spmisTileSize = 32;
-
-    bool spmisCellJitter = true;
-    float spmisNormalFuzz = 0.2f;
-    int spmisNormalBits = 2;
-    float spmisSearchR0 = 20.0f;
-    float spmisSearchGrow = 1.25f;
-    int spmisSearchIters = 12;
-    float spmisJacThreshold = 15.0f;
-    float spmisNormalSimCos = -1.0f;
-    float spmisPlaneDist = 0.111f;
-
-    bool spmisConfidenceAdjust = true;
-
-    bool hybridShift = true;
-
-    float reconnectDistMin = 0.01f;
-
-    int rcMaxK = 8;
-
-    bool rcFootprint = true;
-    float rcFpKappa = 0.02f;
-
-    bool dualMotionVectors = true;
-
-    bool rgbShadeWeights = true;
-
-    bool lobeIndexedPss = true;
-
-    // Identify settings changes that require reconstruction history to reset.
+    // Changes here reset reconstruction history.
     auto ReconstructionKey() const {
-        const bool pt = integratorMode == 0;
-        const bool lite = pt && liteEnabled;
-        return std::make_tuple(integratorMode, maxBounces, maxDiffuseBounces, texturePointFilter, forceDiffuseMats,
-                               compactLightTree, pt && lightTreeLearning, lightTreeCellExponent, lightTreeLodScale, pt && sharcEnabled,
-                               lite, lite && liteDebugView, lite && liteUnshadowedTargets, ucwClampMax,
-                               pt ? 0u : Flags());
-    }
-
-    // Bit positions must match RS_FLAG_* in the shared shader settings.
-    UINT Flags() const {
-        return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u) | (enableSpatGI ? 0x10u : 0u) |
-               ((enableSpatGI && spmisConfidenceAdjust) ? 0x2000u : 0u) | (disableCorrReduction ? 0x40u : 0u) |
-               (noSpecReproj ? 0x200u : 0u) | (disableReuseVis ? 0x800u : 0u) | (disableFinalVis ? 0x1000u : 0u) |
-               (hybridShift ? 0x4000u : 0u) | (forceDiffuseMats ? 0x20000u : 0u) | (spmisCellJitter ? 0x40000u : 0u) |
-               (rcFootprint ? 0x100000u : 0u) | (dualMotionVectors ? 0x200000u : 0u) |
-               (rgbShadeWeights ? 0x400000u : 0u) | ((lobeIndexedPss && hybridShift) ? 0x800000u : 0u);
+        const bool lite = liteEnabled;
+        return std::make_tuple(maxBounces, maxDiffuseBounces, texturePointFilter, forceDiffuseMats, compactLightTree,
+                               lightTreeLearning, lightTreeCellExponent, lightTreeLodScale, sharcEnabled, lite,
+                               lite && liteDebugView, lite && liteUnshadowedTargets);
     }
 };
 
@@ -296,34 +212,6 @@ struct DLSSGSettings {
     int framesToGenerate = 1;
     int maxFrames = 1;
 };
-
-struct CumulusSettings {
-    float enabled = 0.0f;
-    float coverage = 0.28f;
-    float baseKm = 1.5f;
-    float thicknessKm = 3.6f;
-    float scale = 0.8f;
-    float extinction = 14.0f;
-    float detail = 1.0f;
-    float windX = 0.0f;
-    float windZ = 0.0f;
-    float multipleScattering = 1.0f;
-    float ambient = 1.0f;
-    float viewSteps = 64.0f;
-    float reflectionSteps = 12.0f;
-    float seed = 17.0f;
-    float debugView = 0.0f;
-    float guideThreshold = 0.5f;
-    float lightingSamples = 2.0f;
-    float fineDetail = 1.0f;
-
-    auto LightingKey() const {
-        return std::make_tuple(enabled, coverage, baseKm, thicknessKm, scale, extinction, detail, windX, windZ,
-                               multipleScattering, ambient, viewSteps, reflectionSteps, seed, lightingSamples,
-                               fineDetail);
-    }
-};
-static_assert(sizeof(CumulusSettings) == 72);
 
 struct SunSettings {
     float latitude = 48.52f;
@@ -357,6 +245,9 @@ struct SunSettings {
     float atmosMultiScatterFactor = 1.0f;
 
     float atmosEarthShadowSoftness = 0.005f;
+
+    // Solar aureole fade-in distance; 0 = undamped.
+    float atmosHaloDistanceKm = 1.0f;
 };
 
 struct GpuPassTiming {
@@ -373,7 +264,7 @@ struct LightBvhStats {
 };
 
 struct FrameStats {
-    static constexpr UINT GpuTimingCount = 10;
+    static constexpr UINT GpuTimingCount = 8;
     float cpuFrameMs = 0;
     float cpuUpdateMs = 0;
     float cpuInstanceMs = 0;

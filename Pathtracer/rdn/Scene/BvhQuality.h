@@ -39,7 +39,7 @@ struct Split {
     double ratio = 1;
 };
 
-// Triangle bounds, rather than centroid bounds, predict the cost of entering each BLAS.
+// Cost from triangle bounds, not centroid bounds.
 template<class Reader> Split choose_split(uint32_t count, Reader&& read) {
     constexpr int N = 16;
     Bounds root, centers;
@@ -73,7 +73,7 @@ template<class Reader> Split choose_split(uint32_t count, Reader&& read) {
         for (int j = 0; j < N-1; ++j) {
             left.include(bins[j].bounds); nl += bins[j].count;
             if (!nl || !suffixCount[j+1]) continue;
-            // A fixed traversal allowance discourages tiny subdivisions.
+            // Fixed traversal cost deters tiny splits.
             const double ratio = (root.area() * 32 + left.area() * nl + suffix[j+1].area() * suffixCount[j+1]) / unsplit;
             if (ratio < best.ratio) best = { axis, centers.lo[axis] + extent * ((j+1.0f)/N), ratio };
         }

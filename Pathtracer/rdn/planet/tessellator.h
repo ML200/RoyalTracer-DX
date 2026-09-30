@@ -31,7 +31,6 @@ struct TessResult {
 
 TessResult tessellate_chunk(const TessJob& job, const IHeightmapSource& heightmap);
 
-// Packs unit normals into the mesh's 16:16 octahedral format.
 uint32_t oct_encode(const Vec3f& n);
 Vec3f    oct_decode(uint32_t e);
 uint16_t float_to_half(float f);

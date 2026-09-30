@@ -13,9 +13,9 @@
 #include "stdafx.h"
 #include "../engine/EngineApp.h"
 #include "../engine/Scene/EmissiveCubes.h"
+#include "../engine/Scene/Ocean.h"
 #define ENABLE_D3D12_DIAGNOSTICS 1
 #include "Diagnostics.h"
-#include <comdef.h>
 
 class EnvTestHooks {
   public:
@@ -69,16 +69,14 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            /*{"veach-ajar.glb",
-             XMMatrixIdentity(), "Modern Tank Garage"},*/
-            MinecraftWorld("C:/Users/Malte/Downloads/Grand Teton National Park/Grand Teton National Park",
+            {"newportnews.glb",
+             XMMatrixIdentity(), "Modern Tank Garage"},
+            /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
-                           XMMatrixIdentity(), "Night City"),
+                           XMMatrixIdentity(), "Night City"),*/
         };
     }
     void Init(SceneManager& sm, Renderer& r) override {
-        if (GetEnvironmentVariableA("RT_MC_CAMERA", nullptr, 0) == 0)
-            nv_helpers_dx12::CameraManip.setLookat({0.0f, 5.0f, 12.5f}, {0.0f, 1.7f, -3.0f}, {0.0f, 1.0f, 0.0f});
         r.GetCamera().fovDegrees = 60.0f;
         m_hooks.Init(r);
 
@@ -93,7 +91,46 @@ class MainScene : public SceneDefinition {
         cubes.spawnMin = {-0000.0f, 50.0f, -0000.0f};
         cubes.spawnMax = {6000.0f, 200.0f, 6000.0f};
         cubes.seed = 42;
-        m_emissiveCubes.Init(cubes, sm, r);
+        //m_emissiveCubes.Init(cubes, sm, r);
+
+        Ocean::Params sea;
+        sea.enabled = true;
+        sea.windSpeed = 11.0f;   // m/s at 10 m
+        sea.fetch = 250000.0f;   // m
+        sea.windDirectionDeg = 35.0f;
+        sea.swell = 0.15f;       // mostly wind sea
+        sea.swellHeight = 0.0f;  // m Hm0; 0 = wind sea only
+        sea.swellPeriod = 11.0f;
+        sea.swellDirectionDeg = 100.0f;
+        sea.chlorophyll = 0.05f; // mg/m^3, clear deep water
+        sea.extent = 60000.0f;   // m, half-extent
+        sea.minTileSize = 8.0f;
+        sea.seaLevelY = 5.7f;    // m: ship's water line; Minecraft ~63
+        // Test fixtures change only sea parameters.
+        char fixture[64] = {};
+        if (GetEnvironmentVariableA("RT_OCEAN_FIXTURE", fixture, sizeof(fixture))) {
+            const std::string name(fixture);
+            if (name == "calm") { sea.windSpeed=2; sea.significantHeight=0.15f; sea.peakPeriod=3; sea.swellHeight=0; }
+            else if (name == "mixed") { sea.significantHeight=2.5f; sea.peakPeriod=7; sea.swellHeight=1.7f; }
+            else if (name == "rough") { sea.windSpeed=17; sea.significantHeight=4.5f; sea.peakPeriod=9; sea.swellHeight=2; }
+            else if (name == "flat") { sea.significantHeight=0; sea.swellHeight=0; sea.foamCoverage=0; }
+            else throw std::invalid_argument("Unknown RT_OCEAN_FIXTURE (calm, mixed, rough, flat)");
+            sea.enabled = true; // overrides the scene default
+            sea.fixedTimeStep = 1.0f / 60.0f;
+            LOG(L"[ocean fixture] " << std::wstring(name.begin(),name.end()) << L" seed=" << sea.seed
+                << L" Hm0=" << sea.significantHeight << L" Tp=" << sea.peakPeriod << L" swell=" << sea.swellHeight);
+        }
+        sea.paused = GetEnvironmentVariableA("RT_OCEAN_PAUSE", nullptr, 0) > 0;
+        char debugMode[16]{};
+        if (GetEnvironmentVariableA("RT_OCEAN_DEBUG", debugMode, sizeof(debugMode)))
+            sea.debugMode = uint32_t(std::stoul(debugMode));
+        m_ocean.Init(sea, r);
+
+        if (sea.enabled && GetEnvironmentVariableA("RT_MC_CAMERA", nullptr, 0) == 0) {
+            const float waterLine = m_ocean.SurfaceLevel();
+            nv_helpers_dx12::CameraManip.setLookat({0.0f, waterLine + 28.0f, 150.0f},
+                                                   {0.0f, waterLine + 22.0f, -600.0f}, {0.0f, 1.0f, 0.0f});
+        }
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {
         flyCam.Update(dt);
@@ -104,6 +141,7 @@ class MainScene : public SceneDefinition {
   private:
     EnvTestHooks m_hooks;
     EmissiveCubes m_emissiveCubes;
+    Ocean m_ocean;
 };
 
 class ScopedComInitializer {

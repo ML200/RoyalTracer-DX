@@ -8,7 +8,6 @@ struct Transform {
     XMFLOAT3 scale = {1, 1, 1};
 
     XMMATRIX GetMatrix() const {
-        // Compose scale, Euler rotation, then translation for row-vector math.
         return XMMatrixScaling(scale.x, scale.y, scale.z) *
                XMMatrixRotationRollPitchYaw(XMConvertToRadians(rotation.x), XMConvertToRadians(rotation.y),
                                             XMConvertToRadians(rotation.z)) *

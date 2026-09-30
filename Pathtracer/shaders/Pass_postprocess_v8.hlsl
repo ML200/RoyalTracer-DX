@@ -1,4 +1,3 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
 inline float3 sRGBGammaCorrection(float3 color)
@@ -21,25 +20,6 @@ inline float3 sRGBGammaCorrection(float3 color)
         result.b = 1.055f * pow(color.b, 1.0f / 2.4f) - 0.055f;
 
     return result;
-}
-
-float3 PBRNeutral(float3 color) {
-    const float startCompression = 0.8f - 0.04f;
-    const float desaturation = 0.15f;
-
-    float x = min(color.r, min(color.g, color.b));
-    float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
-    color -= offset;
-
-    float peak = max(color.r, max(color.g, color.b));
-    if (peak < startCompression) return max(color, 0.0f);
-
-    float d = 1.0f - startCompression;
-    float newPeak = 1.0f - d * d / (peak + d - startCompression);
-    color *= newPeak / peak;
-
-    float g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
-    return lerp(color, newPeak.xxx, g);
 }
 
 static const float3x3 kAgXInputMatrix = float3x3(
@@ -77,7 +57,6 @@ inline float3 AgXSoftGamutClamp(float3 c) {
     return c;
 }
 
-// Apply the AgX tone curve after exposure and gamut handling.
 float3 AgX(float3 color) {
 
     color = mul(kAgXInputMatrix, color);
@@ -94,15 +73,8 @@ float3 AgX(float3 color) {
     return AgXSoftGamutClamp(color);
 }
 
-inline float3 InverseDlssReinhard(float3 r) {
-    r = saturate(r);
-    const float lumR = 0.2126f * r.x + 0.7152f * r.y + 0.0722f * r.z;
-    return r / max(1.0f - lumR, 1e-4f);
-}
-
 inline float3 DlssDecode(float3 r, float exposure) {
-    return PT_ONLY_MODE ? (max(r, 0.0f) / max(exposure, 1e-8f))
-                        : InverseDlssReinhard(r);
+    return max(r, 0.0f) / max(exposure, 1e-8f);
 }
 
 inline float3 ScrubNonFinite(float3 c) {
@@ -144,13 +116,12 @@ inline float3 ApplyOutputDither(float3 c, uint2 pix, uint frameSeed) {
 static const float RCAS_LIMIT = 0.25f - (1.0f / 16.0f);
 
 float3 TonemappedCleanAt(int2 p, float exposure) {
-    p = clamp(p, int2(0, 0), int2((int)gImageWidth - 1, (int)gImageHeight - 1));
+    p = clamp(p, int2(0, 0), int2((int)IMG_W - 1, (int)IMG_H - 1));
     float3 c = DlssDecode(g_dlssOutput[p].xyz, exposure);
     c = ScrubNonFinite(c);
     return AgX(c * exposure);
 }
 
-// Sharpen the exposed neighborhood while preserving finite values.
 float3 RcasSharpen(uint2 pix, float exposure, float3 e, float sharpness) {
 
     const float3 b = TonemappedCleanAt(int2(pix) + int2( 0, -1), exposure);
@@ -175,7 +146,7 @@ float3 DlssInputDebugView(uint2 px, uint layer)
 {
     uint rw, rh;
     g_dlssInput.GetDimensions(rw, rh);
-    const uint2 rpx = min((px * uint2(rw, rh)) / uint2(gImageWidth, gImageHeight),
+    const uint2 rpx = min((px * uint2(rw, rh)) / uint2(IMG_W, IMG_H),
                           uint2(rw - 1u, rh - 1u));
 
     const float winNear = f16tof32(dbg_dlssDepthWin & 0xFFFFu);
@@ -210,15 +181,14 @@ float3 DlssInputDebugView(uint2 px, uint layer)
 }
 
 [numthreads(8, 4, 1)]
-// Combine denoised layers, tone mapping, and output dithering.
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-    if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
+    if (DTid.x >= IMG_W || DTid.y >= IMG_H) return;
 
     const float exposure = ReadExposure();
     if((rs_flags & LT_FLAG_DEBUG)!=0u) {
         uint rw,rh;g_dlssInput.GetDimensions(rw,rh);
-        uint2 rpx=min((DTid.xy*uint2(rw,rh))/uint2(gImageWidth,gImageHeight),uint2(rw-1u,rh-1u));
+        uint2 rpx=min((DTid.xy*uint2(rw,rh))/uint2(IMG_W,IMG_H),uint2(rw-1u,rh-1u));
         uint pixel=MapPixelID(uint2(rw,rh),rpx);float3 color=0.02f;
         if((load_flagsWord(g_sample_current,pixel)&SD_FLAG_NOBOUNCE)==0u) {
             SDRecord surface=load_SD(g_sample_current,pixel);
@@ -230,7 +200,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     {
         uint rw, rh;
         g_dlssInput.GetDimensions(rw, rh);
-        uint2 rpx = min((DTid.xy * uint2(rw, rh)) / uint2(gImageWidth, gImageHeight),
+        uint2 rpx = min((DTid.xy * uint2(rw, rh)) / uint2(IMG_W, IMG_H),
             uint2(rw - 1u, rh - 1u));
         float4 debugValue = gScratchPing[uint3(rpx, SHARC_DEBUG_SCRATCH)];
         float3 color = debugValue.w > 0.0f ? AgX(ScrubNonFinite(debugValue.rgb) * exposure) : debugValue.rgb;
@@ -241,16 +211,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float3 clean  = DlssDecode(g_dlssOutput[DTid.xy].xyz, exposure);
     float3 refl   = float3(0, 0, 0);
-#if SHADING_DEBUG_SLICES
-    float3 noisy  = gScratchPing[uint3(DTid.xy, 1)].rgb;
-    float3 gt     = gPermanentData[DTid.xy].rgb;
-    float3 albedo = gOutput[uint3(DTid.xy, 5)].xyz;
-#else
-
     float3 noisy  = float3(0, 0, 0);
     float3 gt     = float3(0, 0, 0);
     float3 albedo = float3(0, 0, 0);
-#endif
+    if (SHADING_DEBUG_SLICES) {
+        noisy  = gScratchPing[uint3(DTid.xy, 1)].rgb;
+        gt     = gPermanentData[DTid.xy].rgb;
+        albedo = gOutput[uint3(DTid.xy, 5)].xyz;
+    }
 
     noisy = ScrubNonFinite(noisy);
     clean = ScrubNonFinite(clean);
@@ -278,8 +246,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gOutput[uint3(DTid.xy, 1)] = float4(clean, 1.0f);
     gOutput[uint3(DTid.xy, 2)] = float4(gt, 0.0f);
 
-    gOutput[uint3(DTid.xy, 3)] = (dbg_dlssLayer != 0u)
-        ? float4(DlssInputDebugView(DTid.xy, dbg_dlssLayer), 0.0f)
+    const uint dlssLayer = dbg_dlssLayer & DLSS_DBG_LAYER_MASK;
+    gOutput[uint3(DTid.xy, 3)] = (dlssLayer != 0u)
+        ? float4(DlssInputDebugView(DTid.xy, dlssLayer), 0.0f)
         : float4(0.0f, 0.0f, 0.0f, 0.0f);
     gOutput[uint3(DTid.xy, 4)] = float4(refl, 0.0f);
     gOutput[uint3(DTid.xy, 5)] = float4(albedo, 0.0f);

@@ -7,7 +7,6 @@
 
 CameraRecorder::CameraRecorder() = default;
 
-// Discard the placeholder file if no keyframe was successfully written.
 CameraRecorder::~CameraRecorder() {
     if (!m_hasRecorded && !m_filePath.empty()) {
         if (std::remove(m_filePath.c_str()) == 0) {

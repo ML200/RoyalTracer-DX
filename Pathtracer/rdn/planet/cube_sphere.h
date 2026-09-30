@@ -19,8 +19,7 @@ struct QuadNode {
 uint64_t pack_node_id  (const QuadNode& n);
 QuadNode unpack_node_id(uint64_t id);
 
-// Returns the requested child in face-local quadtree coordinates.
-QuadNode child_node (const QuadNode& n, int quadrant);
+QuadNode child_node(const QuadNode& n, int quadrant);
 QuadNode parent_node(const QuadNode& n);
 
 enum QuadEdge : uint8_t {
@@ -45,7 +44,6 @@ struct NodeGeometry {
 
 DVec3 cube_to_sphere_dir(uint8_t face, double s, double t);
 
-// Computes world bounds and angular extent for one quadtree node.
 NodeGeometry compute_node_geometry(const QuadNode& n, const PlanetGeometry& planet);
 
 }

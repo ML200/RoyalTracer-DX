@@ -25,7 +25,7 @@ struct TriRef {
 
 void OmmBuilder::BakeAll(std::vector<MeshGPU>& meshes, const MaterialSoA& materials,
                          const std::vector<ScratchImage*>& albedoImages) {
-    // Build opacity micromaps for cutouts, excluding transmissive materials.
+    // Cutouts only; transmissive materials excluded.
     auto t0 = std::chrono::high_resolution_clock::now();
 
     struct TexGroup {
@@ -228,7 +228,7 @@ void OmmBuilder::BakeAll(std::vector<MeshGPU>& meshes, const MaterialSoA& materi
                                   (const uint8_t*)desc->arrayData + desc->arrayDataSize);
 
             uint32_t descBase = (uint32_t)result.ommDescs.size();
-            // Each mesh stores descriptor offsets relative to its appended blob.
+            // Offsets relative to this mesh's appended blob.
             for (uint32_t d = 0; d < desc->descArrayCount; ++d) {
                 const auto& sd = desc->descArray[d];
                 D3D12_RAYTRACING_OPACITY_MICROMAP_DESC dx{};
@@ -300,7 +300,7 @@ void OmmBuilder::BakeAll(std::vector<MeshGPU>& meshes, const MaterialSoA& materi
 }
 
 OmmGpuData OmmBuilder::BuildGPU(const OmmBakeResult& bake, ID3D12Device5* device, ID3D12GraphicsCommandList4* cmdList) {
-    // Upload buffers are retained by OmmGpuData until the build completes.
+    // OmmGpuData keeps the uploads until the build completes.
     OmmGpuData gpu;
     if (bake.empty())
         return gpu;

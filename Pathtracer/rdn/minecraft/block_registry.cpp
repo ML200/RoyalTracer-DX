@@ -19,7 +19,6 @@ bool BlockRegistry::is_air_name(std::string_view name) {
         || name == "air" || name == "cave_air" || name == "void_air";
 }
 
-// Serializes already-sorted properties into the canonical lookup key.
 std::string BlockRegistry::make_canonical(const std::string& name,
                                           const std::vector<std::pair<std::string, std::string>>& props) {
     if (props.empty()) return name;
@@ -33,7 +32,6 @@ std::string BlockRegistry::make_canonical(const std::string& name,
     return s;
 }
 
-// Serializes state insertion and assigns one stable ID per canonical key.
 BlockId BlockRegistry::intern(const std::string& canonical, const std::string& name,
                               const std::vector<std::pair<std::string, std::string>>& props) {
     if (is_air_name(name)) return AIR_ID;

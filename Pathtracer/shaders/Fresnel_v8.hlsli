@@ -5,7 +5,7 @@ static inline float3 ComputeF0Dielectric(float eta_i, float eta_t)
     return R0s.xxx;
 }
 
-// Evaluate dielectric Fresnel with total-internal-reflection handling.
+// Schlick 1994.
 static inline float3 FresnelDielectric(float3 wo, float3 n, float eta_i, float eta_t)
 {
     float ci = abs(dot(wo, n));
@@ -38,7 +38,7 @@ static inline float3 FresnelDielectricTIR(float3 wo, float3 n, float eta_i, floa
     return R0 + (1.0f - R0) * oneMinus5;
 }
 
-// Approximate conductor Fresnel from normal-incidence reflectance.
+// Schlick from normal-incidence reflectance.
 static inline float3 FresnelConductor(float3 F0, float3 wo, float3 n)
 {
     float ci = saturate(abs(dot(wo, n)));

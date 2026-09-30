@@ -1,3 +1,7 @@
 #include "Includes_v8.hlsli"
 
-[shader("miss")] void Miss(inout TracePayload payload) {}
+// Never invoked; the pipeline just needs a miss shader.
+[shader("miss")]
+void Miss(inout TracePayload payload)
+{
+}

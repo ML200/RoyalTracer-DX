@@ -8,7 +8,6 @@
 #include <chrono>
 #include <filesystem>
 
-// Resolve block assets and LOD data before attaching the GPU streamer.
 bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const DirectX::XMMATRIX& placement) {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
@@ -79,7 +78,7 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
             m_scene.totalBindlessTextures += (UINT)textures.size();
         }
 
-        // Bake reusable block-face opacity before individual chunks are meshed.
+        // Block-face OMMs, baked once before meshing.
         if (cfg.opacityMicromaps) {
             const auto tb = clock::now();
             std::vector<mc::OmmBakeTri> tris;
@@ -106,7 +105,6 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
         world->build_lod(&pool, cfg.lodDecorMaxLevel);
 
         m_mcWorld = std::move(world);
-        m_voxels.init(m_ctx.Device(), &m_ctx, m_mcWorld.get(), cfg.streamer);
 
         mc::Placement place;
         {
@@ -114,6 +112,32 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
             DirectX::XMStoreFloat4x4(&m, placement);
             place.set(&m.m[0][0]);
         }
+
+        // Ocean's full reservation comes from the world's budget (32-bit view).
+        mc::StreamerConfig streamer = cfg.streamer;
+        if (m_ocean.Enabled()) {
+            constexpr uint32_t kOceanVerts = (uint32_t)(OCEAN_MAX_TILES * OCEAN_TILE_VERTS);
+            constexpr uint32_t kOceanIndices = (uint32_t)(OCEAN_MAX_TILES * OCEAN_TILE_INDICES);
+            streamer.vertexCapacity -= std::min(streamer.vertexCapacity / 2u, kOceanVerts);
+            streamer.indexCapacity -= std::min(streamer.indexCapacity / 2u, kOceanIndices);
+            LOG(L"[mc] the wave surface shares the scene's geometry buffers; world budget "
+                << (streamer.vertexCapacity >> 20) << L"M vertices / " << (streamer.indexCapacity >> 20)
+                << L"M indices");
+        }
+        m_voxels.init(m_ctx.Device(), &m_ctx, m_mcWorld.get(), streamer);
+
+        // Sea only where the world holds water.
+        if (m_ocean.Enabled()) {
+            const auto t = clock::now();
+            m_voxels.water_coverage_mut().build(*m_mcWorld, place);
+            m_ocean.SetCoverage(&m_voxels.water_coverage());
+            const auto& cov = m_voxels.water_coverage();
+            LOG(L"[mc] water coverage: " << cov.columns_with_water() << L" of " << cov.columns_total()
+                << L" section columns hold water ("
+                << (cov.columns_total() ? 100.0 * cov.columns_with_water() / cov.columns_total() : 0.0)
+                << L"%), " << std::chrono::duration<double>(clock::now() - t).count() << L" s");
+        }
+
         m_voxels.set_placement(place);
 
         {
@@ -154,7 +178,7 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
     }
 }
 
-// Reserve streamed light storage after the regular scene's light records.
+// Streamed lights follow the scene's light records.
 void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
     if (!m_voxels.enabled())
         return;
@@ -173,7 +197,7 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
     const bool recreate = !m_vxLightRecords || needRec > m_vxSceneRecordCap || sceneNodes > m_vxSceneNodeCap ||
                           m_vxLightNodeStride != nodeStride;
     if (recreate) {
-        // Retire replaced buffers after frames using the old descriptors finish.
+        // Freed once in-flight frames finish.
         ComPtr<ID3D12Resource>* old[4] = {&m_vxLightRecords, &m_vxLightNodes, &m_vxLightLeaf, &m_vxLightTrails};
         for (ComPtr<ID3D12Resource>* r : old)
             if (*r)

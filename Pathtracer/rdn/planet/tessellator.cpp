@@ -1,14 +1,11 @@
 #include "tessellator.h"
 #include "cube_sphere.h"
 #include "../../include/procedural_terrain.h"
-#include <atomic>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 
 namespace planet {
 
-// Encodes a unit normal into two signed 16-bit octahedral components.
 uint32_t oct_encode(const Vec3f& n) {
     const float inv = 1.0f / (std::fabs(n.x) + std::fabs(n.y) + std::fabs(n.z) + 1e-20f);
     float ox = n.x * inv;
@@ -51,7 +48,6 @@ uint16_t float_to_half(float f) {
 }
 
 namespace {
-// Evaluates displaced terrain in the chunk's local coordinate frame.
 inline DVec3 surface_point(uint8_t face, double s, double t,
                            const PlanetGeometry& planet,
                            const IHeightmapSource& hm, uint8_t lod,
@@ -126,7 +122,6 @@ inline uint32_t pack_normal_int16(const Vec3f& n) {
 }
 }
 
-// Writes a stitched grid directly into caller-provided mesh buffers.
 TessResult tessellate_chunk(const TessJob& job, const IHeightmapSource& heightmap) {
     TessResult res;
 
@@ -152,26 +147,6 @@ TessResult tessellate_chunk(const TessJob& job, const IHeightmapSource& heightma
     const uint8_t face = job.node.face;
 
     ChunkVertex* vout = static_cast<ChunkVertex*>(job.vertex_dest);
-
-    {
-        static std::atomic<int> s_dbg_count{0};
-        if (s_dbg_count.fetch_add(1) < 5) {
-            const double cs[5] = { s0, s1, s0, s1, 0.5 * (s0 + s1) };
-            const double ct[5] = { t0, t0, t1, t1, 0.5 * (t0 + t1) };
-            double hmin = +1e30, hmax = -1e30;
-            for (int k = 0; k < 5; ++k) {
-                const DVec3 dir = cube_to_sphere_dir(face, cs[k], ct[k]);
-                const double h = heightmap.sample(dir, lod);
-                if (h < hmin) hmin = h;
-                if (h > hmax) hmax = h;
-            }
-            std::fprintf(stdout,
-                "[planet] tess leaf face=%d lod=%u (s=%.3f..%.3f t=%.3f..%.3f): "
-                "h range [%.2f, %.2f] m\n",
-                (int)face, (unsigned)lod, s0, s1, t0, t1, hmin, hmax);
-            std::fflush(stdout);
-        }
-    }
 
     const double base_footprint_m =
         pt_chunk_vertex_spacing_m<double>(job.planet.radius, lod);

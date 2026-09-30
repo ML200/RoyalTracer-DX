@@ -12,8 +12,6 @@
 
 static constexpr float kPlanetRadiusM = 6360.0f * 1000.0f;
 
-static constexpr float kCameraClearanceM = 2.0f;
-
 void FlyCamController::InitFromManipulator() {
     glm::vec3 eye, center, up;
     nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
@@ -28,7 +26,7 @@ void FlyCamController::Update(float dt) {
     glm::vec3 eye, center, manipUp;
     nv_helpers_dx12::CameraManip.getLookat(eye, center, manipUp);
 
-    // Keep camera motion in the shifted frame while deriving up from world space.
+    // Motion in the shifted frame; up from world space.
     const glm::vec3 sceneOrigin = m_camera ? m_camera->getSceneOriginWorld() : glm::vec3(0.0f);
     const glm::vec3 eyeAbs = eye + sceneOrigin;
     const glm::vec3 planetCenter(0.0f, -kPlanetRadiusM, 0.0f);

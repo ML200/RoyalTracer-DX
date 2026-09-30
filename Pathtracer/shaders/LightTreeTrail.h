@@ -1,5 +1,4 @@
-#ifndef LIGHT_TREE_TRAIL_H
-#define LIGHT_TREE_TRAIL_H
+#pragma once
 
 #define LT_TRAIL_MAX_DEPTH 32u
 
@@ -32,4 +31,3 @@ uint LT_TrailChild(uint2 trail, uint depth)
 }
 #endif
 
-#endif

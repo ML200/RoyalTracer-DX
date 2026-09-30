@@ -1,14 +1,6 @@
-#ifndef SHARC_V8_HLSLI
-#define SHARC_V8_HLSLI
+#pragma once
 #include "SharcLayout.h"
-#ifndef SHARC_COMPACT_QUERY
-#define SHARC_COMPACT_QUERY 0
-#endif
-#if SHARC_COMPACT_QUERY && SHARC_BUCKET_SIZE > 32
-#error SHARC_COMPACT_QUERY requires a bucket that fits in a uint mask
-#endif
 
-#include "PersistentSamplingBuffer_v8.hlsli"
 static const uint SHARC_LOCKED = 0xffffffffu;
 static const uint SHARC_INVALID = 0xffffffffu;
 
@@ -19,14 +11,17 @@ static const uint SHARC_NODE = 32u;
 static const uint SHARC_META = 44u;
 static const uint SHARC_INSTANCE = 48u;
 static const uint SHARC_MATERIAL = 52u;
+static const uint SHARC_FAST_MEAN = 56u;      // fast window luma mean
+static const uint SHARC_FAST_L2 = 60u;        // and second moment
 static const uint SHARC_FRAME_RGB = 64u;
 static const uint SHARC_FRAME_L2 = 88u;
 static const uint SHARC_FRAME_W_W2 = 96u;
-static const uint SHARC_FRAME_POSITIVE = 104u;
+static const uint SHARC_FAST_W = 104u;        // fast window weight
+static const uint SHARC_FAST_W2 = 108u;       // and squared weight
 static const uint SHARC_HISTORY_W = 112u;
 static const uint SHARC_HISTORY_L2 = 116u;
 static const uint SHARC_HISTORY_W2 = 120u;
-static const uint SHARC_HISTORY_POSITIVE = 124u;
+static const uint SHARC_CONVERGENCE = 124u;
 static const uint SHARC_MEAN = 128u;
 static const uint SHARC_CONFIDENCE = 140u;
 static const uint SHARC_LAST_UPDATE = 144u;
@@ -40,6 +35,18 @@ static const float SHARC_WEIGHT_SCALE = 65536.0f;
 static const uint SHARC_REPLACE_AGE = 16u;
 
 static const uint SHARC_MERGE_RECORDS = 4u;
+
+// SharcConvergence tuning.
+static const float  SHARC_FAST_DECAY          = 0.5f;                    // fast window: about two updates
+static const float  SHARC_FAST_VARIANCE_FLOOR = 0.25f;                   // share of the history's variance
+static const float2 SHARC_CONVERGENCE_Z       = float2(2.0f, 4.0f);      // gap in standard errors
+static const float2 SHARC_CONVERGENCE_GAP     = float2(0.15f, 0.35f);    // gap relative to the brighter
+static const uint   SHARC_QUERY_UNCONVERGED   = 0x80000000u;             // free bit of the demodulator word
+
+// Query/entry mismatch ramps; loose, wide cones average texture detail.
+static const float2 SHARC_SIMILAR_NORMAL    = float2(0.50f, 0.80f);   // shading-normal cosine
+static const float2 SHARC_SIMILAR_ALBEDO    = float2(1.00f, 2.00f);   // log2 of the albedo ratio
+static const float2 SHARC_SIMILAR_ROUGHNESS = float2(0.15f, 0.35f);   // roughness difference
 
 struct SharcSurface
 {
@@ -70,6 +77,7 @@ struct SharcHistory
     float interval;
     uint frames;
     uint lastTouch;
+    bool converged;     // else no path ends here (SharcConvergence)
 };
 
 uint SharcStateAddress(uint slot) { return slot * 4u; }
@@ -77,7 +85,6 @@ uint SharcEntryAddress(uint slot) { return SHARC_STATE_BYTES + slot * SHARC_ENTR
 uint SharcDirtyAddress(uint word) { return SHARC_DIRTY_OFFSET + word * 4u; }
 uint SharcBucketOf(uint hash) { return hash & (SHARC_CAPACITY / SHARC_BUCKET_SIZE - 1u); }
 
-// Hash spatial identity and surface identity into one cache key.
 uint SharcCheckHash(int3 node, uint meta, uint instance, uint material)
 {
     uint h = Hash32(asuint(node.z) ^ 0x7f4a7c15u);
@@ -110,7 +117,6 @@ uint SharcPackMean(float v) { return f32tof16(min(v, 1048064.0f) * 0.0625f); }
 float SharcUnpackMean(uint h) { return f16tof32(h) * 16.0f; }
 uint SharcPackUnorm8(float v) { return (uint)(saturate(v) * 255.0f + 0.5f); }
 
-// Decode the packed query record shared by all SHaRC passes.
 void SharcLoadQueryRecord(uint e, float size, out uint check, out SharcDescriptor d, out SharcHistory h)
 {
     uint4 a = g_sharc.Load4(e + SHARC_QUERY);
@@ -128,17 +134,19 @@ void SharcLoadQueryRecord(uint e, float size, out uint check, out SharcDescripto
     h.interval = f16tof32(b.w >> 16u);
     h.frames = a.w >> 30u;
     h.lastTouch = 0u;
+    h.converged = (b.x & SHARC_QUERY_UNCONVERGED) == 0u;
 }
 float3 SharcLoadDemodulator(uint e) { return SharcUnpackLog10x3(g_sharc.Load(e + SHARC_QUERY + 16u)); }
 
-void SharcPublishQueryHistory(uint e, float3 mean, float confidence, uint frames, float interval)
+void SharcPublishQueryHistory(uint e, float3 mean, float confidence, bool converged, uint frames, float interval)
 {
     uint w3 = g_sharc.Load(e + SHARC_QUERY + 12u);
     g_sharc.Store(e + SHARC_QUERY + 12u, (w3 & 0x3fffffffu) | (min(frames, 3u) << 30u));
-    uint w6 = g_sharc.Load(e + SHARC_QUERY + 24u);
-    g_sharc.Store3(e + SHARC_QUERY + 20u, uint3(
+    const uint3 w456 = g_sharc.Load3(e + SHARC_QUERY + 16u);
+    g_sharc.Store4(e + SHARC_QUERY + 16u, uint4(
+        (w456.x & ~SHARC_QUERY_UNCONVERGED) | (converged ? 0u : SHARC_QUERY_UNCONVERGED),
         SharcPackMean(mean.x) | (SharcPackMean(mean.y) << 16u),
-        SharcPackMean(mean.z) | (w6 & 0x00ff0000u) | (SharcPackUnorm8(confidence) << 24u),
+        SharcPackMean(mean.z) | (w456.z & 0x00ff0000u) | (SharcPackUnorm8(confidence) << 24u),
         (sharc_frame & 0xffffu) | (f32tof16(interval) << 16u)));
 }
 
@@ -163,6 +171,7 @@ SharcHistory SharcLoadHistory(uint e)
     h.interval = asfloat(b.y);
     h.frames = b.z;
     h.lastTouch = b.w;
+    h.converged = asfloat(g_sharc.Load(e + SHARC_CONVERGENCE)) >= sharc_convergenceThreshold;
     return h;
 }
 float SharcCellSize(uint level) { return sharc_cellSize * exp2((float)level); }
@@ -235,6 +244,15 @@ void SharcLoadBucket(uint bucket, out uint states[SHARC_BUCKET_SIZE])
     }
 }
 
+// Constant indices only; dynamic indexing spills the array to local memory.
+uint SharcBucketState(uint states[SHARC_BUCKET_SIZE], uint p)
+{
+    uint state = 0u;
+    [unroll] for (uint q = 0u; q < SHARC_BUCKET_SIZE; ++q)
+        if (q == p) state = states[q];
+    return state;
+}
+
 bool SharcMergedNode(uint states[SHARC_BUCKET_SIZE], uint hash)
 {
     uint sameKey = 0u;
@@ -253,15 +271,15 @@ float SharcSurfaceWeight(SharcDescriptor d, SharcSurface s, float3 relative, flo
     float3 delta = relative - d.representative;
     float plane = max(abs(dot(delta, d.geometricNormal)), abs(dot(delta, s.geometricNormal)));
     float w = smoothstep(0.90f, 0.99f, dot(d.geometricNormal, s.geometricNormal));
-    w *= smoothstep(0.90f, 0.99f, dot(d.normal, s.normal));
+    w *= smoothstep(SHARC_SIMILAR_NORMAL.x, SHARC_SIMILAR_NORMAL.y, dot(d.normal, s.normal));
     w *= 1.0f - smoothstep(0.015f * size, 0.05f * size, plane);
-    w *= 1.0f - smoothstep(0.05f, 0.15f, abs(s.roughness - d.roughness));
+    w *= 1.0f - smoothstep(SHARC_SIMILAR_ROUGHNESS.x, SHARC_SIMILAR_ROUGHNESS.y, abs(s.roughness - d.roughness));
 
     float3 ratio = s.demodulator / d.demodulator;
 
     float ratioMax = max(ratio.x, max(ratio.y, ratio.z));
     float ratioMin = min(ratio.x, min(ratio.y, ratio.z));
-    w *= 1.0f - smoothstep(0.3f, 0.7f, log2(max(ratioMax, rcp(ratioMin))));
+    w *= 1.0f - smoothstep(SHARC_SIMILAR_ALBEDO.x, SHARC_SIMILAR_ALBEDO.y, log2(max(ratioMax, rcp(ratioMin))));
     return w;
 }
 
@@ -279,11 +297,11 @@ void SharcInitializeEntry(uint e, int3 node, uint meta, SharcSurface s, float3 r
 
     [unroll] for (uint b = SHARC_FRAME_RGB; b < SHARC_ENTRY_BYTES; b += 16u)
         g_sharc.Store4(e + b, 0u);
+    g_sharc.Store(e + SHARC_CONVERGENCE, asuint(1.0f));
     g_sharc.Store(e + SHARC_LAST_UPDATE, sharc_frame);
     g_sharc.Store(e + SHARC_LAST_TOUCH, sharc_frame);
 }
 
-// Claim or reuse a cache entry while publishing complete state.
 uint SharcFindOrInsert(int3 node, uint level, uint axis, SharcSurface s, float3 relative, out float weight)
 {
     uint meta = SharcMeta(s, level, axis);
@@ -348,20 +366,21 @@ uint SharcFindOrInsert(int3 node, uint level, uint axis, SharcSurface s, float3 
     uint expected = 0u;
     if (slot == SHARC_INVALID)
     {
+        // No slot is locked here (contended returned above).
         uint victimAge = 0u;
         [loop] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
         {
             uint candidate = bucket * SHARC_BUCKET_SIZE + p;
             uint4 h = g_sharc.Load4(SharcEntryAddress(candidate) + SHARC_LAST_UPDATE);
             uint age = sharc_frame - h.x;
-            if (states[p] != SHARC_LOCKED && h.w != sharc_frame && age > victimAge)
+            if (h.w != sharc_frame && age > victimAge)
             {
                 victimAge = age;
                 slot = candidate;
-                expected = states[p];
             }
         }
         if (slot == SHARC_INVALID || victimAge < SHARC_REPLACE_AGE) return SHARC_INVALID;
+        expected = SharcBucketState(states, slot - bucket * SHARC_BUCKET_SIZE);
     }
     uint stateAddress = SharcStateAddress(slot), old;
     g_sharc.InterlockedCompareExchange(stateAddress, expected, SHARC_LOCKED, old);
@@ -382,7 +401,6 @@ float SharcFloat(uint2 words, float inverseScale)
     return (float(words.y) * 4294967296.0f + float(words.x)) * inverseScale;
 }
 
-// Accumulate weighted radiance and moments with fixed-point atomics.
 void SharcAccumulate(uint e, float3 radiance, float w)
 {
     if (e == SHARC_INVALID || !all(isfinite(radiance)) || !isfinite(w) || w <= 0.0f) return;
@@ -396,7 +414,6 @@ void SharcAccumulate(uint e, float3 radiance, float w)
     g_sharc.InterlockedAdd64(e + SHARC_FRAME_RGB + 16u, SharcFixed(radiance.z * w, SHARC_RADIANCE_SCALE));
     g_sharc.InterlockedAdd64(e + SHARC_FRAME_L2, SharcFixed(lum * lum * w, SHARC_RADIANCE_SCALE));
     g_sharc.InterlockedAdd64(e + SHARC_FRAME_W_W2, ((uint64_t)fixedW2 << 32) | (uint64_t)fixedW);
-    if (lum > 1e-8f) g_sharc.InterlockedAdd(e + SHARC_FRAME_POSITIVE, fixedW);
 
     uint slot = (e - SHARC_STATE_BYTES) / SHARC_ENTRY_BYTES;
     g_sharc.InterlockedOr(SharcDirtyAddress(slot >> 5u), 1u << (slot & 31u));
@@ -454,11 +471,10 @@ float SharcStatisticalConfidence(uint e)
     float error = sqrt(variance / max(neff, 1.0f)) / max(mean, 1e-8f);
     uint frames = g_sharc.Load(e + SHARC_FRAMES);
 
-    float positive = asfloat(g_sharc.Load(e + SHARC_HISTORY_POSITIVE)) / max(w, 1e-20f) * neff;
-    float confidence = smoothstep((float)sharc_minSamples, 2.0f * sharc_minSamples, neff);
-    confidence *= smoothstep(2.0f, 4.0f, (float)frames);
-    confidence *= smoothstep(3.0f, 8.0f, positive);
-    confidence *= 1.0f - smoothstep(0.20f, 0.50f, error);
+    // Trust follows sample count; the error test only rejects garbage.
+    float confidence = smoothstep(0.5f * (float)sharc_minSamples, (float)sharc_minSamples, neff);
+    confidence *= smoothstep(1.0f, 2.0f, (float)frames);
+    confidence *= 1.0f - smoothstep(1.0f, 2.0f, error);
     return all(isfinite(float4(mean, variance, neff, confidence))) ? confidence : 0.0f;
 }
 
@@ -494,7 +510,6 @@ void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 rel
     const float size = SharcCellSize(level);
     sum = 0.0f; support = 0.0f;
     float geometricSupport = 0.0f;
-#if SHARC_COMPACT_QUERY
 
     uint matchingSlots = 0u;
     [unroll] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
@@ -503,11 +518,6 @@ void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 rel
     {
         const uint p = (uint)firstbitlow(matchingSlots);
         matchingSlots &= matchingSlots - 1u;
-#else
-    [unroll] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
-    {
-        if (states[p] != hash) continue;
-#endif
         uint e = SharcEntryAddress(bucket * SHARC_BUCKET_SIZE + p);
 
         uint recordCheck; SharcDescriptor d; SharcHistory h;
@@ -517,7 +527,9 @@ void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 rel
             : SharcSurfaceWeight(d, s, relative, size);
         if (!isfinite(surfaceWeight) || surfaceWeight <= 0.0f) continue;
         geometricSupport += surfaceWeight;
-        float confidence = ignoreConfidence ? (h.frames > 0u ? 1.0f : 0.0f) : SharcConfidence(h);
+        // Unconverged history ends no path, even with ignoreConfidence.
+        float confidence = !h.converged ? 0.0f
+            : ignoreConfidence ? (h.frames > 0u ? 1.0f : 0.0f) : SharcConfidence(h);
 
         if (confidence <= 0.0f || !all(isfinite(h.mean))) continue;
         sum += h.mean * (surfaceWeight * confidence);
@@ -552,13 +564,23 @@ void SharcQueryLevel(SharcSurface s, uint level, out float3 sum, out float suppo
     }
 }
 
-float SharcFootprintRamp(float pathSpread, uint level)
+// Diffuse lobe cone full angle, sqrt(6): solid angle 1.5 pi.
+static const float SHARC_DIFFUSE_CONE = 2.44948974f;
+
+// Cache share; a cell (disk facing the apex, no slant) may fill 1/q of the cone.
+float SharcConeRamp(float coneWidth, float coneAngle, float3 position)
 {
-    return smoothstep(sharc_queryFootprint, 2.0f * sharc_queryFootprint,
-        pathSpread / SharcCellSize(level + 1u));
+    if (!(coneAngle > 0.0f)) return 0.0f;
+    const float coneSolidAngle = min(0.25f * PI * coneAngle * coneAngle, 2.0f * PI);
+    const float apex = coneWidth / coneAngle;
+    const float lod  = SharcLevel(position);
+    const float size = sharc_cellSize * exp2(floor(lod));
+    const float area = size * size * (1.0f + 3.0f * frac(lod));
+    const float s    = sqrt(apex * apex + area * INV_PI);
+    const float cellSolidAngle = 2.0f * area / (s * (s + apex));   // 2 pi (1 - apex / s)
+    return smoothstep(0.8f, 1.25f, coneSolidAngle / (sharc_queryFootprint * cellSolidAngle));
 }
 
-// Draw a cache estimate using confidence-aware stochastic rejection.
 bool SharcQueryStochastic(SharcSurface s, bool ignoreConfidence, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
@@ -584,20 +606,19 @@ bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance)
 {
     return SharcQueryStochastic(s, false, seed, radiance);
 }
-bool SharcQueryFootprintAccepted(float3 position, float pathSpread, inout uint seed)
+// At least 1/32 continue so the cache does not only learn from itself.
+bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAngle, inout uint seed)
 {
-
-    float footprint = SharcFootprintRamp(pathSpread, (uint)SharcLevel(position));
+    float footprint = SharcConeRamp(coneWidth, coneAngle, position);
     if (footprint <= 0.0f) return false;
     if (RandomFloatSingle(seed) >= footprint * (31.0f / 32.0f)) return false;
     return true;
 }
 
-// Accept cache history only when its footprint and confidence agree.
-bool SharcQuery(SharcSurface s, float pathSpread, inout uint seed, out float3 radiance)
+bool SharcQuery(SharcSurface s, float coneWidth, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
-    return SharcQueryFootprintAccepted(s.position, pathSpread, seed) &&
+    return SharcQueryFootprintAccepted(s.position, coneWidth, SHARC_DIFFUSE_CONE, seed) &&
         SharcQueryDraws(s, seed, radiance);
 }
 
@@ -605,4 +626,104 @@ bool SharcQueryForced(SharcSurface s, inout uint seed, out float3 radiance)
 {
     return SharcQueryStochastic(s, true, seed, radiance);
 }
-#endif
+
+// 1 = kept up with the lighting, 0 = behind (large z and relative gap).
+float SharcConvergence(float history, float recent, float recentVariance, float recentSamples)
+{
+    const float gap = abs(history - recent);
+    const float z = gap * rsqrt(max(recentVariance / max(recentSamples, 1e-6f), 1e-30f));
+    const float relative = gap / max(max(history, recent), 1e-20f);
+    const float convergence = 1.0f - smoothstep(SHARC_CONVERGENCE_Z.x, SHARC_CONVERGENCE_Z.y, z) *
+        smoothstep(SHARC_CONVERGENCE_GAP.x, SHARC_CONVERGENCE_GAP.y, relative);
+    return isfinite(convergence) ? convergence : 0.0f;
+}
+
+void SharcResolveEntry(uint slot)
+{
+    uint state = g_sharc.Load(SharcStateAddress(slot));
+    if (state == 0u || state == SHARC_LOCKED) return;
+    uint e = SharcEntryAddress(slot);
+    uint4 sumRG = g_sharc.Load4(e + SHARC_FRAME_RGB);
+    uint4 sumBL = g_sharc.Load4(e + SHARC_FRAME_RGB + 16u);
+    uint2 sumW = g_sharc.Load2(e + SHARC_FRAME_W_W2);
+
+    if (all(sumRG == 0u) && all(sumBL == 0u) && all(sumW == 0u)) return;
+    const float radianceScale = rcp(SHARC_RADIANCE_SCALE);
+    const float weightScale = rcp(SHARC_WEIGHT_SCALE);
+    float4 frame = float4(SharcFloat(sumRG.xy, radianceScale), SharcFloat(sumRG.zw, radianceScale),
+        SharcFloat(sumBL.xy, radianceScale), (float)sumW.x * weightScale);
+    float2 moments = float2(SharcFloat(sumBL.zw, radianceScale), (float)sumW.y * weightScale);
+    if (frame.w > 0.0f)
+    {
+        float4 previous = float4(asfloat(g_sharc.Load3(e + SHARC_MEAN)), asfloat(g_sharc.Load(e + SHARC_HISTORY_W)));
+        float2 oldMoments = float2(asfloat(g_sharc.Load(e + SHARC_HISTORY_L2)), asfloat(g_sharc.Load(e + SHARC_HISTORY_W2)));
+        // Fast window: luma mean, second moment, weight, squared weight.
+        float4 fast = asfloat(uint4(g_sharc.Load2(e + SHARC_FAST_MEAN), g_sharc.Load2(e + SHARC_FAST_W)));
+        bool validHistory = all(isfinite(previous)) && all(isfinite(oldMoments)) &&
+            previous.w > 0.0f && oldMoments.y > 0.0f;
+        if (!validHistory)
+        {
+            previous = 0.0f;
+            oldMoments = 0.0f;
+            g_sharc.Store(e + SHARC_FRAMES, 0u);
+        }
+        if (!validHistory || !all(isfinite(fast)) || !(fast.z > 0.0f) || !(fast.w > 0.0f)) fast = 0.0f;
+
+        const float decay = 1.0f - rcp(max((float)sharc_historyFrames, 2.0f));
+        const float frameLuma = Luma(frame.xyz);
+        const float historyLuma = Luma(previous.xyz);
+        float oldWeight = previous.w * decay;
+        float fastOld = fast.z * SHARC_FAST_DECAY;
+        float convergence = 1.0f;
+        if (validHistory)
+        {
+            const float recentWeight = fastOld + frame.w;
+            const float recent = (fast.x * fastOld + frameLuma) / recentWeight;
+            const float recentVariance = max((fast.y * fastOld + moments.x) / recentWeight - recent * recent,
+                SHARC_FAST_VARIANCE_FLOOR * max(oldMoments.x - historyLuma * historyLuma, 0.0f));
+            const float recentSamples = recentWeight * recentWeight /
+                (fast.w * SHARC_FAST_DECAY * SHARC_FAST_DECAY + moments.y);
+            convergence = SharcConvergence((historyLuma * oldWeight + frameLuma) / (oldWeight + frame.w),
+                recent, recentVariance, recentSamples);
+        }
+        // Both windows forget by convergence; clears a light that went out.
+        oldWeight *= convergence;
+        fastOld *= convergence;
+
+        float weight = oldWeight + frame.w;
+        float oldFraction = oldWeight / weight;
+        float3 mean = previous.xyz * oldFraction + frame.xyz / weight;
+        float second = oldMoments.x * oldFraction + moments.x / weight;
+        float weight2 = oldMoments.y * (decay * convergence) * (decay * convergence) + moments.y;
+        float fastWeight = fastOld + frame.w;
+        float fastFraction = fastOld / fastWeight;
+        fast = float4(fast.x * fastFraction + frameLuma / fastWeight, fast.y * fastFraction + moments.x / fastWeight,
+            fastWeight, fast.w * (SHARC_FAST_DECAY * convergence) * (SHARC_FAST_DECAY * convergence) + moments.y);
+        if (all(isfinite(float4(mean, weight))) && all(isfinite(float2(second, weight2))) && all(isfinite(fast)))
+        {
+            g_sharc.Store3(e + SHARC_MEAN, asuint(mean));
+            g_sharc.Store4(e + SHARC_HISTORY_W, asuint(float4(weight, second, weight2, convergence)));
+            g_sharc.Store2(e + SHARC_FAST_MEAN, asuint(fast.xy));
+            g_sharc.Store2(e + SHARC_FAST_W, asuint(fast.zw));
+            const uint frames = min(g_sharc.Load(e + SHARC_FRAMES) + 1u, 65535u);
+            g_sharc.Store(e + SHARC_FRAMES, frames);
+            float gap = (float)(sharc_frame - g_sharc.Load(e + SHARC_LAST_UPDATE));
+            float interval = validHistory ? asfloat(g_sharc.Load(e + SHARC_INTERVAL)) : 1.0f;
+            if (!isfinite(interval)) interval = 1.0f;
+            interval = validHistory ? max(lerp(interval, gap, 0.125f), 0.5f * gap) : 1.0f;
+            g_sharc.Store(e + SHARC_INTERVAL, asuint(interval));
+            g_sharc.Store(e + SHARC_LAST_UPDATE, sharc_frame);
+
+            // Below the threshold no path ends here (SharcQueryNode).
+            const bool converged = convergence >= sharc_convergenceThreshold;
+            const float confidence = converged ? SharcStatisticalConfidence(e) * convergence : 0.0f;
+            g_sharc.Store(e + SHARC_CONFIDENCE, asuint(confidence));
+
+            SharcPublishQueryHistory(e, mean, confidence, converged, frames, interval);
+        }
+    }
+
+    g_sharc.Store4(e + SHARC_FRAME_RGB, 0u);
+    g_sharc.Store4(e + SHARC_FRAME_RGB + 16u, 0u);
+    g_sharc.Store2(e + SHARC_FRAME_W_W2, 0u);
+}

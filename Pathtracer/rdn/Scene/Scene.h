@@ -41,7 +41,7 @@ struct SceneInstance {
 };
 
 struct SceneModel {
-    bvh::Survey bvhSurvey; // Import-time geometry survey; model motion may change world-space overlap.
+    bvh::Survey bvhSurvey; // import-time; motion can change overlap
     std::string name = "Model";
     std::string filePath = "";
 
@@ -115,14 +115,33 @@ struct Scene {
     UINT voxelMatIDBase = 0;
     UINT voxelPropsBase = 0;
     bool voxelMatIDReserved = false;
-    UINT combinedVertexCount() const { return totalVertexCount + terrainVertexElems + voxelVertexElems; }
-    UINT combinedIndexCount() const { return totalIndexCount + terrainIndexElems + voxelIndexElems; }
+
+    UINT oceanVertexElems = 0;
+    UINT oceanIndexElems = 0;
+    UINT oceanMatIDElems = 0;
+    UINT oceanInstanceSlots = 0;
+    UINT oceanVertexBase = 0;
+    UINT oceanIndexBase = 0;
+    UINT oceanMatIDBase = 0;
+    UINT oceanPropsBase = 0;
+    UINT oceanMatIndex = 0;
+    bool oceanMaterialEdited = false; // editor edits override generated values
+    bool oceanMatIDReserved = false;
+
+    UINT combinedVertexCount() const {
+        return totalVertexCount + terrainVertexElems + voxelVertexElems + oceanVertexElems;
+    }
+    UINT combinedIndexCount() const {
+        return totalIndexCount + terrainIndexElems + voxelIndexElems + oceanIndexElems;
+    }
 
     UINT instancePropsCount() const {
-        // Property ranges are reserved independently for terrain, rocks, and voxels.
+        // Each stream reserves its own range.
         const UINT base = terrainInstanceSlots ? (terrainPropsBase + terrainInstanceSlots) : (UINT)instances.size();
         const UINT withRocks = base + rockInstanceSlots;
-        return voxelInstanceSlots ? std::max(withRocks, voxelPropsBase + voxelInstanceSlots) : withRocks;
+        const UINT withVoxels =
+            voxelInstanceSlots ? std::max(withRocks, voxelPropsBase + voxelInstanceSlots) : withRocks;
+        return oceanInstanceSlots ? std::max(withVoxels, oceanPropsBase + oceanInstanceSlots) : withVoxels;
     }
 
     UINT sceneInstanceCap() const {
@@ -193,8 +212,6 @@ struct Scene {
 
     XMFLOAT3 prevSceneOriginWorld = {0.0f, 0.0f, 0.0f};
 
-    void PropagateModelTransforms();
-
     void MarkModelMoved(UINT modelIndex);
 
     void MarkMaterialsDirty(bool emissionChanged = false);
@@ -207,6 +224,10 @@ struct Scene {
     void ReserveRocks(UINT instanceSlots);
 
     void ReserveVoxels(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, UINT minPropsBase);
+
+    // Ocean instances come last; shaders detect them by index.
+    void ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots, const Material& mat,
+                      float foamAlbedo);
 
     void BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
     void CreateInstancePropertiesBuffer(ID3D12Device* device);

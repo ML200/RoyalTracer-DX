@@ -1,6 +1,7 @@
 #include "../stdafx.h"
 #include <fstream>
 #include "Scene.h"
+#include "../ocean/OceanCommon.h"
 #include "../DXRHelper.h"
 
 void MeshGPU::CreateBlasBuildInputs(ID3D12Device* device) {
@@ -18,15 +19,6 @@ void MeshGPU::CreateBlasBuildInputs(ID3D12Device* device) {
     };
     upload(cpuVertices.data(), cpuVertices.size() * sizeof(Vertex), vertexBuffer);
     upload(cpuIndices.data(), cpuIndices.size() * sizeof(UINT), indexBuffer);
-}
-
-void Scene::PropagateModelTransforms() {
-    for (auto& model : models) {
-        for (UINT i = model.instanceStart; i < model.instanceStart + model.instanceCount; ++i) {
-            auto& inst = instances[i];
-            inst.worldTransform = inst.localTransform * model.worldTransform;
-        }
-    }
 }
 
 void Scene::MarkModelMoved(UINT modelIndex) {
@@ -83,6 +75,28 @@ void Scene::ReserveTerrain(UINT vertexElems, UINT indexElems, UINT matIDElems, U
     terrainMatIndex = (UINT)materials.size() - 1;
 }
 
+void Scene::ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UINT instanceSlots,
+                         const Material& mat, float foamAlbedo) {
+    // Read before the ocean's slots count, so it lands last.
+    oceanPropsBase = instancePropsCount();
+    oceanVertexElems = vertexElems;
+    oceanIndexElems = indexElems;
+    oceanMatIDElems = matIDElems;
+    oceanInstanceSlots = instanceSlots;
+
+    oceanMatIndex = (UINT)materials.size();
+    oceanMaterialEdited = false;
+    // Foam ramps per bubble density, then the diagnostic slot.
+    for (uint32_t i = 0; i < OCEAN_MATERIAL_COUNT; ++i) {
+        Material layer = mat;
+        ocean::WriteMaterialSlot(i, mat.Kd, mat.Tf, mat.sssWeight, mat.sssEnable, foamAlbedo, layer.Kd,
+                                 layer.sssWeight, layer.sssEnable);
+        materials.push_back(layer);
+    }
+    materialNames.resize(materials.size());
+    materialNames[oceanMatIndex] = "Water";
+}
+
 void Scene::ReserveRocks(UINT instanceSlots) {
     rockInstanceSlots = instanceSlots;
     rockPropsBase = terrainPropsBase + terrainInstanceSlots;
@@ -101,7 +115,7 @@ void Scene::ReserveVoxels(UINT vertexElems, UINT indexElems, UINT matIDElems, UI
 void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
     SCOPE_TIMER("BuildGlobalMeshBuffers");
 
-    // Global bases let terrain, voxel, and imported geometry share buffers.
+    // All geometry shares one buffer.
     geoOffsets.resize(meshes.size());
     size_t totalV = 0, totalI = 0;
 
@@ -121,13 +135,40 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     voxelVertexBase = totalVertexCount + terrainVertexElems;
     voxelIndexBase = totalIndexCount + terrainIndexElems;
 
+    oceanVertexBase = voxelVertexBase + voxelVertexElems;
+    oceanIndexBase = voxelIndexBase + voxelIndexElems;
+
     const uint64_t vbBytes = (uint64_t)combinedVertexCount() * sizeof(BTriVertex);
     const uint64_t ibBytes = (uint64_t)combinedIndexCount() * sizeof(uint32_t);
+
+    // 32-bit view extent; overruns surface later as device removal.
+    constexpr uint64_t kMaxViewBytes = 1ull << 32;
+    if (vbBytes >= kMaxViewBytes) {
+        char msg[512];
+        snprintf(msg, sizeof(msg),
+                 "Global vertex buffer needs %.2f GiB, past the 4 GiB a structured-buffer view can address "
+                 "(scene %u + terrain %u + voxels %u + ocean %u vertices). Lower the Minecraft streamer's "
+                 "vertexCapacity.",
+                 (double)vbBytes / (1024.0 * 1024.0 * 1024.0), totalVertexCount, terrainVertexElems,
+                 voxelVertexElems, oceanVertexElems);
+        throw std::runtime_error(msg);
+    }
 
     const uint64_t sceneVbBytes = (uint64_t)totalVertexCount * sizeof(BTriVertex);
     const uint64_t sceneIbBytes = (uint64_t)totalIndexCount * sizeof(uint32_t);
 
-    const bool hasTerrain = combinedVertexCount() > totalVertexCount;
+    // Only CPU-written terrain needs an upload heap.
+    const bool hasTerrain = terrainVertexElems > 0 || terrainIndexElems > 0;
+
+    // Ocean writes vertices via UAV; upload heaps can't be UAVs.
+    const bool hasOcean = oceanVertexElems > 0;
+    if (hasTerrain && hasOcean)
+        throw std::runtime_error("Streamed terrain and the ocean cannot share the global vertex buffer");
+    const D3D12_RESOURCE_FLAGS vbFlags =
+        hasOcean ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
+    // The ocean's compute queue rejects GENERIC_READ.
+    const D3D12_RESOURCE_STATES vbReadState =
+        hasOcean ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_GENERIC_READ;
 
     uint8_t* dstVertsRaw;
     uint8_t* dstIdxRaw;
@@ -147,19 +188,23 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
         dstVertsRaw = vertexGlobalMapped;
         dstIdxRaw = indexGlobalMapped;
     } else {
-        vertexGlobal =
-            nv_helpers_dx12::CreateBuffer(device, vbBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
-                                          nv_helpers_dx12::kDefaultHeapProps);
+        vertexGlobal = nv_helpers_dx12::CreateBuffer(device, vbBytes, vbFlags, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                     nv_helpers_dx12::kDefaultHeapProps);
         vertexGlobal->SetName(L"GlobalVertexBuffer");
         indexGlobal = nv_helpers_dx12::CreateBuffer(device, ibBytes, D3D12_RESOURCE_FLAG_NONE,
                                                     D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
         indexGlobal->SetName(L"GlobalIndexBuffer");
 
+        // Static ocean indices, staged once.
+        const uint64_t stagedVbBytes = sceneVbBytes;
+        const uint64_t stagedIbBytes =
+            sceneIbBytes + (uint64_t)oceanIndexElems * sizeof(uint32_t);
+
         vertexGlobalUpload =
-            nv_helpers_dx12::CreateBuffer(device, sceneVbBytes, D3D12_RESOURCE_FLAG_NONE,
+            nv_helpers_dx12::CreateBuffer(device, std::max<uint64_t>(stagedVbBytes, 256), D3D12_RESOURCE_FLAG_NONE,
                                           D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
         indexGlobalUpload =
-            nv_helpers_dx12::CreateBuffer(device, sceneIbBytes, D3D12_RESOURCE_FLAG_NONE,
+            nv_helpers_dx12::CreateBuffer(device, std::max<uint64_t>(stagedIbBytes, 256), D3D12_RESOURCE_FLAG_NONE,
                                           D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 
         CD3DX12_RANGE noRead(0, 0);
@@ -191,6 +236,30 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
             outI[i] = mesh.cpuIndices[i] + vBase;
     }
 
+    // Static topology; each tile indexes only its own block.
+    if (hasOcean) {
+        uint32_t* out = dstIdx + totalIndexCount;
+        constexpr uint32_t edge = OCEAN_TILE_EDGE_VERTS;
+        for (uint32_t t = 0; t < oceanInstanceSlots; ++t) {
+            const uint32_t base = oceanVertexBase + t * OCEAN_TILE_VERTS;
+            for (uint32_t j = 0; j < OCEAN_TILE_GRID; ++j) {
+                for (uint32_t i = 0; i < OCEAN_TILE_GRID; ++i) {
+                    const uint32_t v00 = base + j * edge + i;
+                    const uint32_t v10 = v00 + 1;
+                    const uint32_t v01 = v00 + edge;
+                    const uint32_t v11 = v01 + 1;
+                    // Wound so geometric normals face the sky.
+                    *out++ = v00;
+                    *out++ = v01;
+                    *out++ = v11;
+                    *out++ = v00;
+                    *out++ = v11;
+                    *out++ = v10;
+                }
+            }
+        }
+    }
+
     if (!hasTerrain) {
         vertexGlobalUpload->Unmap(0, nullptr);
         indexGlobalUpload->Unmap(0, nullptr);
@@ -198,11 +267,13 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
             cmdList->CopyBufferRegion(vertexGlobal.Get(), 0, vertexGlobalUpload.Get(), 0, sceneVbBytes);
         if (sceneIbBytes)
             cmdList->CopyBufferRegion(indexGlobal.Get(), 0, indexGlobalUpload.Get(), 0, sceneIbBytes);
+        if (hasOcean)
+            cmdList->CopyBufferRegion(indexGlobal.Get(), (uint64_t)oceanIndexBase * sizeof(uint32_t),
+                                      indexGlobalUpload.Get(), sceneIbBytes,
+                                      (uint64_t)oceanIndexElems * sizeof(uint32_t));
         const D3D12_RESOURCE_BARRIER toRead[2] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                 D3D12_RESOURCE_STATE_GENERIC_READ),
-            CD3DX12_RESOURCE_BARRIER::Transition(indexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                                 D3D12_RESOURCE_STATE_GENERIC_READ),
+            CD3DX12_RESOURCE_BARRIER::Transition(vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST, vbReadState),
+            CD3DX12_RESOURCE_BARRIER::Transition(indexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST, vbReadState),
         };
         cmdList->ResourceBarrier(2, toRead);
     }
@@ -235,7 +306,7 @@ void Scene::PrepareInstanceProperties() {
         dirtyInstanceList.push_back(static_cast<uint32_t>(i));
     }
 
-    // Store transforms relative to the current floating origin.
+    // Relative to the floating origin.
     const XMVECTOR shift = XMVectorSet(sceneOriginWorld.x, sceneOriginWorld.y, sceneOriginWorld.z, 0.0f);
 
     const XMVECTOR prevShift =
@@ -354,7 +425,6 @@ void Scene::RebuildTLASInstanceList() {
 }
 
 void Scene::CollectEmissiveTriangles() {
-    // Build triangle and instance light records from the current material set.
     emissiveTriangles.clear();
     triToLightId.clear();
     meshLightBase.assign(meshes.size(), 0xFFFFFFFFu);
@@ -433,6 +503,13 @@ void Scene::UploadMaterials(ID3D12Device* device) {
         voxelMatIDReserved = true;
     }
 
+    // One tile's IDs serve all tiles: a single material.
+    if (oceanMatIDElems && !oceanMatIDReserved) {
+        oceanMatIDBase = (UINT)materialIDs.size();
+        materialIDs.resize((size_t)oceanMatIDBase + oceanMatIDElems, oceanMatIndex);
+        oceanMatIDReserved = true;
+    }
+
     materials.BuildGpuPacked(materialPacked);
 
     {
@@ -496,7 +573,7 @@ void Scene::CreateTriToLightIdBuffer(ID3D12Device* device, ID3D12GraphicsCommand
     auto br = CD3DX12_RESOURCE_BARRIER::Transition(triToLightIdBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                                    D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &br);
-    // Keep upload memory alive until the GPU copy completes.
+    // Kept until the GPU copy completes.
     pendingLightUploads.push_back(std::move(upload));
 }
 
@@ -522,6 +599,6 @@ void Scene::CreateEmissiveTrianglesBuffer(ID3D12Device* device, ID3D12GraphicsCo
     auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(emissiveTrianglesBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                                         D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &barrier);
-    // Retain the staging resource through the asynchronous submission.
+    // Kept through the async submission.
     pendingLightUploads.push_back(std::move(upload));
 }

@@ -1,5 +1,22 @@
-#ifndef MATERIAL_DECODER_V8_HLSLI
-#define MATERIAL_DECODER_V8_HLSLI
+#pragma once
+#include "OceanLayout.h"
+#include "OceanOptics.hlsli"
+
+// The sea and every whitecap step of its ramp.
+inline bool LoadIsOceanMaterial(uint matID)
+{
+    [branch] if (!OCEAN_ENABLED) return false;
+    StructuredBuffer<OceanParamsGPU> ocean = ResourceDescriptorHeap[OCEAN_SRV_PARAMS];
+    return matID - ocean[0].materialBase < (uint)OCEAN_MATERIAL_LEVELS;
+}
+
+// Widened water lobe for sun sampling and NEE; see OceanHighlightRoughness.
+inline float LoadOceanSunLobeRoughness()
+{
+    [branch] if (!OCEAN_ENABLED) return 0.0f;
+    StructuredBuffer<OceanParamsGPU> ocean = ResourceDescriptorHeap[OCEAN_SRV_PARAMS];
+    return ocean[0].sunLobeRoughness;
+}
 
 inline float3 LoadKd_rgb(uint matID)
 {
@@ -8,15 +25,8 @@ inline float3 LoadKd_rgb(uint matID)
 
 inline float LoadKd_w(uint matID)
 {
-    return FORCE_DIFFUSE ? 1.0f : f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
-}
-
-// Decode base color and material flags from packed storage.
-inline float4 LoadKd(uint matID)
-{
-    const MatPacked m = g_mat[matID];
-    return float4(UnpackRGB9E5(m.Kd_rgb),
-                  FORCE_DIFFUSE ? 1.0f : f16tof32(m.w_Ni & 0xFFFFu));
+    if (FORCE_DIFFUSE) return 1.0f;
+    return f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
 }
 
 inline float LoadNi(uint matID)
@@ -24,7 +34,7 @@ inline float LoadNi(uint matID)
     return FORCE_DIFFUSE ? 1.0f : f16tof32(g_mat[matID].w_Ni >> 16);
 }
 
-// Decode roughness, metalness, sheen, and coat parameters.
+// Roughness, metalness, sheen, coat.
 inline float4 LoadPrPmPsPc(uint matID)
 {
     if (FORCE_DIFFUSE) return float4(1.0f, 0.0f, 0.0f, 0.0f);
@@ -34,11 +44,6 @@ inline float4 LoadPrPmPsPc(uint matID)
         float((p >>  8) & 0xFFu) * (1.0f / 255.0f),
         float((p >> 16) & 0xFFu) * (1.0f / 255.0f),
         float((p >> 24) & 0xFFu) * (1.0f / 255.0f));
-}
-
-inline float LoadPr(uint matID)
-{
-    return FORCE_DIFFUSE ? 1.0f : float(g_mat[matID].PrPmPsPc & 0xFFu) * (1.0f / 255.0f);
 }
 
 inline float LoadDiffuseRoughness(uint matID)
@@ -82,17 +87,6 @@ inline float LoadAniso(uint matID)
 inline float LoadAnisoRot(uint matID)
 {
     return float((g_mat[matID].Pcr_Aniso_Rot_AlphaTh >> 16) & 0xFFu) * (1.0f / 255.0f);
-}
-
-inline float3 LoadPcrAnisoAnisor(uint matID)
-{
-    const uint p = g_mat[matID].Pcr_Aniso_Rot_AlphaTh;
-    const uint rawA = (p >> 8) & 0xFFu;
-    const int  aS   = (int)(rawA << 24) >> 24;
-    return float3(
-        float( p        & 0xFFu) * (1.0f / 255.0f),
-        float(aS)                * (1.0f / 127.0f),
-        float((p >> 16) & 0xFFu) * (1.0f / 255.0f));
 }
 
 inline float LoadAlphaThreshold(uint matID)
@@ -148,7 +142,9 @@ inline float2 LoadRmaUVScale(uint matID)
 
 inline bool LoadIsSSS(uint matID)
 {
-    return !FORCE_DIFFUSE && (g_mat[matID].texIDs_2 & (1u << 17)) != 0u;
+    if (FORCE_DIFFUSE || (g_mat[matID].texIDs_2 & (1u << 17)) == 0u) return false;
+    // Water uses volume transport, not the SSS walk.
+    return !LoadIsOceanMaterial(matID);
 }
 
 inline float3 LoadSSSAlbedo(uint matID)
@@ -181,5 +177,3 @@ inline bool MaterialIsFreeBounce(uint matID)
     const bool isTranslucent = LoadIsSSS(matID);
     return isGlass || isTranslucent;
 }
-
-#endif

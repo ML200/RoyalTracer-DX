@@ -2,7 +2,6 @@
 
 namespace planet {
 
-// Subtracts the camera origin before narrowing to float precision.
 Vec3f to_camera_relative(const DVec3& world, const DVec3& camera_origin) {
     const DVec3 rel = world - camera_origin;
     return Vec3f{ static_cast<float>(rel.x),
@@ -10,7 +9,6 @@ Vec3f to_camera_relative(const DVec3& world, const DVec3& camera_origin) {
                   static_cast<float>(rel.z) };
 }
 
-// Constructs near, far, and side planes in camera-relative space.
 Frustum Frustum::from_camera(const CameraView& cam) {
     const Vec3f F = normalize(cam.forward);
     Vec3f R = cross(F, cam.up);

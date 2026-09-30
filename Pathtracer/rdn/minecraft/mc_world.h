@@ -35,7 +35,6 @@ struct WorldLoadStats {
 
 class World {
 public:
-    // Loads region data before model and material resolution.
     bool load(const WorldLoadConfig& cfg, planet::WorkerPool* pool, std::string* err = nullptr);
 
     void build_lod(planet::WorkerPool* pool, int decorMaxLevel = 3);

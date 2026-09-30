@@ -1,7 +1,4 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
-
-static const float AE_KEY_VALUE   =  0.18f;
 
 static const float AE_LOG_LUM_MIN = -6.0f;
 static const float AE_LOG_LUM_MAX =  3.0f;
@@ -10,7 +7,6 @@ static const float AE_DT_MIN      =  0.001f;
 static const float AE_DT_MAX      =  0.25f;
 
 [numthreads(1, 1, 1)]
-// Convert reduced luminance into the next exposure value.
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (any(DTid != uint3(0, 0, 0))) return;

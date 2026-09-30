@@ -14,6 +14,7 @@
 #include "voxel_mesher.h"
 #include "../Common.h"
 #include "../planet/stream_orchestrator.h"
+#include "../ocean/OceanCommon.h"
 #include "../Lighting/LightTreeRefit.h"
 
 struct DeviceContext;
@@ -101,7 +102,6 @@ public:
     void free(uint64_t offset, uint64_t count);
     uint64_t used() const { return m_used; }
     uint64_t capacity() const { return m_capacity; }
-    size_t   fragments() const { return m_free.size(); }
 private:
     struct Span { uint64_t first, count; };
     std::vector<Span> m_free;
@@ -124,12 +124,33 @@ public:
     VoxelStreamer();
     ~VoxelStreamer() override;
 
-    // Initializes GPU pools and worker state for asynchronous chunk streaming.
     void init(ID3D12Device5* device, DeviceContext* ctx, World* world, const StreamerConfig& cfg);
     bool enabled() const { return m_world != nullptr; }
 
     void set_placement(const Placement& p) { m_placement = p; }
     const Placement& placement() const { return m_placement; }
+
+    // Remeshes every resident chunk; a setting, not per-frame.
+    void set_hide_water(bool hide);
+    bool hide_water() const { return m_hideWater; }
+
+    // Water per section column (palette test); None outside the loaded world.
+    class WaterCoverage final : public ocean::ICoverage {
+      public:
+        void build(const World& world, const Placement& place);
+        ocean::Coverage Test(double minX, double minZ, double size) const override;
+        uint32_t columns_with_water() const { return m_withWater; }
+        uint32_t columns_total() const { return m_w * m_h; }
+
+      private:
+        std::vector<uint64_t> m_bits;
+        Placement m_place;
+        int32_t  m_minCx = 0, m_minCz = 0;
+        uint32_t m_w = 0, m_h = 0;
+        uint32_t m_withWater = 0;
+    };
+    const WaterCoverage& water_coverage() const { return m_waterCoverage; }
+    WaterCoverage& water_coverage_mut() { return m_waterCoverage; }
 
     void bind_geometry(ID3D12Resource* vertexGlobal, ID3D12Resource* indexGlobal, uint32_t combinedVertexCount,
                        uint32_t vertexBaseElems, uint32_t indexBaseElems,
@@ -139,7 +160,6 @@ public:
     void bind_omm(ID3D12Resource* indexBuffer, D3D12_GPU_VIRTUAL_ADDRESS ommArray, const OmmTable* table);
 
     void bind_lights(const LightBinding& b);
-    void unbind_lights();
     bool lights_bound() const { return m_lightsBound; }
     void set_light_slot_base(uint32_t base);
 
@@ -149,7 +169,6 @@ public:
     void on_light_tlas_published(uint32_t version, bool hasVoxelLeaves);
     bool has_live_lights() const { return m_lightTlasHasVoxels; }
 
-    // Selects the LOD cut and advances uploads, builds, and retirements.
     void begin_frame(const double camWorld[3]);
 
     void warm_up(const double camWorld[3]);
@@ -157,8 +176,7 @@ public:
     uint32_t instance_capacity() const override { return m_cfg.maxInstances; }
     void record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) override;
     void append_instances(planet::TlasBuilder& tlas, InstanceProperties* props, const planet::DVec3& sceneOrigin,
-                          uint32_t hitGroup, bool& forceRebuild) override;
-    // Keeps staging and BLAS resources alive until both fences retire.
+                          uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) override;
     void on_submitted(uint64_t copyFence, uint64_t computeFence) override;
 
     void set_block(int x, int y, int z, BlockId id);
@@ -367,6 +385,9 @@ private:
     bool                   m_renderListChanged = true;
     double                 m_cam[3] = { 0, 0, 0 };
     Placement              m_placement;
+    WaterCoverage          m_waterCoverage;
+    bool                   m_hideWater = false;
+    void remesh_chunk(Chunk& c);
     DirectX::XMMATRIX placement_matrix(float tx, float ty, float tz) const;
     double                 m_cutCam[3] = { 1e30, 1e30, 1e30 };
     float                  m_cutLodFactor = -1.0f;

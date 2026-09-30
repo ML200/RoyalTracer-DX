@@ -10,7 +10,7 @@ namespace mc {
 using BlockId = uint16_t;
 constexpr BlockId AIR_ID = 0;
 
-using Voxel = uint32_t; // Block id, flags, and an emissive count or non-emissive water height.
+using Voxel = uint32_t; // Block id, flags, emissive count or water height.
 constexpr Voxel VOX_ANY = 1u << 16;
 constexpr Voxel VOX_ALL = 1u << 17;
 constexpr Voxel VOX_OCC = 1u << 18;
@@ -18,7 +18,7 @@ constexpr int   VOX_EMIT_SHIFT = 19;
 constexpr Voxel VOX_EMIT_MAX   = 8191u;
 inline BlockId  voxel_id(Voxel v)       { return (BlockId)(v & 0xFFFFu); }
 inline uint32_t voxel_emissive(Voxel v, bool water = false) { return water ? 0u : (uint32_t)(v >> VOX_EMIT_SHIFT); }
-// Water reuses the count payload for its top, in blocks above the voxel floor.
+// Water top in blocks above the voxel floor.
 inline uint32_t voxel_water_height(Voxel v, int level) {
     const uint32_t h = (uint32_t)(v >> VOX_EMIT_SHIFT);
     return level == 0 || h == 0u ? (1u << level) : h;
@@ -41,7 +41,6 @@ constexpr int FACE_DIR[6][3] = {
     {-1,  0,  0 },
     { 1,  0,  0 },
 };
-inline Face opposite_face(Face f) { return (Face)(f ^ 1u); }
 
 struct FaceProjection { int na; int ua; int va; float su; float sv; };
 constexpr FaceProjection FACE_PROJECTION[6] = {
@@ -80,7 +79,6 @@ inline uint32_t section_index(int x, int y, int z) {
 }
 
 inline int32_t floor_shift(int32_t v, int s) { return v >> s; }
-inline int32_t floor_div(int32_t v, int32_t d) { return (v >= 0) ? v / d : -((-v + d - 1) / d); }
 
 struct NodeKey {
     uint8_t level = 0;
@@ -89,7 +87,6 @@ struct NodeKey {
     bool operator!=(const NodeKey& o) const { return !(*this == o); }
 };
 constexpr int32_t NODE_AXIS_OFFSET = 1 << 19;
-// Packs signed chunk coordinates and level into a sortable key.
 inline uint64_t pack_node(const NodeKey& k) {
     return ((uint64_t)(k.level & 0xFu) << 60)
          | (((uint64_t)(uint32_t)(k.x + NODE_AXIS_OFFSET) & 0xFFFFFull) << 40)

@@ -51,7 +51,6 @@ static bool is_ancestor(uint64_t a_id, uint64_t b_id) {
     return (b.x >> d) == a.x && (b.y >> d) == a.y;
 }
 
-// Decodes the mesh's signed octahedral normal representation.
 static Vec3f decode_signed_normal(uint32_t packed) {
     int32_t x = static_cast<int32_t>(packed & 0xFFFFu);
     int32_t y = static_cast<int32_t>((packed >> 16) & 0xFFFFu);

@@ -10,14 +10,12 @@ namespace mc {
 
 struct IResourceProvider {
     virtual ~IResourceProvider() = default;
-    // Resolves model and texture paths across the resource stack.
     virtual bool exists(const std::string& path) = 0;
     virtual bool read(const std::string& path, std::vector<uint8_t>& out) = 0;
 };
 
 class ZipArchive : public IResourceProvider {
 public:
-    // Indexes a ZIP central directory for on-demand reads.
     bool open(const std::string& path, std::string* err = nullptr);
     bool open_memory(std::vector<uint8_t> bytes, std::string* err = nullptr);
 

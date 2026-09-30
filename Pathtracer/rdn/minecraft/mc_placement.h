@@ -10,7 +10,7 @@ struct Placement {
     double ai[9] = { 1, 0, 0,  0, 1, 0,  0, 0, 1 };
     bool   identity = true;
 
-    // Stores an affine block-to-scene transform and its inverse.
+    // m: block-to-scene affine transform.
     void set(const float m[16]) {
         for (int r = 0; r < 3; ++r)
             for (int c = 0; c < 3; ++c) a[c * 3 + r] = (double)m[r * 4 + c];

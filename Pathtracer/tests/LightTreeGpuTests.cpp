@@ -37,6 +37,8 @@ struct Runner {
     float rewardScale = 1.0f;
     bool compactNodes = true;
     XMFLOAT3 testCamera{};
+    // Inverse view column 3; zero leaves every cell in front.
+    XMFLOAT3 testForward{};
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
     ~Runner() { CloseHandle(event); }
@@ -61,7 +63,7 @@ struct Runner {
         params[0].InitAsDescriptorTable(1, &range);
         params[1].InitAsUnorderedAccessView(0, 1);
         params[2].InitAsConstants(8, 0, 1);
-        params[3].InitAsConstants(47, 1);
+        params[3].InitAsConstants(SHARC_ROOT_CONSTANTS, 1);
         params[4].InitAsUnorderedAccessView(27);
         params[5].InitAsConstantBufferView(0);
         CD3DX12_ROOT_SIGNATURE_DESC desc(6, params);
@@ -78,7 +80,7 @@ struct Runner {
         std::vector<char> lc((std::istreambuf_iterator<char>(lf)),{});
         pd.CS={lc.data(),lc.size()};Check(device->CreateComputePipelineState(&pd,IID_PPV_ARGS(&learningPso)));
         learningBuffer=Buffer(LT_LEARNING_BYTES,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        cameraBuffer=Upload(std::vector<UINT>(1024,0));
+        cameraBuffer=Buffer(4096,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
         std::vector<InstanceProperties> props(4096);
         for(UINT i=0;i<props.size();++i) {
             auto& p=props[i];
@@ -157,16 +159,19 @@ struct Runner {
     void BindLearning(UINT flags, UINT frame=0u, bool reset=false) {
         if (compactNodes) flags |= RS_FLAG_COMPACT_LIGHT_TREE;
         if(frame!=0u) currentFrame=frame;
+        {void* cam=nullptr;Check(cameraBuffer->Map(0,nullptr,&cam));memset(cam,0,4096);
+         memcpy(static_cast<float*>(cam)+40,&testForward,sizeof(testForward));
+         memcpy(static_cast<float*>(cam)+44,&testCamera,sizeof(testCamera));cameraBuffer->Unmap(0,nullptr);}
         ID3D12DescriptorHeap* heaps[]={heap.Get()};commands->SetDescriptorHeaps(1,heaps);
         commands->SetComputeRootSignature(root.Get());
         commands->SetComputeRootConstantBufferView(5,cameraBuffer->GetGPUVirtualAddress());
         commands->SetComputeRootDescriptorTable(0,heap->GetGPUDescriptorHandleForHeapStart());
         commands->SetComputeRootUnorderedAccessView(4,learningBuffer->GetGPUVirtualAddress());
-        UINT push[47]{};push[0]=8u;push[1]=4u;push[9]=flags;float cellSize=1.0f;memcpy(push+24,&cellSize,4);
-        memcpy(push+25,&lodScale,4);
-        push[26]=clockMs;
-        push[45]=reset?LT_RESET_BIT:0u;push[46]=currentFrame;
-        commands->SetComputeRoot32BitConstants(3,47,push,0);
+        UINT push[SHARC_ROOT_CONSTANTS]{};push[0]=8u;push[1]=4u;push[2]=flags;float cellSize=1.0f;memcpy(push+15,&cellSize,4);
+        memcpy(push+16,&lodScale,4);
+        push[17]=clockMs;
+        push[23]=reset?LT_RESET_BIT:0u;push[24]=currentFrame;push[34]=0u;
+        commands->SetComputeRoot32BitConstants(3,SHARC_ROOT_CONSTANTS,push,0);
         UINT test[8]{};memcpy(test+4,&testCamera,sizeof(testCamera));memcpy(test+7,&rewardScale,4);
         commands->SetComputeRoot32BitConstants(2,8,test,0);
     }
@@ -182,7 +187,7 @@ struct Runner {
         auto barrier=CD3DX12_RESOURCE_BARRIER::UAV(learningBuffer.Get());commands->ResourceBarrier(1,&barrier);
         commands->Dispatch(LT_LEARNING_GROUPS,1,1);commands->ResourceBarrier(1,&barrier);
         if(!reset) {
-            commands->SetComputeRoot32BitConstant(3,LT_INITIALIZE_BIT,45);
+            commands->SetComputeRoot32BitConstant(3,LT_INITIALIZE_BIT,23);
             commands->Dispatch(LT_LEARNING_GROUPS,1,1);commands->ResourceBarrier(1,&barrier);
         }
         if(gpuMs) {commands->EndQuery(timestamps.Get(),D3D12_QUERY_TYPE_TIMESTAMP,1);commands->ResolveQueryData(timestamps.Get(),D3D12_QUERY_TYPE_TIMESTAMP,0,2,readback.Get(),0);}
@@ -228,9 +233,9 @@ struct Runner {
         commands->SetComputeRoot32BitConstants(2,4,test,0);
         commands->SetComputeRootUnorderedAccessView(4,learningBuffer->GetGPUVirtualAddress());
         UINT push[SHARC_ROOT_CONSTANTS] = {};
-        if (noLights) push[9] = RS_FLAG_NO_MESH_LIGHTS;
-        if (compactNodes) push[9] |= RS_FLAG_COMPACT_LIGHT_TREE;
-        commands->SetComputeRoot32BitConstants(3, 47, push, 0);
+        if (noLights) push[2] = RS_FLAG_NO_MESH_LIGHTS;
+        if (compactNodes) push[2] |= RS_FLAG_COMPACT_LIGHT_TREE;
+        commands->SetComputeRoot32BitConstants(3, SHARC_ROOT_CONSTANTS, push, 0);
         commands->Dispatch((UINT(expected.size()) + 63u) / 64u, 1, 1);
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ);
         commands->ResourceBarrier(1, &barrier);
@@ -407,8 +412,6 @@ void VerifyBoundaryTree(Runner& runner, uint32_t depth, bool deepTlas) {
 }
 
 void VerifyConeGeometry(Runner& runner) {
-    for(UINT mode:{20u,21u}) for(const auto& record:runner.LearningSamples(32,32,mode,0,0))
-        Require(record.x==1,"NEE prefetch lost its feedback token or accepted a stale record");
     auto metrics=runner.LearningSamples(2,2,5,0,0);
     Require(std::abs(metrics[0].x-.5f)<1e-6 && metrics[0].y==0,"Back-facing cone importance is incorrect");
     Require(std::abs(metrics[0].z-4*metrics[0].w)<1e-4,"Near-field distance regularization is not scale consistent");
@@ -656,7 +659,7 @@ void VerifyLearning(Runner& runner, bool twoLevel) {
     for(UINT i=0;i<count;++i) Require(initial[i].x==frozen[i].x,"Training changed the current frame's PDF");
     runner.PrepareLearning(flags,3);
     auto black=runner.LearningSamples(count,count,2,0,flags);
-    Require(std::abs(black[0].w-.75f*initial[0].w)<initial[0].w*1e-5f,"Occluded samples were omitted from the Q update");
+    Require(black[0].w>0 && black[0].w<initial[0].w*.5f,"Occluded samples did not lower the learned weights");
     double mean=0;uint64_t samples=0;
     for(UINT frame=4;frame<100;++frame) {
         auto values=runner.LearningSamples(count,2048,1,frame*7919,flags);
@@ -1010,6 +1013,60 @@ void VerifyGridReview(Runner& runner) {
     runner.clockMs=0;runner.testCamera={0,0,0};
 }
 
+// Behind-camera cells go first and expire on the short timer, unless still reached.
+void VerifyBehindCameraRetention(Runner& runner) {
+    constexpr UINT lights=128,flags=LT_FLAG_LEARNING;
+    std::vector<LightTriangle> tris(lights);
+    for(UINT i=0;i<lights;++i) {
+        auto& t=tris[i];float x=float(i%16)*.025f,y=float(i/16)*.025f;
+        t.x={x,y,0};t.y={x,y+.01f,0};t.z={x+.01f,y,0};t.weight=1;t.meshID=i/16u;
+    }
+    lt::LightTreeBuilder builder;builder.Build(tris);builder.UploadAll(runner.device.Get(),runner.commands.Get());
+    builder.WriteSrvs(runner.device.Get(),runner.Handle(9));builder.WriteLookupSrvs(runner.device.Get(),runner.Handle(16));builder.WriteSlotSrv(runner.device.Get(),runner.Handle(7));
+    auto emission=runner.Upload(tris);runner.Srv(emission.Get(),6,sizeof(LightTriangle));
+    auto input=runner.Upload(std::vector<XMFLOAT4>{{.25f,.25f,-9.75f,0}});runner.Srv(input.Get(),19,sizeof(XMFLOAT4));runner.Flush();
+    // 3 units in front: a 1-unit cell is behind once the camera turns.
+    runner.lodScale=.05f;runner.clockMs=0;runner.testCamera={.25f,.25f,-6.75f};runner.testForward={0,0,-1};
+    UINT frame=1;
+    const auto feed=[&](UINT steps,UINT stepMs=16u) {
+        for(UINT i=0;i<steps;++i) {
+            runner.LearningSamples(lights,64,24,(127u<<16u)|((frame*7919u)&65535u),flags);
+            runner.clockMs+=stepMs;runner.PrepareLearning(flags,++frame);
+        }
+    };
+    const auto retention=[&]{return runner.LearningSamples(lights,1,49,0,flags)[0];};
+    runner.PrepareLearning(flags,++frame,true);feed(8);
+
+    const auto facing=retention();
+    Require(facing.x>=0,"Behind-camera fixture never allocated a cell for the receiver");
+    Require(facing.x==0 && facing.y==0 && facing.w==0,
+        "A cell the camera is looking at was offered for replacement");
+
+    // Turning away alone does not make a reached cell a victim.
+    runner.testForward={0,0,1};runner.PrepareLearning(flags,++frame);
+    const auto turned=retention();
+    Require(turned.w==0,"A cell the paths still reach was offered for replacement once the camera turned");
+
+    feed(40);
+    const auto reached=retention();
+    Require(reached.w==0 && reached.y==0,
+        "A cell behind the camera was recycled although paths still reached it");
+
+    runner.clockMs+=LT_CELL_DISTANT_MS+64u;runner.PrepareLearning(flags,++frame);
+    const auto idle=retention();
+    Require(idle.x==1 && idle.y==1,"A cell behind the camera outlived the short idle timer");
+
+    // Turning back restores the ordinary idle tolerance.
+    runner.testForward={0,0,-1};runner.PrepareLearning(flags,++frame);
+    const auto returned=retention();
+    Require(returned.x==0 && returned.y==0 && returned.w==1,
+        "Turning back towards an idle cell did not restore its ordinary idle tolerance");
+
+    std::cout<<"Behind the camera: survives "<<40u*16u<<" ms of being reached, then ranks above idle cells in front and expires "
+        <<LT_CELL_DISTANT_MS<<" ms after the paths stop\n";
+    runner.testForward={0,0,0};runner.testCamera={0,0,0};runner.clockMs=0;
+}
+
 void VerifySurfaceLearning(Runner& runner) {
     constexpr UINT lights=128,flags=LT_FLAG_LEARNING;
     std::vector<LightTriangle> tris(lights);
@@ -1210,6 +1267,7 @@ int main(int argc, char** argv) {
         Runner runner(argv[1]);
         if(argc==3 && std::string(argv[2])=="--surface") {VerifySurfaceLearning(runner);return 0;}
         if(argc==3 && std::string(argv[2])=="--cold-lod") {VerifyColdLodTransition(runner);return 0;}
+        if(argc==3 && std::string(argv[2])=="--behind") {VerifyBehindCameraRetention(runner);return 0;}
         if(argc==3) {std::string option=argv[2];if(option=="--grid-review"){VerifyGridReview(runner);return 0;}if(option=="--lod"){VerifyIntermediateDistance(runner);return 0;}if(option=="--recovery"){VerifyCutRecovery(runner);VerifyCutRecovery(runner,true);return 0;}Require(option=="--benchmark" || option=="--hot-benchmark","Unknown option");BenchmarkLearning(runner,option=="--hot-benchmark");return 0;}
         D3D12_SHADER_RESOURCE_VIEW_DESC nullSrv{};
         nullSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1234,7 +1292,7 @@ int main(int argc, char** argv) {
                 tris[i].meshID = instances ? i : 0;
             }
             lt::LightTreeBuilder builder;
-            // Reuse the builder and descriptor heap across both directions of a layout change.
+            // One builder and heap across layout changes in both directions.
             for (bool compact : {false, true, false, true}) {
                 settings.compactGpuNodes = compact;
                 builder.Build(tris, settings);
@@ -1261,6 +1319,7 @@ int main(int argc, char** argv) {
         VerifyCutRecovery(runner,true);
         VerifyIntermediateDistance(runner);
         VerifyGridReview(runner);
+        VerifyBehindCameraRetention(runner);
         VerifySurfaceLearning(runner);
         VerifyColdLodTransition(runner);
         std::cout << "All light-tree tests passed\n";

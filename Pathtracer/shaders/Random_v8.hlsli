@@ -1,4 +1,3 @@
-// Mix integer bits to decorrelate nearby seeds.
 inline uint Hash32(uint v) {
     v ^= v >> 16; v *= 0x7feb352d; v ^= v >> 15; v *= 0x846ca68b; v ^= v >> 16;
     return v;
@@ -25,7 +24,7 @@ uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
     return uint2(s0, s1);
 }
 
-// Advance the seed and return a half-open uniform variate.
+// Uniform in [0, 1).
 inline float RandomFloatSingle(inout uint s)
 {
     s *= 1664525u;

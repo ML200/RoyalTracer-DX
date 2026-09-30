@@ -57,7 +57,6 @@ static const D3D12_HEAP_PROPERTIES kDefaultHeapProps = {D3D12_HEAP_TYPE_DEFAULT,
 
 static const CD3DX12_HEAP_PROPERTIES kReadbackHeapProps(D3D12_HEAP_TYPE_READBACK);
 
-// Compile a runtime shader variant while retaining diagnostics and blob ownership.
 inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR targetProfile,
                                          const std::vector<std::wstring>& extraDefines = {}) {
     struct CompilerContext {
@@ -71,7 +70,6 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
             ThrowIfFailed(utils->CreateDefaultIncludeHandler(&includes));
         }
     };
-    // Reuse DXC services across all shader variants.
     static const CompilerContext context;
 
     ComPtr<IDxcBlobEncoding> pSourceBlob;
@@ -113,6 +111,24 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
         args.push_back(d.c_str());
     }
 
+    // Defines for all shaders, e.g. RDN_SHADER_DEFINES="A=0;B=1".
+    static const std::vector<std::wstring> envDefines = [] {
+        std::vector<std::wstring> defines;
+        wchar_t buffer[1024];
+        const DWORD length = GetEnvironmentVariableW(L"RDN_SHADER_DEFINES", buffer, 1024);
+        if (length == 0 || length >= 1024)
+            return defines;
+        std::wstringstream list(std::wstring(buffer, length));
+        for (std::wstring define; std::getline(list, define, L';');)
+            if (!define.empty())
+                defines.push_back(define);
+        return defines;
+    }();
+    for (const auto& d : envDefines) {
+        args.push_back(L"-D");
+        args.push_back(d.c_str());
+    }
+
     ComPtr<IDxcResult> pResult;
     auto compileT0 = std::chrono::high_resolution_clock::now();
     hr = context.compiler->Compile(&sourceBuffer, args.data(), (uint32_t)args.size(), context.includes.Get(),
@@ -146,6 +162,20 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
     ComPtr<IDxcBlob> pBlob;
     ThrowIfFailed(pResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pBlob), nullptr));
 
+    // Shaders kept for Aftermath dump decoding (Diagnostics.h).
+    wchar_t keepDir[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"RT_AFTERMATH_SHADER_DIR", keepDir, MAX_PATH) > 0) {
+        uint32_t hash = 2166136261u;
+        const auto* bytes = static_cast<const uint8_t*>(pBlob->GetBufferPointer());
+        for (size_t i = 0; i < pBlob->GetBufferSize(); ++i)
+            hash = (hash ^ bytes[i]) * 16777619u;
+        wchar_t suffix[16];
+        swprintf_s(suffix, L"-%08X.dxil", hash);
+        std::ofstream keep(std::wstring(keepDir) + shaderName + L"-" + entryPoint + suffix,
+                           std::ios::binary | std::ios::trunc);
+        keep.write(static_cast<const char*>(pBlob->GetBufferPointer()), (std::streamsize)pBlob->GetBufferSize());
+    }
+
     return pBlob;
 }
 
@@ -155,10 +185,6 @@ inline ComPtr<IDxcBlob> CompileShaderLibrary(LPCWSTR fileName, const std::vector
 
 inline Microsoft::WRL::ComPtr<IDxcBlob> CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main") {
     return CompileShaderNew(fileName, entryPoint, L"cs_6_9");
-}
-
-inline Microsoft::WRL::ComPtr<IDxcBlob> CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main") {
-    return CompileShaderNew(fileName, entryPoint, L"lib_6_9");
 }
 
 inline ComPtr<ID3D12DescriptorHeap> CreateDescriptorHeap(ID3D12Device* device, uint32_t count,

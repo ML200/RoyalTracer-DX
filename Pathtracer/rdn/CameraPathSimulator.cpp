@@ -167,7 +167,7 @@ void CameraPathSimulator::PromptUserConfiguration() {
     }
 }
 
-// Playback uses camera poses; recorded timestamps do not control capture timing.
+// Recorded timestamps don't drive capture timing.
 void CameraPathSimulator::LoadKeyframes(const std::wstring& filename) {
     std::ifstream file{std::filesystem::path(filename)};
 
@@ -196,7 +196,6 @@ void CameraPathSimulator::LoadKeyframes(const std::wstring& filename) {
     }
 }
 
-// Distribute positions by travel distance, then expand yaw and roll samples.
 void CameraPathSimulator::GeneratePathPoints() {
     if (m_keyframes.size() < 2) {
         m_interpolatedPath.clear();
@@ -271,7 +270,6 @@ void CameraPathSimulator::GeneratePathPoints() {
     }
 }
 
-// Continue numbering after existing captures when resuming a simulation.
 size_t CameraPathSimulator::InferNextIndexFromOutputDir() const {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -312,7 +310,7 @@ size_t CameraPathSimulator::InferNextIndexFromOutputDir() const {
     return found ? (size_t)(maxIdx + 1) : 0;
 }
 
-// Hold each pose for convergence before requesting its capture.
+// Holds each pose to converge before capturing.
 bool CameraPathSimulator::Update(float deltaTime, nv_helpers_dx12::Manipulator& camera, bool& outShouldCapture) {
     outShouldCapture = false;
 

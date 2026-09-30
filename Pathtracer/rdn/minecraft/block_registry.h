@@ -55,7 +55,6 @@ struct BlockInfo {
     bool         hasQuads    = false;
     Significance sig         = Significance::None;
     TintKind     tint        = TintKind::None;
-    uint8_t      lightLevel  = 0;
     uint8_t      emissive    = 0;
     uint8_t      lodFaceSolid = 0;
     uint8_t      volume      = 0;
@@ -70,12 +69,10 @@ class BlockRegistry {
 public:
     BlockRegistry();
 
-    // Interns a canonical state and assigns its stable dense ID.
     BlockId intern(const std::string& canonical, const std::string& name,
                    const std::vector<std::pair<std::string, std::string>>& props);
     BlockId intern(const std::string& name,
                    std::vector<std::pair<std::string, std::string>> props);
-    // Looks up a state without mutating the registry.
     BlockId find(const std::string& canonical) const;
 
     size_t count() const { return m_states.size(); }

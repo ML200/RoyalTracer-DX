@@ -39,7 +39,6 @@ template <typename T> Vec3<T> normalize(const Vec3<T>& v) {
 using DVec3 = Vec3<double>;
 using Vec3f = Vec3<float>;
 
-// Converts absolute doubles into renderer-safe camera-relative floats.
 Vec3f to_camera_relative(const DVec3& world, const DVec3& camera_origin);
 
 struct CameraView {
@@ -61,10 +60,9 @@ struct Plane {
 struct Frustum {
     Plane planes[6];
 
-    // Builds inward-facing planes from the camera basis.
+    // Planes face inward.
     static Frustum from_camera(const CameraView& cam);
 
-    // Tests a sphere against all six frustum planes.
     bool intersects_sphere(const Vec3f& center, float radius) const;
 };
 

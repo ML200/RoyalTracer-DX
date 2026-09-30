@@ -9,12 +9,8 @@ class IHeightmapSource {
 public:
     virtual ~IHeightmapSource() = default;
 
-    // Returns elevation in metres along a normalized planet direction.
+    // Elevation in metres.
     virtual float sample(const DVec3& dir_normalized, uint8_t lod) const = 0;
-
-    // Fills an n-by-n grid using the scalar sampling contract.
-    virtual void sample_grid(const DVec3& corner, const DVec3& du, const DVec3& dv,
-                             uint32_t n, uint8_t lod, float* out) const;
 };
 
 }

@@ -11,7 +11,7 @@ inline int WrapMod(int a, int m) {
     return (r < 0) ? r + m : r;
 }
 
-// paper Eq 3, n_sigma = floor(0.5*s^2 + 1.46/s + 1.76/s^2 + 0.656/s^3 + 0.5)
+// n_sigma, paper Eq 3
 int ComputeSigmaIterations(float sigma) {
     const float s = std::max(sigma, 0.8f);
     const float s2 = s * s;
@@ -21,14 +21,14 @@ int ComputeSigmaIterations(float sigma) {
 }
 } // namespace
 
-// Generate reciprocal pixel pairs as signed offsets in a wrapping texture.
+// Reciprocal pixel pairs as wrapped signed offsets.
 void GenerateReuseTexture(int size, float sigma, uint32_t seed, std::vector<int16_t>& outRG) {
     assert((size & 1) == 0 && "reuse texture size must be even");
     assert(size > 0);
 
     const int N = size * size;
 
-    // Each label occurs twice; local shuffles preserve that pairing.
+    // Each label twice; shuffles keep the pairing.
     std::vector<uint32_t> link(static_cast<size_t>(N));
     for (int i = 0; i < N; ++i)
         link[i] = static_cast<uint32_t>(i / 2);
@@ -37,7 +37,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed, std::vector<int1
     const int iters = ComputeSigmaIterations(sigma);
 
     for (int it = 0; it < iters; ++it) {
-        // Alternating block origins let pairs move beyond their original tile.
+        // Alternate block origins so pairs cross tiles.
         const int off = (it & 1) ? 1 : 0;
 
         for (int by = 0; by < size; by += 2) {
@@ -95,7 +95,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed, std::vector<int1
         int dx = px - mx;
         int dy = py - my;
 
-        // canonicalize to short-way-around delta so texture tiles under wrap
+        // shortest wrapped delta
         if (dx > halfW)
             dx -= size;
         if (dx < -halfW)
@@ -110,7 +110,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed, std::vector<int1
     }
 }
 
-// Following both paired offsets must return to the original pixel.
+// Every pair must be reciprocal.
 bool ValidateReuseTexture(int size, const std::vector<int16_t>& rg, int* outFirstBadTexel) {
     if (size <= 0 || (size & 1))
         return false;
@@ -130,7 +130,6 @@ bool ValidateReuseTexture(int size, const std::vector<int16_t>& rg, int* outFirs
             const int pdx = rg[static_cast<size_t>(pi) * 2 + 0];
             const int pdy = rg[static_cast<size_t>(pi) * 2 + 1];
 
-            // partner's delta should land back at (x,y) under wrap
             const int bx = WrapMod(px + pdx, size);
             const int by = WrapMod(py + pdy, size);
 

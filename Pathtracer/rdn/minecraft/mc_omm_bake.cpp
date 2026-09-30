@@ -7,7 +7,6 @@
 
 namespace mc {
 
-// Converts alpha masks into deduplicated GPU micromap descriptors.
 bool bake_omm_table(const BlockRegistry& reg, const std::vector<OmmBakeTri>& tris,
                     OmmTable& table, OmmBakeResult& out, std::string* err) {
     table.index.clear();

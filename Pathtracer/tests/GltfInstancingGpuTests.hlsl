@@ -1,4 +1,3 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
 RWStructuredBuffer<float4> results : register(u0, space1);

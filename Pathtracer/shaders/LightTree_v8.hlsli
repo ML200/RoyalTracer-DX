@@ -60,19 +60,19 @@ inline uint LT_PickAndRescale(float w0, float w1, float w2, float w3, uint n, fl
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
-// Bound each node by receiver, orientation, distance, and emitted power.
+// Node importance (Conty & Kulla 2018); n = 0 is a receiver in a medium.
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
     float3 bmin, float3 bmax,
     float3 axis, float cosTheta_o, float sinTheta_o,
     float power)
 {
-
+    const bool volume = dot(n, n) < 1e-6f;
     const float3 maxCorner = float3(
         (n.x >= 0.0f) ? bmax.x : bmin.x,
         (n.y >= 0.0f) ? bmax.y : bmin.y,
         (n.z >= 0.0f) ? bmax.z : bmin.z);
-    if (dot(maxCorner - x, n) <= 0.0f) return 0.0f;
+    if (!volume && dot(maxCorner - x, n) <= 0.0f) return 0.0f;
 
     const float3 c        = 0.5 * (bmin + bmax);
     const float3 e        = 0.5 * (bmax - bmin);
@@ -89,7 +89,7 @@ inline float LT_NodeImportance_Common(
 
     const float ci = dot(n, toCenterN);
     float cos_i_prime;
-    if (ci >= cosThetaU) {
+    if (volume || ci >= cosThetaU) {
         cos_i_prime = 1.0f;
     } else {
         const float si = sqrt(max(1.0f - ci * ci, 0.0f));
@@ -118,6 +118,7 @@ inline float LT_NodeImportance_Common(
 }
 
 float3 LT_LocalReceiverNormal(float3x4 worldToLocal,float3 normal) {
+    if(dot(normal,normal)<1e-6f) return 0.0f;   // a receiver in a medium stays one
     float3 a=worldToLocal[0].xyz,b=worldToLocal[1].xyz,c=worldToLocal[2].xyz;
     float3 cof0=cross(b,c),cof1=cross(c,a),cof2=cross(a,b);
     float3 pullback=float3(dot(cof0,normal),dot(cof1,normal),dot(cof2,normal));
@@ -157,8 +158,18 @@ LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index, LT_BlasFrame 
     }
     return c;
 }
+// Topology is read only for the taken child (LT_ChildTopology).
+float LT_ChildWeight(uint phase, uint nodeOffset, uint index, LT_BlasFrame frame, float3 xP, float3 nP)
+{
+    const LTNodeCommon c = LT_LoadChild(phase, nodeOffset, index, frame);
+    return max(LT_NodeImportance_Common(xP, nP, c.bmin, c.bmax, c.axis, c.cosTheta_o, c.sinTheta_o, c.power), 0.0f);
+}
+uint4 LT_ChildTopology(uint phase, uint nodeOffset, uint index, LT_BlasFrame frame)
+{
+    return LT_LoadChild(phase, nodeOffset, index, frame).topology;
+}
 
-// Descend TLAS then BLAS while accumulating the exact branch PDF.
+// TLAS then BLAS descent, accumulating the exact branch PDF.
 bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint startSlot,
     out uint slotOut, out uint instOut, out LTLeaf leaf, out float pdfT, out float pdfB)
 {
@@ -211,32 +222,23 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
         if (iter == LT_TRAIL_MAX_DEPTH) { if (phase == 0u) pdfT = 0.0f; else pdfB = 0.0f; return false; }
         ++iter;
 
+        // All siblings in one round trip, the taken child's topology after.
         const uint count = min(t.y, 4u);
-        float w0 = 0.0, w1 = 0.0, w2 = 0.0, w3 = 0.0;
-        uint4 t0 = 0u, t1 = 0u, t2 = 0u, t3 = 0u;
-        LTNodeCommon C = LT_LoadChild(phase, nodeOffset, t.x, frame);
-        [loop] for (uint i = 0u; i < count; ++i)
-        {
-            LTNodeCommon Cn = C;
-            if (i + 1u < count) Cn = LT_LoadChild(phase, nodeOffset, t.x + i + 1u, frame);
-            const float wi = max(LT_NodeImportance_Common(xP, nP, C.bmin, C.bmax, C.axis, C.cosTheta_o, C.sinTheta_o, C.power), 0.0);
-            if (i == 0u)      { w0 = wi; t0 = C.topology; }
-            else if (i == 1u) { w1 = wi; t1 = C.topology; }
-            else if (i == 2u) { w2 = wi; t2 = C.topology; }
-            else              { w3 = wi; t3 = C.topology; }
-            C = Cn;
-        }
+        const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, frame, xP, nP);
+        float w1 = 0.0f, w2 = 0.0f, w3 = 0.0f;
+        if (count > 1u) w1 = LT_ChildWeight(phase, nodeOffset, t.x + 1u, frame, xP, nP);
+        if (count > 2u) w2 = LT_ChildWeight(phase, nodeOffset, t.x + 2u, frame, xP, nP);
+        if (count > 3u) w3 = LT_ChildWeight(phase, nodeOffset, t.x + 3u, frame, xP, nP);
 
         float p, xi_next;
         const uint idx = LT_PickAndRescale(w0, w1, w2, w3, count, xi, p, xi_next);
         if (phase == 0u) pdfT *= p; else pdfB *= p;
         node = t.x + idx;
-        t = idx == 0u ? t0 : (idx == 1u ? t1 : (idx == 2u ? t2 : t3));
+        t = LT_ChildTopology(phase, nodeOffset, node, frame);
         xi = xi_next;
     }
 }
 
-// Sample leaf triangles by emitted weight, with a uniform zero-power fallback.
 uint LT_SampleLeafTriangle_Stratified(LTLeaf leaf, float xi, out float pdfLeaf)
 {
     const uint base = leaf.triFirst;
@@ -296,13 +298,7 @@ LT_Sample LT_SampleSubtree(float3 worldPos, float3 worldNormal, inout uint rng, 
     slotOut = slot;
     return s;
 }
-LT_Sample LT_SampleSubtree(float3 worldPos, float3 worldNormal, inout uint rng, uint startNode=0u, uint startSlot=LT_SENTINEL)
-{
-    uint ignored;
-    return LT_SampleSubtree(worldPos, worldNormal, rng, startNode, startSlot, ignored);
-}
-
-// Replay stored trails to evaluate the matching subtree PDF.
+// Replays stored trails for the matching subtree PDF.
 float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode=0u, uint startSlot=LT_SENTINEL, uint startDepth=0u)
 {
     if (triIndex == LT_SENTINEL || slot == LT_SENTINEL) return 0.0f;
@@ -370,22 +366,19 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
         if (childIdx >= t.y) return 0.0f;
         ++iter;
 
+        // As in LT_Descend.
         const uint count = min(t.y, 4u);
-        float sum = 0.0; float wc = 0.0; uint4 tc = 0u;
-        LTNodeCommon C = LT_LoadChild(phase, nodeOffset, t.x, frame);
-        [loop] for (uint i = 0u; i < count; ++i)
-        {
-            LTNodeCommon Cn = C;
-            if (i + 1u < count) Cn = LT_LoadChild(phase, nodeOffset, t.x + i + 1u, frame);
-            const float wi = max(LT_NodeImportance_Common(xP, nP, C.bmin, C.bmax, C.axis, C.cosTheta_o, C.sinTheta_o, C.power), 0.0);
-            sum += wi;
-            if (i == childIdx) { wc = wi; tc = C.topology; }
-            C = Cn;
-        }
+        const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, frame, xP, nP);
+        float w1 = 0.0f, w2 = 0.0f, w3 = 0.0f;
+        if (count > 1u) w1 = LT_ChildWeight(phase, nodeOffset, t.x + 1u, frame, xP, nP);
+        if (count > 2u) w2 = LT_ChildWeight(phase, nodeOffset, t.x + 2u, frame, xP, nP);
+        if (count > 3u) w3 = LT_ChildWeight(phase, nodeOffset, t.x + 3u, frame, xP, nP);
+        const float sum = w0 + w1 + w2 + w3;
+        const float wc = childIdx == 0u ? w0 : (childIdx == 1u ? w1 : (childIdx == 2u ? w2 : w3));
 
         const float p = (sum > 0.0f) ? (wc / sum) : (1.0f / float(t.y));
         if (phase == 0u) pdfTLAS *= p; else pdfBLAS *= p;
-        t = tc;
+        t = LT_ChildTopology(phase, nodeOffset, t.x + childIdx, frame);
     }
 }
 #include "LightTreeLearning_v8.hlsli"
@@ -398,7 +391,6 @@ inline float LT_TriangleArea(uint tri, uint objID)
     return 0.5 * length(cross(B - A, C - A));
 }
 
-// Convert triangle selection probability into an area-measure PDF.
 float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID, bool useLearning=true)
 {
     float p_select = LT_PdfSelectTriangle(x, n, tri, objID, useLearning);
@@ -416,7 +408,6 @@ struct LT_LightSampleResult
     uint   objID;
 };
 
-// Convert a selected triangle into a world-space point and solid-angle PDF.
 LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSample, inout uint rng)
 {
     LT_LightSampleResult result = (LT_LightSampleResult)0;
@@ -458,7 +449,6 @@ LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSamp
 
     float pdfArea = treeSample.pdf / max(area, 1e-10f);
 
-    // Convert the selected area PDF to solid angle.
     if (cosLight > 1e-6f) {
         result.pdfSolidAngle = pdfArea * distSq / cosLight;
     } else {
@@ -468,8 +458,3 @@ LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSamp
     return result;
 }
 
-LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inout uint rng)
-{
-    const LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
-    return LT_SamplePointOnLightTree(refPos, treeSample, rng);
-}

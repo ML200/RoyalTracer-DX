@@ -1,12 +1,46 @@
 #include "../stdafx.h"
 #include "Editor.h"
+#include "../../shaders/OceanLayout.h"
 #include <unordered_set>
 
 namespace {
 void SetInitialPanelPosition(ImVec2 offset) {
-    // Multi-viewports use desktop coordinates; keep new panels inside the main window.
+    // Multi-viewport positions are in desktop space.
     const ImVec2 origin = ImGui::GetMainViewport()->Pos;
     ImGui::SetNextWindowPos(ImVec2(origin.x + offset.x, origin.y + offset.y), ImGuiCond_FirstUseEver);
+}
+
+// Beaufort force; upper bounds in m/s at 10 m.
+int BeaufortForce(float windSpeed) {
+    static const float kUpper[] = {0.5f, 1.5f, 3.3f, 5.5f, 7.9f, 10.7f, 13.8f, 17.1f, 20.7f, 24.4f, 28.4f, 32.6f};
+    for (int i = 0; i < (int)(sizeof(kUpper) / sizeof(kUpper[0])); ++i)
+        if (windSpeed < kUpper[i])
+            return i;
+    return 12;
+}
+
+const char* BeaufortName(int force) {
+    static const char* kNames[] = {"calm",      "light air",       "light breeze", "gentle breeze",
+                                   "moderate breeze", "fresh breeze", "strong breeze", "near gale",
+                                   "gale",      "strong gale",     "storm",        "violent storm",
+                                   "hurricane"};
+    return kNames[std::clamp(force, 0, 12)];
+}
+
+// Must match the generated block (Scene::ReserveOcean).
+void BroadcastWaterMaterial(Scene& scene, UINT base, float foamAlbedo) {
+    auto& m = scene.materials;
+    if ((size_t)base + OCEAN_MATERIAL_COUNT > m.size() || m.sssEnable.size() < m.size())
+        return;
+    for (UINT i = 1; i < OCEAN_MATERIAL_COUNT; ++i) {
+        m.Ni[base + i] = m.Ni[base];
+        m.Tf[base + i] = m.Tf[base];
+        m.sssAlbedo[base + i] = m.sssAlbedo[base];
+        m.sssRadius[base + i] = m.sssRadius[base];
+        m.sssPhaseG[base + i] = m.sssPhaseG[base];
+        ocean::WriteMaterialSlot(i, m.Kd[base], m.Tf[base], m.sssWeight[base], m.sssEnable[base], foamAlbedo,
+                                 m.Kd[base + i], m.sssWeight[base + i], m.sssEnable[base + i]);
+    }
 }
 }
 
@@ -38,7 +72,7 @@ void Editor::Shutdown() {
 void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSystem& passes, DLSSManager& dlss,
                   DLSSNRManager& dlssNR, DLSSGSettings& dlssG, IntegratorSettings& restir, float fps,
                   const FrameStats& stats, const planet::StreamOrchestrator::Stats& planetStats,
-                  mc::VoxelStreamer* voxels) {
+                  mc::VoxelStreamer* voxels, ocean::OceanSystem* ocean) {
     // Keep history advancing while panels are hidden.
     if (!m_performanceHistory.paused) {
         m_performanceHistory.push(stats);
@@ -53,7 +87,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    // An empty frame lets ImGui close detached windows when the editor is hidden.
+    // Empty frame so ImGui closes detached windows.
     if (!m_visible) {
         ImGui::Render();
         return;
@@ -79,6 +113,8 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
         if (ImGui::BeginMenu("Experimental")) {
             if (voxels)
                 ImGui::MenuItem("Minecraft", nullptr, &m_showMinecraft);
+            if (ocean && ocean->Enabled())
+                ImGui::MenuItem("Water", nullptr, &m_showWater);
             ImGui::MenuItem("DLSS 5 Neural Rendering", nullptr, &m_showDLSSNR);
             ImGui::EndMenu();
         }
@@ -91,9 +127,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
             ImGui::Text("%.1f fps | %.2f ms", fps, fps > 0 ? 1000.0f / fps : 0.0f);
         }
         ImGui::Separator();
-        ImGui::TextDisabled("%s", restir.integratorMode == 0
-                                      ? (restir.sharcEnabled ? "Path tracer + SHARC" : "Path tracer")
-                                      : "ReSTIR (legacy)");
+        ImGui::TextDisabled("%s", restir.sharcEnabled ? "Path tracer + SHARC" : "Path tracer");
         ImGui::SetItemTooltip("%u instances | %u meshes | CPU %.2f ms | GPU wait %.2f ms", stats.instanceCount,
                               stats.meshCount, stats.cpuFrameMs, stats.gpuWaitMs);
         ImGui::EndMainMenuBar();
@@ -118,12 +152,14 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
     if (m_showSun)
         DrawSunPanel(scene, camera, stats, voxels);
     if (m_showMaterials)
-        DrawMaterialInspector(scene, camera, restir);
+        DrawMaterialInspector(scene, camera, restir, voxels);
     if (m_showPerformance)
         DrawPerformancePanel(m_performanceFrame.stream, m_performanceFrame.frame, m_performanceFrame.fps,
                              m_performanceFrame.hasMinecraft ? &m_performanceFrame.minecraft : nullptr);
     if (m_showMinecraft && voxels)
         DrawMinecraftPanel(*voxels);
+    if (m_showWater && ocean && ocean->Enabled())
+        DrawWaterPanel(*ocean, scene);
 
     ImGui::Render();
 }
@@ -218,6 +254,388 @@ void Editor::DrawMinecraftPanel(mc::VoxelStreamer& v) {
             (double)cfg.blasBuildPoolBytes / (1024.0 * 1024.0), "MB");
     bar("light records", st.lightRecUsed / 1.0e6, cfg.lightRecordCapacity / 1.0e6, "M");
     bar("light nodes", st.lightNodeUsed / 1.0e6, cfg.lightNodeCapacity / 1.0e6, "M");
+    ImGui::End();
+}
+
+void Editor::DrawWaterPanel(ocean::OceanSystem& oceanSystem, Scene& scene) {
+    SetInitialPanelPosition(ImVec2(420, 60));
+    ImGui::SetNextWindowSize(ImVec2(470, 700), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Water###Ocean", &m_showWater)) {
+        ImGui::End();
+        return;
+    }
+
+    // Follow the live sea state unless an edit is staged.
+    if (!m_waterRespecPending && !ImGui::IsAnyItemActive())
+        m_waterParams = oceanSystem.GetParams();
+
+    ocean::Params& p = m_waterParams;
+    const auto& st = oceanSystem.GetStats();
+    bool cheap = false;  // applies next frame
+    bool respec = false; // re-bakes; commits on release
+
+    const int force = BeaufortForce(p.windSpeed);
+    ImGui::Text("Beaufort %d, %s", force, BeaufortName(force));
+    ImGui::TextDisabled("Hs %.2f m | sea level %.2f m | %u tiles, %.2fM tris | bake %.0f ms", st.significantWaveHeight,
+                        st.surfaceY, st.tiles, (double)st.triangles / 1.0e6, st.bakeMs);
+
+    if (st.gpuTotalMs > 0.0f) {
+        ImGui::Text("GPU %.2f ms per frame, before a ray is traced", st.gpuTotalMs);
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted("Recorded on the streaming compute queue, which the graphics queue waits on\n"
+                                   "before it traces. A profiler that times the render passes cannot see it:\n"
+                                   "it turns up as the gap between the passes and the frame's GPU wait.");
+            ImGui::Separator();
+            for (uint32_t i = 0; i < ocean::OceanSystem::kGpuStages; ++i) {
+                char name[32];
+                const wchar_t* w = ocean::OceanSystem::kGpuStageNames[i];
+                size_t n = 0;
+                wcstombs_s(&n, name, sizeof(name), w, _TRUNCATE);
+                ImGui::Text("%-14s %6.2f ms", name, st.gpuStageMs[i]);
+            }
+            ImGui::EndTooltip();
+        }
+        // The two stages that scale with tile count.
+        ImGui::TextDisabled("  tessellation %.2f ms + structures %.2f ms: %.2fM triangles every frame",
+                            st.gpuStageMs[2], st.gpuStageMs[3], (double)st.triangles / 1.0e6);
+        ImGui::SetItemTooltip("Tiles times %u triangles each (OCEAN_TILE_GRID is %u quads per edge).\n"
+                              "The count goes with the inverse square of the detail ratios under Detail;\n"
+                              "the Geometry LOD debug view shows where it is spent.",
+                              (uint32_t)OCEAN_TILE_TRIS, (uint32_t)OCEAN_TILE_GRID);
+        ImGui::TextDisabled("  %u refits + %u rebuilds this frame", st.refits, st.builds);
+        ImGui::SetItemTooltip("A refit keeps the tree the structure was built around and only moves its\n"
+                              "vertices; a rebuild starts again and costs several times as much. A tile is\n"
+                              "rebuilt once its refits have had about a second to drift, spread across the\n"
+                              "interval so they do not all fall due on the same frame.");
+    }
+
+    ImGui::SeparatorText("Placement");
+    respec |= ImGui::DragFloat("Sea level", &p.seaLevelY, 0.25f, -1000.0f, 10000.0f, "%.2f");
+    ImGui::SetItemTooltip("Height the waves swing about, in world units. In a Minecraft world this is where\n"
+                          "the water line is: the top of the surface blocks, once the world's own water is\n"
+                          "replaced from the Materials panel.");
+
+    ImGui::SeparatorText("Wind");
+    respec |= ImGui::SliderFloat("Speed (m/s)", &p.windSpeed, 0.0f, 32.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Wind at 10 m. It sets the wave height and length through the JONSWAP spectrum and\n"
+                          "how much of the sea the whitecaps cover, and with the turbulence below, how hard\n"
+                          "the short crests are pulled into points.");
+    respec |=
+        ImGui::SliderFloat("Direction (deg)", &p.windDirectionDeg, 0.0f, 360.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Bearing the wind blows towards, clockwise from +Z.");
+    float fetchKm = p.fetch / 1000.0f;
+    if (ImGui::SliderFloat("Fetch (km)", &fetchKm, 1.0f, 500.0f, "%.0f",
+                           ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+        p.fetch = fetchKm * 1000.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("How far the wind has blown over open water. A short fetch keeps the sea young:\n"
+                          "shorter and steeper for the same wind. 200 km is already nearly fully developed.");
+    respec |= ImGui::SliderFloat("Height scale", &p.amplitudeScale, 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Artistic gain over the whole wave field; 1 is the physical JONSWAP height.");
+
+    bool fixedHeight = p.significantHeight >= 0.0f;
+    if (ImGui::Checkbox("Sea height (m)##fix", &fixedHeight)) {
+        p.significantHeight = fixedHeight ? std::max(0.05f, (float)st.significantWaveHeight) : -1.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Drive the spectrum from a significant wave height instead of from the wind's own\n"
+                          "energy. The wind still sets the direction, the spreading and the shape.");
+    if (fixedHeight) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        respec |= ImGui::SliderFloat("##Hs", &p.significantHeight, 0.0f, 14.0f, "%.2f m",
+                                     ImGuiSliderFlags_AlwaysClamp);
+    }
+    bool fixedPeriod = p.peakPeriod > 0.0f;
+    if (ImGui::Checkbox("Peak period (s)##fix", &fixedPeriod)) {
+        p.peakPeriod = fixedPeriod ? 8.0f : -1.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Period of the energy-carrying waves. Left off, the wind and fetch set it.");
+    if (fixedPeriod) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        respec |= ImGui::SliderFloat("##Tp", &p.peakPeriod, 2.0f, 22.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
+    }
+
+    ImGui::SeparatorText("Turbulence");
+    respec |= ImGui::SliderFloat("Turbulence", &p.turbulence, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How hard a gusty, veering wind whips the short waves riding the big ones. It pulls\n"
+                          "their crests into points and scatters the waves off the wind's heading into a\n"
+                          "confused, short-crested sea. Wave height and length stay the wind's, and so does\n"
+                          "how much of the sea is white. 0 leaves every crest rounded and the waves marching\n"
+                          "one way; 3 is a hard, confused sea.");
+    cheap |= ImGui::SliderFloat("Crest sharpening", &p.crestSharpening, 0.0f, 8.0f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Second-order Stokes sharpening, as a multiple of the physical bound harmonic. A\n"
+                          "linear spectrum is Gaussian and therefore symmetric - every trough mirrors a crest,\n"
+                          "which is what makes an FFT sea read as rolling rather than as a real one. This pulls\n"
+                          "each band's crests into narrow peaks and leaves long shallow troughs behind them.\n"
+                          "0 is the symmetric sea, 1 the physical wave; past that each band runs up against its\n"
+                          "own steepness limit and stops. It never moves the surface sideways, so it lifts a\n"
+                          "crest without folding it.");
+    // Effective values, including the wind's share.
+    ImGui::TextDisabled("in use: short waves x%.2f sideways, crest strain %.2f, spread x%.2f", st.horizontalGain,
+                        st.crestStrain, 1.0 / ocean::DirectionalFocus(p));
+    ImGui::SetItemTooltip("The short waves' horizontal displacement gain (the long ones keep the physical 1),\n"
+                          "and the spread of the surface's compression it gives: the higher, the more crests\n"
+                          "are squeezed into points and past breaking. Spread is the width of the wind sea's\n"
+                          "directional lobe against the calibrated one.");
+    ImGui::TextDisabled("crest steepness %.3f of %.2f%s | short-wave gain x%.2f", st.crestSteepness,
+                        ocean::kMaxSkewSteepness,
+                        st.crestSteepness >= ocean::kMaxSkewSteepness * 0.999 ? " (at the limit)" : "",
+                        ocean::ShortWaveAmplitude(p, 6.283185307179586 / 2.0));
+    ImGui::SetItemTooltip("The sharpest band's skew against the point where its troughs would turn back up.");
+
+    respec |= ImGui::SliderFloat("Patch variation", &p.turbulenceVariation, 0.0f, 0.9f, "%.2f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Kilometre-scale variation in sea state. A real ocean is not one sea everywhere:\n"
+                          "currents shear the surface and the wind arrives in gusts and lulls, leaving patches\n"
+                          "of steeper, more broken water drifting between calmer lanes. 0 is the uniform sea;\n"
+                          "0.4 means the roughest patches carry 40%% more wave than the mean and the calmest\n"
+                          "40%% less. Because the crest warp is quadratic, a rough patch is more peaked as well\n"
+                          "as taller.");
+    float patchKm = p.turbulencePeriod / 1000.0f;
+    if (ImGui::SliderFloat("Patch period (km)", &patchKm, 0.5f, 40.0f, "%.1f",
+                           ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+        p.turbulencePeriod = patchKm * 1000.0f;
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Tiling period of that field. The octaves inside it run from half this down to a\n"
+                          "thirty-second, so the patches themselves are a few hundred metres to a few km.");
+
+    if (ImGui::CollapsingHeader("Turbulence detail")) {
+        respec |= ImGui::SliderFloat("Crest displacement", &p.choppiness, 0.0f, 2.0f, "%.2f",
+                                     ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Horizontal displacement gain on every wave: 1 is the physical first-order sea, 0 a\n"
+                              "purely vertical, rounded one. The short waves' extra from turbulence comes on top.");
+        respec |= ImGui::SliderFloat("Short-wave amplitude", &p.shortWaveAmplitude, 0.0f, 3.0f, "%.2f",
+                                     ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Base gain on wind waves shorter than 8 m, reaching full gain below 2 m. The long\n"
+                              "wind sea and the independent swell are left alone.");
+    }
+
+    ImGui::SeparatorText("Swell");
+    respec |= ImGui::SliderFloat("Swell height (m)", &p.swellHeight, 0.0f, 8.0f, "%.2f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Independent long waves arriving from a distant storm, on their own bearing.");
+    respec |= ImGui::SliderFloat("Swell period (s)", &p.swellPeriod, 2.0f, 25.0f, "%.1f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    respec |= ImGui::SliderFloat("Swell direction (deg)", &p.swellDirectionDeg, 0.0f, 360.0f, "%.0f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    respec |= ImGui::SliderFloat("Swell spread (deg)", &p.swellSpreadDeg, 2.0f, 90.0f, "%.0f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Angular width of the swell. Narrow spread gives long parallel crests.");
+    respec |= ImGui::SliderFloat("Wind-sea narrowing", &p.swell, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Narrows the wind sea itself towards long-crested swell. Pushed up it turns the\n"
+                          "surface into parallel corrugations, so the default stays low.");
+    respec |= ImGui::SliderFloat("Downwind alignment", &p.windAlign, 0.0f, 4.0f, "%.2f",
+                                 ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Suppresses waves travelling into the wind; higher values make the crests more\n"
+                          "parallel to each other.");
+
+    ImGui::SeparatorText("Whitecaps");
+    cheap |= ImGui::SliderFloat("Whitecaps", &p.foamCoverage, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Whitecaps are simulated: foam gathers where the surface is squeezed past breaking\n"
+                          "and fades after it, so it sits on the crests the waves actually point. How many of\n"
+                          "them break is set so the white covers a third of what is measured at sea for this\n"
+                          "wind (Monahan) - the lace it leaves comes on top - and a rougher patch of sea gets\n"
+                          "more. 1 is that cover, 2 twice it and lets gentler crests break too, 0 switches foam\n"
+                          "off. Never more than 3%% of the sea is white, whatever the wind or this setting.");
+    ImGui::TextDisabled("foam covers %.2f%% of the sea, aiming for %.2f%%; breaking below %.0f%% of rest area",
+                        st.foamWhite * 100.0, ocean::WhitecapCover(p) * 100.0,
+                        st.foamThreshold[OCEAN_FOAM_REFERENCE_LEVEL] * 100.0);
+    ImGui::SetItemTooltip("Measured around the camera. It falls short of the aim when the sea cannot break\n"
+                          "that much: no crest squeezed to more than %.0f%% of its rest area breaks.",
+                          ocean::BreakingThreshold(p) * 100.0);
+    cheap |= ImGui::SliderFloat("Foam lifetime", &p.foamDecay, 0.05f, 0.95f, "%.2f survives each second",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How much of the lace a whitecap dissolves into is left a second later; the white\n"
+                          "cap itself fades five times as fast. Longer-lived lace leaves the streaks of an\n"
+                          "older, wind-worked sea behind the breaking crests.");
+    cheap |= ImGui::SliderFloat("Foam albedo", &p.foamAlbedo, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Reflectance of solid foam. Real whitecaps are 0.4-0.7; coverage is handled\n"
+                          "separately, so this should not be lowered to make thin foam look thin.");
+
+    ImGui::SeparatorText("Water body");
+    cheap |= ImGui::SliderFloat("Chlorophyll (mg/m^3)", &p.chlorophyll, 0.001f, 10.0f, "%.3f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Morel's Case-1 water. 0.03 is clear open ocean and reads deep indigo; 1-10 is\n"
+                          "coastal green. Drives the absorption and scattering below.");
+    cheap |= ImGui::SliderFloat("Turbidity", &p.turbidity, 0.0f, 10.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Extra scattering for sediment-laden water, over the Case-1 model.");
+    cheap |= ImGui::SliderFloat("Scattering strength", &p.subsurfaceStrength, 0.0f, 1.0f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    cheap |= ImGui::SliderFloat("Mean free path scale", &p.subsurfaceRadiusScale, 0.01f, 10.0f, "%.3f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    cheap |= ImGui::SliderFloat("Forward scattering", &p.subsurfacePhaseG, -0.95f, 0.95f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    cheap |= ImGui::SliderFloat("Surface body weight", &p.bodyWeight, 0.0f, 1.0f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Optional diffuse contribution at the surface. Clear water needs none: the colour\n"
+                          "comes from transmission into the volume.");
+
+    const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
+                             ? (int)scene.oceanMatIndex
+                             : -1;
+    if (waterMat >= 0 && ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto& mats = scene.materials;
+        const int i = waterMat;
+        bool matChanged = false;
+
+        if (scene.oceanMaterialEdited) {
+            ImGui::TextDisabled("Edited by hand; the optics above no longer regenerate it.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Revert")) {
+                const Material generated = ocean::OceanSystem::MakeMaterial(p);
+                mats.Kd[i] = generated.Kd;
+                mats.Ni[i] = generated.Ni;
+                mats.Tf[i] = generated.Tf;
+                mats.sssAlbedo[i] = generated.sssAlbedo;
+                mats.sssRadius[i] = generated.sssRadius;
+                mats.sssPhaseG[i] = generated.sssPhaseG;
+                mats.sssWeight[i] = generated.sssWeight;
+                mats.sssEnable[i] = generated.sssEnable;
+                BroadcastWaterMaterial(scene, (UINT)i, p.foamAlbedo);
+                scene.oceanMaterialEdited = false;
+                scene.MarkMaterialsDirty();
+            }
+        } else {
+            ImGui::TextDisabled("Generated from the optics above; any edit here takes it over.");
+        }
+
+        matChanged |= ImGui::DragFloat3("Absorption (1/m)", &mats.Tf[i].x, 0.001f, 0.0f, 100.0f, "%.4f");
+        ImGui::SetItemTooltip("Red, green and blue absorption per metre.\n"
+                              "0 = no absorption; higher values absorb that channel faster.");
+        matChanged |= ImGui::DragFloat("IOR", &mats.Ni[i], 0.001f, 1.0f, 2.0f, "%.3f");
+        ImGui::SetItemTooltip("1.333 is sea water at visible wavelengths.");
+
+        bool en = mats.sssEnable[i] != 0u;
+        if (ImGui::Checkbox("Water volume scattering", &en)) {
+            mats.sssEnable[i] = en ? 1u : 0u;
+            matChanged = true;
+        }
+        matChanged |= ImGui::ColorEdit3("Scattering color", &mats.sssAlbedo[i].x, ImGuiColorEditFlags_Float);
+        ImGui::SetItemTooltip("Relative RGB scattering coefficients in the water volume.\n"
+                              "One volume event redirects the path; absorption determines the depth color.");
+        matChanged |= ImGui::SliderFloat("Scattering mean free path (m)", &mats.sssRadius[i], 0.0005f, 1000.0f,
+                                         "%.4f", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Mean free path in metres for the strongest color channel. Larger values mean\n"
+                              "clearer water; thickness comes from the traced geometry.");
+        matChanged |= ImGui::SliderFloat("Scattering forward g", &mats.sssPhaseG[i], -0.95f, 0.95f, "%.2f",
+                                         ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Higher values concentrate volume scattering in the forward direction.");
+        matChanged |= ImGui::SliderFloat("Scattering density", &mats.sssWeight[i], 0.0f, 1.0f, "%.2f",
+                                         ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Scales the scattering coefficient, independently of absorption.\n"
+                              "0 = absorption only; higher values increase underwater haze.\n"
+                              "Surface Fresnel reflectance is unchanged.");
+
+        if (matChanged) {
+            scene.oceanMaterialEdited = true;
+            BroadcastWaterMaterial(scene, (UINT)i, p.foamAlbedo);
+            scene.MarkMaterialsDirty();
+        }
+    }
+
+    ImGui::SeparatorText("Detail");
+    ImGui::TextDisabled("tile budget %u of %u (restart to change)", p.maxTiles, (uint32_t)OCEAN_MAX_TILES);
+    ImGui::SetItemTooltip("Ceiling on the tiles the surface may keep resident. Every one is an acceleration\n"
+                          "structure refitted each frame and an instance in the scene's top level. Selection\n"
+                          "coarsens until the sea fits, so the default sea uses far fewer. It sizes the geometry\n"
+                          "buffers at load, which is why it cannot move now - set it on the scene's sea state.");
+    cheap |= ImGui::SliderFloat("Tile size / distance", &p.lodFactor, 0.05f, 2.0f, "%.3f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Tile edge as a fraction of the distance to the camera, for water in view. Quads\n"
+                          "come out at this / %u of their distance. Lower is finer; the triangle count goes\n"
+                          "with the inverse square. Geometry only carries silhouettes and hit positions - the\n"
+                          "wave normal is sampled at full resolution on every hit whatever this is.",
+                          (uint32_t)OCEAN_TILE_GRID);
+    cheap |= ImGui::SliderFloat("Off-screen coarsening", &p.offscreenLodScale, 1.0f, 16.0f, "x%.1f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("The ratio above is multiplied by this outside the view. That water is still in the\n"
+                          "scene for reflections, shadows and refraction, but secondary rays see it blurred and\n"
+                          "never along a silhouette. 1 makes the detail independent of where the camera looks.");
+    cheap |= ImGui::SliderFloat("Smallest tile (m)", &p.minTileSize, 1.0f, 256.0f, "%.0f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Every tile carries the same fixed grid, so this sets the finest quads the surface is\n"
+                          "built from, right beside the camera. Waves shorter than a couple of quads live in the\n"
+                          "normal, so there is little to gain below that.");
+    ImGui::TextDisabled("%.1f cm quads, %u triangles per tile", p.minTileSize / OCEAN_TILE_GRID * 100.0f,
+                        (uint32_t)OCEAN_TILE_TRIS);
+    cheap |= ImGui::SliderFloat("Near keep radius (m)", &p.nearKeepRadius, 0.0f, 1000.0f, "%.0f",
+                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Water nearer than this keeps the in-view detail wherever the camera looks, so\n"
+                          "reflections and shadows of the waves right beside it stay as sharp as those ahead.");
+    cheap |= ImGui::SliderFloat("Distance smoothing", &p.filterScale, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How far each hit averages the wave normal over its ray footprint, turning the ripples\n"
+                          "it averages away into roughness. 0 (default) keeps full-resolution normals and a mirror\n"
+                          "surface at every distance and lets the denoiser build the distant sheen from the sharp\n"
+                          "facets; 1 filters to the pixel footprint, steadier but rough and plastic-looking far out.");
+    cheap |= ImGui::SliderFloat("Sun highlight roughness", &p.sunLobeRoughness, 0.0f, 0.5f, "%.3f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Lobe width the sun sampler and next-event estimation widen the water to, and nothing\n"
+                          "else - continuation rays, environment reflections and the reconstruction guides keep\n"
+                          "the authored roughness and the full-resolution wave normal.\n"
+                          "Clear water is mirror-flat, which leaves direct lighting a delta lobe: the glitter\n"
+                          "track then arrives as isolated fireflies instead of a sun path. Lower is a sharper,\n"
+                          "sparklier highlight and more noise; higher is a softer, calmer one. 0 hands the sun\n"
+                          "sampler the true delta lobe.");
+    float extentKm = p.extent / 1000.0f;
+    if (ImGui::SliderFloat("Extent (km)", &extentKm, 1.0f, 200.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp)) {
+        p.extent = extentKm * 1000.0f;
+        cheap = true;
+    }
+    ImGui::SetItemTooltip("Half-width of the simulated ocean; the quadtree root spans twice this.");
+    cheap |= ImGui::Checkbox("Earth curvature", &p.curvature);
+    ImGui::SetItemTooltip("Without it the horizon sits at infinity and distant ships never drop below it.");
+
+    ImGui::SeparatorText("Simulation");
+    cheap |= ImGui::Checkbox("Pause", &p.paused);
+    int seed = (int)p.seed;
+    if (ImGui::SliderInt("Seed", &seed, 0, 9999, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        p.seed = (uint32_t)std::max(0, seed);
+        respec = true;
+    }
+    ImGui::SetItemTooltip("Picks a different realisation of the same sea state.");
+    static const char* kDebugModes[] = {"Beauty",     "Normals", "Compression", "Geometry LOD",
+                                        "Filter mip", "Foam",    "Roughness"};
+    static_assert(IM_ARRAYSIZE(kDebugModes) == OCEAN_DEBUG_COUNT, "Water debug view names out of step");
+    int debug = (int)std::min<uint32_t>(p.debugMode, OCEAN_DEBUG_COUNT - 1u);
+    if (ImGui::Combo("Debug view", &debug, kDebugModes, IM_ARRAYSIZE(kDebugModes))) {
+        p.debugMode = (uint32_t)std::clamp(debug, 0, (int)OCEAN_DEBUG_COUNT - 1);
+        cheap = true;
+    }
+    ImGui::SetItemTooltip("Geometry LOD colours each tile by its size, darkens quad edges and whitens tile\n"
+                          "edges: exactly what the acceleration structures hold.");
+
+    if (ImGui::CollapsingHeader("Statistics")) {
+        ImGui::Text("tiles %u of %u leaves, %u dropped", st.tiles, st.leaves, st.dropped);
+        ImGui::Text("builds %u, refits %u | %.2fM triangles", st.builds, st.refits, (double)st.triangles / 1.0e6);
+        ImGui::Text("BLAS %.1f MB | resources %.1f MB", (double)st.blasBytes / (1024.0 * 1024.0),
+                    (double)st.resourceBytes / (1024.0 * 1024.0));
+        ImGui::Text("slope variance: spectrum %.4f, Cox-Munk %.4f", st.slopeVarSpectrum, st.slopeVarCoxMunk);
+        ImGui::SetItemTooltip("The synthesised spectrum is calibrated against the measured Cox & Munk totals;\n"
+                              "the gap is the energy above the finest cascade's Nyquist limit.");
+        ImGui::Text("horizontal gain %.2f | bake %.0f ms", st.horizontalGain, st.bakeMs);
+        ImGui::Text("surface bounds +%.2f / -%.2f m", st.crestHeight, st.troughDepth);
+        ImGui::SetItemTooltip("Conservative reach of the crests and troughs about the mean level. Shadow rays\n"
+                              "and the camera test skip the height field wherever they lie outside it.");
+    }
+
+    // Spectrum re-bakes wait for widget release.
+    if (m_waterRespecPending || respec) {
+        m_waterRespecPending = true;
+        if (!ImGui::IsAnyItemActive()) {
+            oceanSystem.Configure(p);
+            m_waterRespecPending = false;
+        }
+    } else if (cheap) {
+        oceanSystem.Configure(p);
+    }
+
     ImGui::End();
 }
 
@@ -360,8 +778,7 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
     ImGui::Checkbox("Show inactive passes", &m_showInactivePasses);
     ImGui::TextDisabled("Previous frame");
 
-    const char* stageNames[] = {"RayGen",  "Compute",  "FixedCompute", "Wavefront", "Barrier", "LoopStart",
-                                "LoopEnd", "PingSwap", "ClearSort",    "Callable",  "DLSS"};
+    const char* stageNames[] = {"RayGen", "Compute", "FixedCompute", "Barrier", "LoopStart", "LoopEnd", "DLSS"};
 
     for (size_t i = 0; i < passes.Passes().size(); ++i) {
         auto& p = passes.Passes()[i];
@@ -401,7 +818,7 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
             char fileStr[256];
             WideCharToMultiByte(CP_UTF8, 0, p.file.c_str(), -1, fileStr, 256, nullptr, nullptr);
             ImGui::Text("[%2zu] %s: %s", i, stageName, fileStr);
-            if (p.stage == Stage::Compute && !p.isWorkGraph)
+            if (p.stage == Stage::Compute)
                 ImGui::SameLine(), ImGui::TextDisabled("(%ux%u)", p.groupX, p.groupY);
         }
         ImGui::PopStyleColor();
@@ -438,15 +855,33 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
         for (int i = 0; i < IM_ARRAYSIZE(values); ++i)
             if ((uint32_t)dlss.rrPresets[DLSSManager::kPresetDLAA] == values[i])
                 preset = i;
-        if (ImGui::Combo("Model", &preset, presets, IM_ARRAYSIZE(presets))) {
-            dlss.rrLinkPresets = true;
+        if (ImGui::Combo("Model", &preset, presets, IM_ARRAYSIZE(presets)))
             for (auto& p : dlss.rrPresets)
                 p = (sl::DLSSDPreset)values[preset];
-        }
-        ImGui::SliderFloat("Temporal response", &dlss.rrResponsivity, -1.0f, 1.0f, "%.3f",
+        ImGui::SliderFloat("Temporal response (rough)", &dlss.rrResponsivityRough, -1.0f, 1.0f, "%.3f",
                            ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemDeactivatedAfterEdit())
             dlss.ForceReset();
+        ImGui::SetItemTooltip("How readily reconstruction drops accumulated history: -1 accumulates the longest,\n"
+                              "+1 is the most responsive. The mask is written per pixel, and an ordinary surface\n"
+                              "interpolates between this value at roughness 1 and the mirror one at roughness 0.\n"
+                              "Rough shading barely changes between frames, so it accumulates freely.");
+        ImGui::SliderFloat("Temporal response (mirror)", &dlss.rrResponsivityMirror, -1.0f, 1.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            dlss.ForceReset();
+        ImGui::SetItemTooltip("The other end of that ramp, at roughness 0: a sharp reflection slides across a\n"
+                              "smooth surface as the camera moves, so it cannot lean on history as hard.");
+        ImGui::SliderFloat("Temporal response (water)", &dlss.rrWaterResponsivity, -1.0f, 1.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            dlss.ForceReset();
+        ImGui::SetItemTooltip("Flat value for pixels whose primary ray landed on the ocean, off the ramp above. A\n"
+                              "moving sea presents a different set of crests every frame, so the history length\n"
+                              "that resolves a static surface blends its sun glitter into streaks and\n"
+                              "misestimates it; water wants the responsive end while the scene keeps\n"
+                              "accumulating. All three at 0 leaves the mask unbound and reconstruction uses its\n"
+                              "own default.");
         ImGui::SliderFloat("Camera jitter", &camera.jitterScale, 0.0f, 1.0f, "%.3f");
         if (ImGui::IsItemDeactivatedAfterEdit())
             dlss.ForceReset();
@@ -776,7 +1211,7 @@ void Editor::DrawDLSSNRPanel(DLSSNRManager& nr) {
     ImGui::End();
 }
 
-void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir) {
+void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir, mc::VoxelStreamer* voxels) {
     SetInitialPanelPosition(ImVec2(740, 30));
     ImGui::SetNextWindowSize(ImVec2(620, 700), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(540, 300), ImVec2(FLT_MAX, FLT_MAX));
@@ -795,6 +1230,19 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
 
     if (ImGui::CollapsingHeader("Preview overrides"))
         ImGui::Checkbox("Diffuse materials only", &restir.forceDiffuseMats);
+
+    if (voxels && voxels->world()) {
+        bool hideWater = voxels->hide_water();
+        if (ImGui::Checkbox("Replace world water with the wave surface", &hideWater))
+            voxels->set_hide_water(hideWater);
+        ImGui::SetItemTooltip(
+            "Leaves every water block out of the world's mesh, so the renderer's own wave surface\n"
+            "is what a ray meets instead of a stack of flat block tops. Place that surface at the\n"
+            "water line with the sea level in Experimental > Water.\n"
+            "Anything else the world marks as water goes with it, so a waterfall or a cauldron\n"
+            "empties too. Toggling rebuilds every resident chunk, which streams back in over a\n"
+            "few seconds.");
+    }
     ImGui::Separator();
 
     ImGui::SliderFloat("Global Emission", &camera.sunSettings.globalEmissionStrength, 0.0f, 10.0f, "%.2fx");
@@ -837,8 +1285,13 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         }
     }
 
+    // Ocean block is edited from the Water panel.
+    const int waterMat = scene.oceanInstanceSlots && scene.oceanMatIndex < scene.materials.size()
+        ? (int)scene.oceanMatIndex : -1;
+    if (waterMat >= 0 && m_selectedMat >= waterMat && m_selectedMat < waterMat + OCEAN_MATERIAL_COUNT)
+        m_selectedMat = -1;
     int matchCount = 0;
-    for (int i = 0; i < (int)scene.materials.size(); ++i) {
+    auto drawMaterial = [&](int i) {
         const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
                                ? scene.materialNames[i].c_str()
                                : nullptr;
@@ -847,7 +1300,7 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             const bool nameMatch = containsCI(name, m_matFilter);
             const bool idxMatch = numericQuery && (i == numericValue);
             if (!nameMatch && !idxMatch)
-                continue;
+                return;
         }
         ++matchCount;
 
@@ -864,6 +1317,11 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             snprintf(label, sizeof(label), "%d##mat", i);
         if (ImGui::Selectable(label, m_selectedMat == i))
             m_selectedMat = i;
+    };
+    for (int i = 0; i < (int)scene.materials.size(); ++i) {
+        if (waterMat >= 0 && i >= waterMat && i < waterMat + OCEAN_MATERIAL_COUNT)
+            continue;
+        drawMaterial(i);
     }
 
     if (m_matFilter[0] && matchCount == 0) {
@@ -948,14 +1406,14 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
         }
 
         if (ImGui::CollapsingHeader("Transmission")) {
-            changed |=
-                ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            if (i >= (int)mats.thinGlass.size())
+                mats.thinGlass.resize(i + 1, 0u);
+            changed |= ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x,
+                                         ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Volume absorption color (solid glass)\n"
                                   "Thin glass: flat per-surface transmission tint\nWhite = no absorption");
 
-            if (i >= (int)mats.thinGlass.size())
-                mats.thinGlass.resize(i + 1, 0u);
             bool thin = mats.thinGlass[i] != 0u;
             if (ImGui::Checkbox("Thin glass (Fresnel only)", &thin)) {
                 mats.thinGlass[i] = thin ? 1u : 0u;
@@ -991,8 +1449,8 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSetti
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(
                     "Single-scattering albedo (the inside colour).\nCarried by the random walk's albedo product.");
-            changed |=
-                ImGui::SliderFloat("Radius", &mats.sssRadius[i], 0.0005f, 50.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
+            changed |= ImGui::SliderFloat("Radius", &mats.sssRadius[i], 0.0005f, 50.0f, "%.4f",
+                                          ImGuiSliderFlags_Logarithmic);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip(
                     "Scatter distance / mean free path (world units), log scale.\nsigma_t = 1/radius. Small = "
@@ -1050,8 +1508,6 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
     }
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.46f);
 
-    const char* modes[] = {"Path tracer", "ReSTIR (legacy)"};
-    ImGui::Combo("Method", &rs.integratorMode, modes, IM_ARRAYSIZE(modes));
     ImGui::SliderInt("Samples per pixel", &rs.initialSamples, 1, 8);
     if (ImGui::CollapsingHeader("Path limits")) {
         ImGui::SliderInt("Maximum depth", &rs.maxBounces, 2, 32);
@@ -1067,131 +1523,103 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
     ImGui::SeparatorText("Light sampling");
     ImGui::Checkbox("Compact light tree", &rs.compactLightTree);
     ImGui::SetItemTooltip("Uses less GPU memory; performance depends on the scene. Changing this rebuilds light buffers.");
-    if (rs.integratorMode == 0) {
-        ImGui::Checkbox("Learn light clusters", &rs.lightTreeLearning);
-        ImGui::SetItemTooltip("Learns visible light contributions per receiver cell at all distances; every receiver "
-                              "samples from the learned cuts.");
-        if (rs.lightTreeLearning) {
-            ImGui::Text("Lighting capacity: %u cells (%.0f MiB)", LT_GRID_CAPACITY,
-                        double(LT_LEARNING_BYTES) / (1024.0 * 1024.0));
-            ImGui::SliderFloat("Training roughness floor", &rs.lightTreeLearnRoughness, 0.0f, 0.8f, "%.2f");
-            ImGui::SetItemTooltip("Lobes at least this rough feed the learning; the diffuse lobe always does, so "
-                                  "polished surfaces train with their diffuse part only.\n"
-                                  "Every receiver samples from the learned cuts (one MIS technique: this only trades "
-                                  "variance, never bias).");
-            ImGui::SliderInt("Minimum lighting cell size (log2 m)", &rs.lightTreeCellExponent, -4, 8);
-            ImGui::SliderFloat("Lighting cell growth", &rs.lightTreeLodScale, 0.005f, 0.2f, "%.3f");
-            ImGui::SetItemTooltip("Cells grow with distance from the camera. Coarser learned cells cover new regions "
-                                  "while finer cells are prepared.");
-            ImGui::Checkbox("Show learning coverage", &rs.lightTreeDebug);
-            if (rs.lightTreeDebug)
-                ImGui::TextWrapped("Green: requested detail. Blue: coarser cell. Orange: shared fallback. Gray: "
-                                   "ordinary light tree; fading color shows partial learned sampling. Brightness shows "
-                                   "completed updates. Red: unavailable.");
-            if (ImGui::Button("Reset learned lighting"))
-                rs.lightTreeReset = true;
-        }
-        ImGui::SeparatorText("SHARC");
-        ImGui::Checkbox("Radiance cache", &rs.sharcEnabled);
-        ImGui::BeginDisabled(!rs.sharcEnabled);
-        ImGui::Checkbox("Path guiding", &rs.sharcGuideEnabled);
-        ImGui::SliderInt("Training tile width", &rs.sharcUpdateStride, 2, 8);
-        ImGui::SetItemTooltip("One training path per tile. Smaller tiles fill the cache faster.");
-        if (ImGui::Button("Clear cache"))
-            rs.sharcReset = true;
+    ImGui::Checkbox("Learn light clusters", &rs.lightTreeLearning);
+    ImGui::SetItemTooltip("Learns visible light contributions per receiver cell at all distances; every receiver "
+                          "samples from the learned cuts.");
+    if (rs.lightTreeLearning) {
+        ImGui::Text("Lighting capacity: %u cells (%.0f MiB)", LT_GRID_CAPACITY,
+                    double(LT_LEARNING_BYTES) / (1024.0 * 1024.0));
+        ImGui::SliderFloat("Training roughness floor", &rs.lightTreeLearnRoughness, 0.0f, 0.8f, "%.2f");
+        ImGui::SetItemTooltip("Glossy lobes at least this rough train the learning with their own response; "
+                              "smoother ones train it as a white diffuse surface would, because what they "
+                              "mirror changes with the view and shows up as patches between cells. The "
+                              "diffuse lobe always trains with its own response.\n"
+                              "Every receiver samples from the learned cuts (one MIS technique: this only trades "
+                              "variance, never bias).");
+        ImGui::SliderInt("Minimum lighting cell size (log2 m)", &rs.lightTreeCellExponent, -4, 8);
+        ImGui::SliderFloat("Lighting cell growth", &rs.lightTreeLodScale, 0.005f, 0.2f, "%.3f");
+        ImGui::SetItemTooltip("Cells grow with distance from the camera. Coarser learned cells cover new regions "
+                              "while finer cells are prepared.");
+        ImGui::Checkbox("Show learning coverage", &rs.lightTreeDebug);
+        if (rs.lightTreeDebug)
+            ImGui::TextWrapped("Green: requested detail. Blue: coarser cell. Orange: shared fallback. Gray: "
+                               "ordinary light tree; fading color shows partial learned sampling. Brightness shows "
+                               "completed updates. Red: unavailable.");
+        if (ImGui::Button("Reset learned lighting"))
+            rs.lightTreeReset = true;
+    }
+    ImGui::SeparatorText("SHARC");
+    ImGui::Checkbox("Radiance cache", &rs.sharcEnabled);
+    ImGui::BeginDisabled(!rs.sharcEnabled);
+    ImGui::Checkbox("Path guiding", &rs.sharcGuideEnabled);
+    ImGui::SliderInt("Training tile width", &rs.sharcUpdateStride, 2, 8);
+    ImGui::SetItemTooltip("One training path per tile. Smaller tiles fill the cache faster.");
+    if (ImGui::Button("Clear cache"))
+        rs.sharcReset = true;
 
-        if (ImGui::CollapsingHeader("Cache tuning")) {
-            ImGui::SliderInt("Cell size (log2 m)", &rs.sharcCellSizeExponent, -6, 4);
-            ImGui::SliderFloat("Distance scale", &rs.sharcLodScale, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SliderInt("Training depth", &rs.sharcTrainBounces, 4, 64);
-            ImGui::SliderInt("Training roulette", &rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
-            ImGui::SliderInt("Minimum samples", &rs.sharcMinSamples, 8, 256);
-            ImGui::SliderInt("History length", &rs.sharcHistoryFrames, 8, 256);
-            ImGui::SliderInt("Retention (frames)", &rs.sharcMaxAge, 32, 4096);
-            ImGui::SliderFloat("Query footprint", &rs.sharcQueryFootprint, 0.5f, 8.0f, "%.1f");
-            ImGui::SetItemTooltip("Minimum path spread in cache-cell widths. Higher values trace further.");
+    if (ImGui::CollapsingHeader("Cache tuning")) {
+        ImGui::SliderInt("Cell size (log2 m)", &rs.sharcCellSizeExponent, -6, 4);
+        ImGui::SliderFloat("Distance scale", &rs.sharcLodScale, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderInt("Training depth", &rs.sharcTrainBounces, 4, 64);
+        ImGui::SliderInt("Training roulette", &rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
+        ImGui::SliderInt("Minimum samples", &rs.sharcMinSamples, 8, 256);
+        ImGui::SliderInt("History length", &rs.sharcHistoryFrames, 8, 256);
+        ImGui::SliderInt("Retention (frames)", &rs.sharcMaxAge, 32, 4096);
+        ImGui::SliderFloat("Query footprint", &rs.sharcQueryFootprint, 0.5f, 16.0f, "%.1f");
+        ImGui::SetItemTooltip("How many cache cells the lobe that reaches a surface must span (by solid angle) before "
+                              "the cache may answer there. Higher values trace further.");
+        ImGui::SliderFloat("Convergence threshold", &rs.sharcConvergenceThreshold, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Paths never end in a cell whose recent training samples disagree with its history "
+                              "by more than their noise explains, as after a light change the history has not caught "
+                              "up with yet. Higher values trace more often while the cache adapts; 0 turns the gate "
+                              "off.");
+    }
+    if (rs.sharcGuideEnabled && ImGui::CollapsingHeader("Guiding tuning")) {
+        ImGui::SliderFloat("Maximum guide probability", &rs.sharcGuideMax, 0.0f, 0.9f, "%.2f");
+        ImGui::SetItemTooltip(
+            "Share of broad-lobe samples the learned lobes may take; the BSDF sampler keeps the rest.");
+        ImGui::SliderInt("Receiver level", &rs.sharcGuideLevelOffset, 1, 6);
+        ImGui::SliderInt("Guided vertices", &rs.sharcGuideDepth, 1, 7);
+        ImGui::SliderInt("Freshness half-life", &rs.sharcGuideFreshness, 8, 2048);
+        ImGui::SetItemTooltip(
+            "Frames without new training evidence after which a receiver guides at half strength.");
+        ImGui::Checkbox("Guide training paths", &rs.sharcGuideTrain);
+        ImGui::SetItemTooltip(
+            "Training paths sample the learned mixture too, so newly discovered lobes are measured faster.");
+    }
+    if (ImGui::CollapsingHeader("Cache inspection")) {
+        const char* views[] = {"Off", "Cells", "Cell lighting", "Guiding"};
+        ImGui::Combo("View", &rs.sharcDebugMode, views, IM_ARRAYSIZE(views));
+        if (rs.sharcDebugMode != 0) {
+            ImGui::Checkbox(rs.sharcDebugMode == SHARC_DEBUG_GUIDING ? "Show lobe directions" : "Other query level",
+                            &rs.sharcDebugCoarse);
         }
-        if (rs.sharcGuideEnabled && ImGui::CollapsingHeader("Guiding tuning")) {
-            ImGui::SliderFloat("Maximum guide probability", &rs.sharcGuideMax, 0.0f, 0.9f, "%.2f");
-            ImGui::SetItemTooltip(
-                "Share of broad-lobe samples the learned lobes may take; the BSDF sampler keeps the rest.");
-            ImGui::SliderInt("Receiver level", &rs.sharcGuideLevelOffset, 1, 6);
-            ImGui::SliderInt("Guided vertices", &rs.sharcGuideDepth, 1, 7);
-            ImGui::SliderInt("Freshness half-life", &rs.sharcGuideFreshness, 8, 2048);
-            ImGui::SetItemTooltip(
-                "Frames without new training evidence after which a receiver guides at half strength.");
-            ImGui::Checkbox("Guide training paths", &rs.sharcGuideTrain);
-            ImGui::SetItemTooltip(
-                "Training paths sample the learned mixture too, so newly discovered lobes are measured faster.");
-        }
-        if (ImGui::CollapsingHeader("Cache inspection")) {
-            const char* views[] = {"Off", "Cells", "Cell lighting", "Guiding"};
-            ImGui::Combo("View", &rs.sharcDebugMode, views, IM_ARRAYSIZE(views));
-            if (rs.sharcDebugMode != 0) {
-                ImGui::Checkbox(rs.sharcDebugMode == SHARC_DEBUG_GUIDING ? "Show lobe directions" : "Other query level",
-                                &rs.sharcDebugCoarse);
-            }
-        }
+    }
+    ImGui::EndDisabled();
+
+    if (ImGui::CollapsingHeader("Diffuse resampling")) {
+        ImGui::Checkbox("Resample direct and indirect diffuse", &rs.liteEnabled);
+        ImGui::BeginDisabled(!rs.liteEnabled);
+        ImGui::Checkbox("Spatial reuse", &rs.liteSpatial);
+        ImGui::BeginDisabled(!rs.liteSpatial);
+        ImGui::SliderInt("Partners", &rs.liteSpatSlots, 0, 3);
+        ImGui::SliderFloat("Pair radius (px)", &rs.liteReuseSigma, 2.0f, 40.0f, "%.1f");
+        ImGui::SliderInt("Confidence cap", &rs.liteSpatMcap, 1, 64);
         ImGui::EndDisabled();
-
-        if (ImGui::CollapsingHeader("Diffuse resampling")) {
-            ImGui::Checkbox("Resample direct and indirect diffuse", &rs.liteEnabled);
-            ImGui::BeginDisabled(!rs.liteEnabled);
-            ImGui::Checkbox("Spatial reuse", &rs.liteSpatial);
-            ImGui::BeginDisabled(!rs.liteSpatial);
-            ImGui::SliderInt("Partners", &rs.liteSpatSlots, 0, 3);
-            ImGui::SliderFloat("Pair radius (px)", &rs.liteReuseSigma, 2.0f, 40.0f, "%.1f");
-            ImGui::SliderInt("Confidence cap", &rs.liteSpatMcap, 1, 64);
-            ImGui::EndDisabled();
-            ImGui::SliderFloat("Normal similarity", &rs.tempNormalSimCos, -1.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Plane tolerance", &rs.tempPlaneDist, 0.0f, 0.5f, "%.3f");
-            ImGui::Checkbox("Show resampled contribution", &rs.liteDebugView);
-            ImGui::EndDisabled();
-        }
-    } else {
-        if (ImGui::CollapsingHeader("Temporal reuse", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Checkbox("Enabled##temporal", &rs.enableTempGI);
-            ImGui::BeginDisabled(!rs.enableTempGI);
-            ImGui::SliderInt("History cap", &rs.tempMcapGI, 0, 128);
-            ImGui::SliderFloat("Normal similarity", &rs.tempNormalSimCos, -1.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Plane tolerance", &rs.tempPlaneDist, 0.0f, 1.0f, "%.3f");
-            ImGui::SliderFloat("Jacobian limit", &rs.tempJacClamp, 1.0f, 100.0f, "%.1f");
-            ImGui::EndDisabled();
-        }
-        if (ImGui::CollapsingHeader("Spatial reuse")) {
-            ImGui::Checkbox("Enabled##spatial", &rs.enableSpatGI);
-            ImGui::BeginDisabled(!rs.enableSpatGI);
-            ImGui::SliderInt("Samples", &rs.spmisReuseN, 1, 8);
-            ImGui::SliderInt("Tile size", &rs.spmisTileSize, 4, 128);
-            ImGui::SliderInt("Search steps", &rs.spmisSearchIters, 4, 32);
-            ImGui::SliderFloat("Normal similarity##spatial", &rs.spmisNormalSimCos, -1.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Plane tolerance##spatial", &rs.spmisPlaneDist, 0.0f, 1.0f, "%.3f");
-            ImGui::EndDisabled();
-        }
-        if (ImGui::CollapsingHeader("Reconnection")) {
-            ImGui::Checkbox("Hybrid shift", &rs.hybridShift);
-            ImGui::SliderFloat("Minimum roughness", &rs.reconnectRoughnessMin, 0.0f, 1.0f, "%.2f");
-            ImGui::BeginDisabled(!rs.hybridShift);
-            ImGui::SliderInt("Maximum pin depth", &rs.rcMaxK, 2, rs.lobeIndexedPss ? 8 : 10);
-            ImGui::Checkbox("Footprint criteria", &rs.rcFootprint);
-            if (rs.rcFootprint)
-                ImGui::SliderFloat("Footprint scale", &rs.rcFpKappa, 0.001f, 2.56f, "%.4f",
-                                   ImGuiSliderFlags_Logarithmic);
-            else
-                ImGui::SliderFloat("Minimum distance", &rs.reconnectDistMin, 0.0f, 0.25f, "%.4f");
-            ImGui::EndDisabled();
-        }
+        ImGui::SliderFloat("Normal similarity", &rs.liteNormalSimCos, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Plane tolerance", &rs.litePlaneDist, 0.0f, 0.5f, "%.3f");
+        ImGui::Checkbox("Show resampled contribution", &rs.liteDebugView);
+        ImGui::EndDisabled();
     }
 
     if (stats.cacheTimingMask != 0 && ImGui::CollapsingHeader("GPU timings")) {
         const char* labels[] = {"Cache prepare",    "Cache training",      "Cache resolve", "Path tracing",
-                                "Diffuse shift",    "Diffuse merge",       "Cloud cache",   "Sky / atmosphere",
-                                "Secondary clouds", "Light cluster update"};
+                                "Diffuse shift",    "Diffuse merge",       "Sky / atmosphere", "Light cluster update"};
         static_assert(IM_ARRAYSIZE(labels) == FrameStats::GpuTimingCount);
         for (int i = 0; i < IM_ARRAYSIZE(labels); ++i)
             if (stats.cacheTimingMask & (1u << i))
                 ImGui::Text("%s: %.3f ms", labels[i], stats.cachePassMs[i]);
-        if (stats.cacheTimingMask & (1u << 9)) {
+        if (stats.cacheTimingMask & (1u << 7)) {
             ImGui::TextDisabled("Light sampling and feedback are included in the path/cache times.");
         }
     }
@@ -1223,7 +1651,7 @@ void Editor::DrawDlssInputsPanel(IntegratorSettings& rs, DLSSManager& dlss) {
     if (rs.dlssDebugLayer == 3 || rs.dlssDebugLayer == 10)
         ImGui::DragFloatRange2("Range (m)", &rs.dlssDebugDepthNear, &rs.dlssDebugDepthFar, 0.25f, 0.0f, 65000.0f,
                                "near %.2f", "far %.2f");
-    if (rs.sharcEnabled && rs.integratorMode == 0 && rs.sharcDebugMode != 0) {
+    if (rs.sharcEnabled && rs.sharcDebugMode != 0) {
         ImGui::TextDisabled("SHARC inspection is active.");
         if (ImGui::Button("Show DLSS buffer instead"))
             rs.sharcDebugMode = 0;
@@ -1243,9 +1671,12 @@ void Editor::DrawDlssInputsPanel(IntegratorSettings& rs, DLSSManager& dlss) {
         guide("Diffuse albedo", dlss.guideOffAlbedo);
         guide("Specular albedo", dlss.guideOffSpecAlb);
         guide("Specular motion", dlss.guideOffSpecMV);
+        guide("Surface replacement", dlss.guideOffPsr);
+        guide("Motion blend", dlss.guideOffMvBlend);
         if (ImGui::Button("Restore all guides")) {
             dlss.guideOffDepth = dlss.guideOffMV = dlss.guideOffNormals = dlss.guideOffRough = false;
             dlss.guideOffAlbedo = dlss.guideOffSpecAlb = dlss.guideOffSpecMV = dlss.untagSpecMV = false;
+            dlss.guideOffPsr = dlss.guideOffMvBlend = false;
             dlss.ForceReset();
         }
     }
@@ -1297,7 +1728,6 @@ void Editor::DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats,
     }
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.46f);
     auto& s = camera.sunSettings;
-    auto& c = camera.cumulusSettings;
     ImGui::SeparatorText("Light sources");
     ImGui::Checkbox("Mesh lights", &scene.lightClassEnabled[Scene::LightClassScene]);
     ImGui::SetItemTooltip("Emissive triangles of the loaded meshes. Off: they leave the light tree and stop glowing.");
@@ -1321,54 +1751,6 @@ void Editor::DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats,
         ImGui::SliderFloat("Time speed", &s.simSpeed, 0.0f, 10000.0f, "%.1fx", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Night speedup", &s.nightSpeedup, 1.0f, 10.0f, "%.1fx");
     }
-    ImGui::SeparatorText("Clouds");
-    bool enabled = c.enabled > 0.5f;
-    if (ImGui::Checkbox("Cumulus", &enabled))
-        c.enabled = enabled ? 1.0f : 0.0f;
-    ImGui::BeginDisabled(!enabled);
-    ImGui::SliderFloat("Coverage", &c.coverage, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Base altitude", &c.baseKm, 0.2f, 8.0f, "%.2f km");
-    ImGui::SliderFloat("Height", &c.thicknessKm, 0.3f, 8.0f, "%.2f km");
-    ImGui::SliderFloat("Size", &c.scale, 0.25f, 3.0f, "%.2fx");
-    ImGui::SliderFloat("Density", &c.extinction, 1.0f, 40.0f, "%.1f");
-    if (ImGui::CollapsingHeader("Cloud detail")) {
-        ImGui::SliderFloat("Edge detail", &c.detail, 0.0f, 1.5f, "%.2f");
-        ImGui::SliderFloat("Distortion", &c.fineDetail, 0.0f, 2.0f, "%.2f");
-        ImGui::SliderFloat("Internal scattering", &c.multipleScattering, 0.0f, 3.0f, "%.2f");
-        ImGui::SliderFloat("Ambient light", &c.ambient, 0.0f, 3.0f, "%.2f");
-        ImGui::SliderFloat("Wind X", &c.windX, -40.0f, 40.0f, "%.1f m/s");
-        ImGui::SliderFloat("Wind Z", &c.windZ, -40.0f, 40.0f, "%.1f m/s");
-        ImGui::SliderFloat("Seed", &c.seed, 0.0f, 100.0f, "%.0f");
-    }
-    if (ImGui::CollapsingHeader("Cloud quality")) {
-        int view = (int)c.viewSteps, reflection = (int)c.reflectionSteps, lighting = (int)c.lightingSamples;
-        if (ImGui::SliderInt("Sky samples", &view, 16, 160))
-            c.viewSteps = (float)view;
-        if (ImGui::SliderInt("Reflection samples", &reflection, 4, 32))
-            c.reflectionSteps = (float)reflection;
-        if (ImGui::SliderInt("Lighting samples", &lighting, 0, 4))
-            c.lightingSamples = (float)lighting;
-        ImGui::SetItemTooltip("0 evaluates lighting at every occupied sky sample.");
-        ImGui::Checkbox("Density cache (experimental)", &camera.cumulusDensityCache);
-        ImGui::SliderFloat("Guide threshold", &c.guideThreshold, 0.15f, 0.9f, "%.2f");
-        int viewMode = (int)c.debugView;
-        if (ImGui::Combo("Inspect", &viewMode, "Off\0Opacity\0Normals\0Depth\0Motion\0Depth spread\0"))
-            c.debugView = (float)viewMode;
-        if ((stats.cacheTimingMask & 0x1C0u) != 0u)
-            ImGui::TextDisabled("Cache %.2f ms | Rays %.2f ms", stats.cachePassMs[6],
-                                stats.cachePassMs[7] + stats.cachePassMs[8]);
-    }
-    if (ImGui::Button("Reset clouds"))
-        c = CumulusSettings{};
-    ImGui::SameLine();
-    if (ImGui::Button("Tall towers")) {
-        c = CumulusSettings{};
-        c.coverage = 0.48f;
-        c.thicknessKm = 4.5f;
-        c.scale = 1.0f;
-        c.extinction = 12.0f;
-    }
-    ImGui::EndDisabled();
     if (ImGui::CollapsingHeader("Night sky")) {
         ImGui::SliderFloat("Stars", &s.skyStarIntensity, 0.0f, 5.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Star contrast", &s.skyStarGamma, 1.0f, 4.0f, "%.2f");
@@ -1390,6 +1772,16 @@ void Editor::DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats,
             s.atmosAerialLightSteps = (float)aerialLight;
         ImGui::SliderFloat("Scattering scale", &s.atmosMultiScatterFactor, 0.5f, 3.0f, "%.2f");
         ImGui::SliderFloat("Shadow softness", &s.atmosEarthShadowSoftness, 0.0f, 0.05f, "%.4f");
+        ImGui::SliderFloat("Halo depth (km)", &s.atmosHaloDistanceKm, 0.0f, 20.0f, "%.2f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Distance over which the halo around the sun fades in. That halo is the forward\n"
+                              "lobe of the aerosol phase function, which knows only which way a ray points and\n"
+                              "not how much air is in front of the surface it ends on - so without this it\n"
+                              "brightens a wall a few metres away as much as the sky behind it.\n"
+                              "The lobe is faded towards its isotropic average over this distance, which moves\n"
+                              "the in-scatter around rather than removing it: near surfaces get plain haze,\n"
+                              "distant ones get the halo, and the sky is untouched either way.\n"
+                              "0 restores the undamped lobe.");
     }
     ImGui::PopItemWidth();
     ImGui::End();

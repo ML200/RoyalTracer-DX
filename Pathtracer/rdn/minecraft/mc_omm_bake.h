@@ -9,7 +9,7 @@ namespace mc {
 
 class BlockRegistry;
 
-// Bakes one deduplicated opacity micromap table for all cutouts.
+// One deduplicated table for all cutouts.
 bool bake_omm_table(const BlockRegistry& reg, const std::vector<OmmBakeTri>& tris,
                     OmmTable& table, OmmBakeResult& out, std::string* err);
 

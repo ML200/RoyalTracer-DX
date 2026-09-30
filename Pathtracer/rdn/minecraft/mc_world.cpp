@@ -22,7 +22,6 @@ struct RegionResult {
 };
 }
 
-// Loads regions in parallel, then updates bounds and occupancy metadata.
 bool World::load(const WorldLoadConfig& cfg, planet::WorkerPool* pool, std::string* err) {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
@@ -142,7 +141,6 @@ bool World::load(const WorldLoadConfig& cfg, planet::WorkerPool* pool, std::stri
     return true;
 }
 
-// Builds derived voxel levels before configuring the render tree.
 void World::build_lod(planet::WorkerPool* pool, int decorMaxLevel) {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();

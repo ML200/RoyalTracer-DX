@@ -39,8 +39,7 @@ inline uint32_t PackLightAxis(DirectX::XMFLOAT3 axis) {
 }
 
 inline float PackedLightCosine(float cosine) {
-    // Oct16 has < 0.00013 rad direction error. Include FP32 decode/normalize
-    // error as well. Rotate the cone outward without acos in the encoder.
+    // Margin covers oct16 (< 0.13 mrad) and FP32 decode error.
     constexpr double margin = 0.001;
     const double c = std::clamp(double(cosine), -1.0, 1.0);
     if (c <= -std::cos(margin))
@@ -86,8 +85,7 @@ inline uint32_t QuantizeLightBounds(float low, float high, float origin, float e
     if (origin == end)
         return 0u;
     const double scale = 65535.0 / (double(end) - double(origin));
-    // An extra grid unit covers FP32 lerp error, including fused vs unfused
-    // decode. Endpoints decode to the exact header bounds in both languages.
+    // One extra unit covers FP32 lerp error, fused or not.
     const auto lo = uint32_t(std::clamp(std::floor((double(low) - origin) * scale) - 1.0, 0.0, 65535.0));
     const auto hi = uint32_t(std::clamp(std::ceil((double(high) - origin) * scale) + 1.0, 0.0, 65535.0));
     return lo | (hi << 16u);
@@ -150,8 +148,7 @@ template <class Node> inline Node UnpackBLASNode(const LightBLASNodePacked* mesh
 } // namespace lt
 
 namespace lt {
-// A single representation is allocated/uploaded. The shader views either layout
-// as uint4 records, so changing layout does not require a second resource table.
+// Shader reads either layout as uint4 records.
 template <class Node>
 inline std::vector<uint32_t> EncodeLightBLAS(const std::vector<Node>& nodes, bool compact, uint32_t leafBase = 0u) {
     std::vector<uint32_t> words;

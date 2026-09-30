@@ -10,14 +10,13 @@
 namespace {
 constexpr uint32_t RETIRE_FRAMES = 8;
 
-// Packs a translation-only transform in D3D12's row-major layout.
+// D3D12 3x4 row-major.
 inline void make_translation(float m[12], const planet::DVec3& t) {
     m[0]=1.f; m[1]=0.f; m[2]=0.f;  m[3]=(float)t.x;
     m[4]=0.f; m[5]=1.f; m[6]=0.f;  m[7]=(float)t.y;
     m[8]=0.f; m[9]=0.f; m[10]=1.f; m[11]=(float)t.z;
 }
 
-// Converts cell-local geometry metadata into renderer instance properties.
 inline void fill_terrain_props(InstanceProperties& p, const planet::CellInstance& c,
                                const planet::DVec3& origin,
                                uint32_t matIDBase, uint32_t triLightBase) {
@@ -104,7 +103,6 @@ void StreamOrchestrator::init(ID3D12Device5* device, DeviceContext* ctx,
         m_terrainTableMapped[i].node_lo = (uint32_t)(INVALID_NODE & 0xFFFFFFFFull);
         m_terrainTableMapped[i].node_hi = (uint32_t)(INVALID_NODE >> 32);
         m_terrainTableMapped[i].changed = 0;
-        m_terrainNodePrev[i] = INVALID_NODE;
     }
 
     {
@@ -184,7 +182,6 @@ void StreamOrchestrator::assign_stable_ids(Generation& g) {
     m_ids.retain([&liveNodes](uint64_t node) { return liveNodes.count(node) != 0; });
 }
 
-// Advances generation state, chooses visible cells, and queues GPU work.
 void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam) {
     m_frame       = frame_index;
     m_sceneOrigin = cam.scene_origin;
@@ -265,7 +262,6 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
     }
 }
 
-// Submits uploads and BLAS work while preserving queue fence ordering.
 void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t scene_count,
                                      uint32_t terrain_hit_group, uint32_t external_hit_group) {
     m_ctx->ResetPlanetLists();
@@ -298,6 +294,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  slot * TS_PER_SLOT + 0);
     if (m_external) m_external->record_gpu_work(m_ctx->CopyList(), cl);
+    if (m_external2) m_external2->record_gpu_work(m_ctx->CopyList(), cl);
     const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
 
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
@@ -332,6 +329,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     const uint64_t cv = m_ctx->SubmitPlanetCompute(copyVal);
     if (recorded > 0) m_builder.on_submitted(cv);
     if (m_external) m_external->on_submitted(copyVal, cv);
+    if (m_external2) m_external2->on_submitted(copyVal, cv);
 
     m_tsRing[slot] = TsSlot{ cv, m_frame, m_tlas.instance_count(), m_tlas.last_build_recorded(), true };
     m_tsWrite++;
@@ -432,12 +430,17 @@ void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t sc
     }
 
     bool externalForce = false;
-    if (m_external) m_external->append_instances(m_tlas, props, m_sceneOrigin, external_hit_group, externalForce);
+    bool externalRefit = false;
+    if (m_external)
+        m_external->append_instances(m_tlas, props, m_sceneOrigin, external_hit_group, externalForce, externalRefit);
+    // Ocean uses the terrain hit group; instance flags pick its material.
+    if (m_external2)
+        m_external2->append_instances(m_tlas, props, m_sceneOrigin, terrain_hit_group, externalForce, externalRefit);
 
     if (props) m_instanceProps->Unmap(0, nullptr);
     m_stats.cells_dropped = dropped;
 
-    m_tlas.build(compute_cl, m_cfg.enabled || externalForce);
+    m_tlas.build(compute_cl, m_cfg.enabled || externalForce, externalRefit);
 }
 
 void StreamOrchestrator::end_frame() {

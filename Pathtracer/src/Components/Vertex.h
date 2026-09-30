@@ -115,7 +115,7 @@ static constexpr size_t kMatPackedU32 = 12;
 
 inline void PackOne(const Material& m, uint32_t dst[kMatPackedU32])
 {
-    // Pack fields in the order consumed by the material shader layout.
+    // Must match MatPacked (Data_v8.hlsli).
     dst[0] = PackRGB9E5(m.Kd.x, m.Kd.y, m.Kd.z);
     dst[1] = uint32_t(PackHalf(m.Kd.w))
            | (uint32_t(PackHalf(m.Ni)) << 16);
@@ -258,12 +258,6 @@ struct MaterialSoA {
             Material m = Get(i);
             MaterialPack::PackOne(m, &out[i * MaterialPack::kMatPackedU32]);
         }
-    }
-
-    void PackInto(size_t i, uint32_t* buf) const
-    {
-        Material m = Get(i);
-        MaterialPack::PackOne(m, buf + i * MaterialPack::kMatPackedU32);
     }
 };
 

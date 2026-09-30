@@ -69,7 +69,6 @@ inline bool HasBroadShare(SamplingP p, half Pr, half Pm)
            (p.Pspec >= EPSILON && IsBroadGGX(Pr));
 }
 
-// Select one lobe from the normalized strategy probabilities.
 inline uint SelectSamplingStrategyFrom(SamplingP p, float r)
 {
     float c = p.Pdiff;
@@ -93,7 +92,6 @@ inline float StrategyP(SamplingP p, uint strategy)
     return p.Psheen;
 }
 
-// Sample a requested lobe while enforcing geometric-side validity.
 inline float3 SampleBRDF_WithStrategy(uint strategy, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect = false) {
     float3 sample;
 
@@ -140,68 +138,12 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
     return SampleBRDF(p, matID, o, n_s, n_g, localKd, localPr, localPm, seed, etai, etat, ggxNoReflect, strategy);
 }
 
-inline float3 SampleBRDF_Forced(uint strategy, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect = false) {
-    RandomFloatSingle(seed);
-    return SampleBRDF_WithStrategy(strategy, matID, o, n_s, n_g, localKd, localPr, localPm, seed, etai, etat, ggxNoReflect);
-}
-
 // Keep PDF accumulation in float.
 struct BrdfData {
     float3 val;
     float pdf;
 };
 
-inline float BRDF_PDF_COMBINED(
-    SamplingP p,
-    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
-    float3 localKd, half localPr, half localPm, half etai, half etat)
-{
-    float pdf = 0.0f;
-    if (p.Psheen >= EPSILON)
-        pdf += p.Psheen * BRDF_PDF_SHEEN(matID, n_s, -s, o);
-    if (p.Pcoat >= EPSILON)
-        pdf += p.Pcoat  * BRDF_PDF_COAT(matID, n_s, -s, o, etai, etat);
-    if (p.Pspec >= EPSILON)
-        pdf += p.Pspec  * BRDF_PDF_GGX(matID, n_s, n_g, -s, o, etai, etat, localKd, localPr, localPm);
-    if (p.Pdiff >= EPSILON)
-        pdf += p.Pdiff  * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
-    return pdf;
-}
-
-inline float3 EvaluateBRDF_COMBINED(
-    SamplingP p,
-    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
-    float3 localKd, half localPr, half localPm, half etai, half etat)
-{
-    const float3 N  = normalize(n_s);
-    const float3 fN = normalize(n_g);
-    const float3 V  = normalize(o);
-    const float3 L  = normalize(s);
-
-    float  gate = 1.0f;
-    float3 f    = 0.0f;
-
-    if (p.Psheen >= EPSILON) {
-        f    += gate * EvaluateBRDF_SHEEN(matID, n_s, -s, o);
-        gate *= Transmittance_SHEEN(matID, n_s, -s, o);
-    }
-    if (p.Pcoat >= EPSILON) {
-        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat, p.Pspec >= EPSILON || p.Pdiff >= EPSILON);
-        f    += gate * cr.f;
-        gate *= cr.t;
-    }
-    if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, false, p.Pdiff >= EPSILON);
-        f    += gate * gr.f;
-        gate *= gr.t;
-    }
-    if (p.Pdiff >= EPSILON) {
-        f += gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
-    }
-    return f;
-}
-
-// Evaluate the full mixture and its matching sampling PDF.
 inline BrdfData EvaluateAndPdf_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
@@ -365,37 +307,97 @@ inline BrdfData EvaluateAndPdf_COMBINED_L(
     return res;
 }
 
-inline bool ShouldDropDeltaGGX(float Pr, float Pm)
+// One-lobe estimation; diffuse and a broad GGX form one group.
+#define LOBE_GROUP_BROAD 0u   // diffuse, with the GGX lobe when IsBroadGGX
+#define LOBE_GROUP_SPEC  1u   // GGX
+#define LOBE_GROUP_COAT  2u
+#define LOBE_GROUP_SHEEN 3u
+
+inline uint LobeGroupOf(uint strategy, half Pr)
 {
-    return (Pr < SMOOTH_SPECULAR_THRESHOLD) && (Pm < 0.5f);
+    return (strategy == 1u && IsBroadGGX(Pr)) ? LOBE_GROUP_BROAD : strategy;
 }
 
-inline bool IsSmoothTransmissive(uint matID, float Pr)
+inline float LobeGroupP(SamplingP p, uint group, half Pr)
 {
-    return (Pr < SMOOTH_SPECULAR_THRESHOLD) && (LoadKd_w(matID) < (1.0f - EPSILON));
+    if (group == LOBE_GROUP_BROAD) return p.Pdiff + (IsBroadGGX(Pr) ? p.Pspec : 0.0f);
+    if (group == LOBE_GROUP_SPEC)  return p.Pspec;
+    if (group == LOBE_GROUP_COAT)  return p.Pcoat;
+    return p.Psheen;
 }
 
-inline bool ShouldDropDeltaCoat(uint matID)
+// Broad group pdf: Pdiff/Pspec mixture, normalized to the group.
+inline BrdfData EvaluateLobe(
+    SamplingP p, uint group,
+    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
+    float3 localKd, half localPr, half localPm, half etai, half etat,
+    bool ggxNoReflect = false)
 {
-    return (LoadPc(matID) > 0.0f) && (LoadPcr(matID) < SMOOTH_SPECULAR_THRESHOLD);
-}
+    BrdfData res;
+    res.val = 0.0f;
+    res.pdf = 0.0f;
 
-inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
-{
-    if (dropGGX)  sp.Pspec = 0.0f;
-    if (dropCoat) sp.Pcoat = 0.0f;
-
-    float total = sp.Psheen + sp.Pcoat + sp.Pspec + sp.Pdiff;
-    if (total > 0.0f) {
-        const float inv = 1.0f / total;
-        sp.Psheen *= inv;
-        sp.Pcoat  *= inv;
-        sp.Pspec  *= inv;
-        sp.Pdiff  *= inv;
-    } else {
-        sp.Psheen = 0.0f; sp.Pcoat = 0.0f; sp.Pspec = 0.0f; sp.Pdiff = 1.0f;
+    if (group == LOBE_GROUP_SHEEN)
+    {
+        if (p.Psheen >= EPSILON)
+        {
+            res.val = EvaluateBRDF_SHEEN(matID, n_s, -s, o);
+            res.pdf = BRDF_PDF_SHEEN(matID, n_s, -s, o);
+        }
+        return res;
     }
-    return sp;
+
+    const float3 N  = normalize(n_s);
+    const float3 fN = normalize(n_g);
+    const float3 V  = normalize(o);
+    const float3 L  = normalize(s);
+
+    half gate = (half)1.0;
+    if (p.Psheen >= EPSILON) gate *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
+
+    if (group == LOBE_GROUP_COAT)
+    {
+        if (p.Pcoat >= EPSILON)
+        {
+            const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat, false);
+            res.val = (float)gate * cr.f;
+            res.pdf = cr.pdf;
+        }
+        return res;
+    }
+    if (p.Pcoat >= EPSILON) gate *= (half)CoatTransmittance(matID, N, V, L, etai, etat);
+
+    // GGX: the spec group, or the broad group's upper layer.
+    float pdfSum = 0.0f, pSum = 0.0f;
+    if (p.Pspec >= EPSILON)
+    {
+        if (group == LOBE_GROUP_SPEC || IsBroadGGX(localPr))
+        {
+            const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm,
+                ggxNoReflect, group == LOBE_GROUP_BROAD && p.Pdiff >= EPSILON);
+            res.val = (float)gate * gr.f;
+            if (group == LOBE_GROUP_SPEC)
+            {
+                res.pdf = gr.pdf;
+                return res;
+            }
+            pdfSum  = p.Pspec * gr.pdf;
+            pSum    = p.Pspec;
+            gate   *= (half)gr.t;
+        }
+        else if (p.Pdiff >= EPSILON)
+            gate *= (half)GGXTransmittance(matID, N, V, L, etai, etat, localKd, localPr, localPm);
+    }
+    else if (group == LOBE_GROUP_SPEC)
+        return res;
+    if (p.Pdiff >= EPSILON)
+    {
+        res.val += (float)gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+        pdfSum  += p.Pdiff * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+        pSum    += p.Pdiff;
+    }
+    res.pdf = pSum > 0.0f ? pdfSum / pSum : 0.0f;
+    return res;
 }
 
 inline bool DropBroadLobes(inout SamplingP sp, half Pr)

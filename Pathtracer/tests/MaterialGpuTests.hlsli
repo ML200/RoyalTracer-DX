@@ -1,6 +1,6 @@
 #include "Constants_v8.hlsli"
-float Avg3(float3 v) { return (v.x + v.y + v.z) / 3.0f; }
-float LoadKd_w(uint m) { return m == 5u || m == 6u ? 0.0f : 1.0f; }
+float LoadKd_w(uint m) { return m == 5u || m == 6u || m == 10u ? 0.0f : 1.0f; }
+bool LoadIsOceanMaterial(uint m) { return m == 10u; }
 float LoadNi(uint m) { return m == 0u ? 1.0f : 1.5f; }
 float LoadDiffuseRoughness(uint m) { return testMode >= 100u ? testCamera.y : (m == 0u ? 0.0f : 0.5f); }
 float LoadAniso(uint m) { return m == 7u ? 0.8f : 0.0f; }
@@ -33,6 +33,7 @@ static MaterialFixtureInstance instanceProps[1];
 #include "Material_Coat_v8.hlsli"
 #include "Material_Sheen_v8.hlsli"
 #include "BXDF_v8.hlsli"
+#include "OceanGpuTests.hlsli"
 
 float MaterialRelativeError(float4 a, float4 b)
 {
@@ -45,16 +46,17 @@ float MaterialRelativeError(float4 a, float4 b)
 void materialCheck(uint3 tid : SV_DispatchThreadID)
 {
     uint seed = Hash32(tid.x);
-    float worst = 0.0f;
+    float worst = OceanRegressionError();
     [loop] for (uint i = 0u; i < 256u; ++i)
     {
-        uint m = i & 7u;
+        uint m = i % 9u == 8u ? 10u : (i & 7u);
         float3 n = float3(0, 1, 0);
         float z = 0.001f + 0.998f * RandomFloatSingle(seed);
         float3 v = float3(sqrt(1.0f - z * z), z, 0);
         float3 l = normalize(float3(RandomFloatSingle(seed) * 2.0f - 1.0f,
             RandomFloatSingle(seed) * 2.0f - 1.0f, RandomFloatSingle(seed) * 2.0f - 1.0f));
         half rough = (half)(0.08f + 0.9f * RandomFloatSingle(seed));
+        if (m == 10u && (i & 1u) != 0u) rough = (half)0.0f;
         half metal = m == 2u ? (half)1.0f : (half)0.0f;
         half etaI = (i & 16u) != 0u ? (half)LoadNi(m) : (half)1.0f;
         half etaT = (i & 16u) != 0u ? (half)1.0f : (half)LoadNi(m);
@@ -63,9 +65,9 @@ void materialCheck(uint3 tid : SV_DispatchThreadID)
         SharcDescriptor descriptor = (SharcDescriptor)0;
         surface.normal = surface.geometricNormal = descriptor.normal = descriptor.geometricNormal = n;
         descriptor.demodulator = 1.0f;
-        float3 ratio = exp2(float3(RandomFloatSingle(seed), RandomFloatSingle(seed), RandomFloatSingle(seed)) * 1.6f - 0.8f);
+        float3 ratio = exp2(float3(RandomFloatSingle(seed), RandomFloatSingle(seed), RandomFloatSingle(seed)) * 5.0f - 2.5f);
         surface.demodulator = ratio;
-        float referenceWeight = 1.0f - smoothstep(0.3f, 0.7f,
+        float referenceWeight = 1.0f - smoothstep(SHARC_SIMILAR_ALBEDO.x, SHARC_SIMILAR_ALBEDO.y,
             max(abs(log2(ratio.x)), max(abs(log2(ratio.y)), abs(log2(ratio.z)))));
         worst = max(worst, abs(referenceWeight - SharcSurfaceWeight(descriptor, surface, 0.0f, 1.0f)));
         SamplingP p = CalculateStrategyProbabilities(m, v, n, etaI, etaT, kd, rough, metal);
@@ -123,7 +125,7 @@ void materialSamplingCheck(uint3 tid : SV_DispatchThreadID)
             float3 l = CosineUnitVectorInHemisphere(n, seed);
             if (testMode == 100u)
             {
-                // Independently integrate the legacy BRDF with its VNDF proposal.
+                // Independent VNDF-sampled reference.
                 float3 h = SampleVNDF_H((float)rough * (float)rough, v, n, seed);
                 float3 reflected = reflect(-v, h);
                 if (dot(n, reflected) > 0.0f)

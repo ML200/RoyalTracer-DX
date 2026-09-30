@@ -5,10 +5,15 @@
 
 namespace planet {
 
+// ALLOW_UPDATE enables the refit path.
 static constexpr D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS TLAS_BUILD_FLAGS =
-    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)(
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE);
 
-// Allocates descriptors, scratch, and result storage for the TLAS.
+// Refit quality decays; rebuild after this many.
+static constexpr uint32_t MAX_REFITS_BETWEEN_BUILDS = 64;
+
 void TlasBuilder::init(ID3D12Device5* device, uint32_t max_instances) {
     if (m_instanceDescs && m_mapped) m_instanceDescs->Unmap(0, nullptr);
     m_mapped = nullptr;
@@ -45,7 +50,9 @@ void TlasBuilder::reserve(uint32_t required_instances) {
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                               D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
                               HEAP_DEFAULT);
-    auto scratch = create_buffer(m_device.Get(), info.ScratchDataSizeInBytes,
+    // Shared by build and update.
+    auto scratch = create_buffer(m_device.Get(),
+                              std::max(info.ScratchDataSizeInBytes, info.UpdateScratchDataSizeInBytes),
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                               D3D12_RESOURCE_STATE_COMMON,
                               HEAP_DEFAULT);
@@ -74,7 +81,6 @@ void TlasBuilder::begin(uint32_t required_instances) {
     m_changed = false;
 }
 
-// Appends a camera-relative instance descriptor to the pending build.
 void TlasBuilder::add_instance(D3D12_GPU_VIRTUAL_ADDRESS blas,
                                const float transform[12],
                                uint32_t instance_id,
@@ -102,10 +108,12 @@ void TlasBuilder::add_instance(D3D12_GPU_VIRTUAL_ADDRESS blas,
     ++m_count;
 }
 
-// Records a build only after descriptor or capacity changes.
-bool TlasBuilder::build(ID3D12GraphicsCommandList4* cmd, bool force) {
-    m_lastBuildRecorded = !m_built || m_changed || m_builtCount != m_count || force;
+bool TlasBuilder::build(ID3D12GraphicsCommandList4* cmd, bool force, bool refit) {
+    const bool rebuild = !m_built || m_changed || m_builtCount != m_count || force ||
+                         (refit && m_refitsSinceBuild >= MAX_REFITS_BETWEEN_BUILDS);
+    m_lastBuildRecorded = rebuild || refit;
     if (!m_lastBuildRecorded) return false;
+
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
     desc.Inputs.Type          = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
     desc.Inputs.DescsLayout   = D3D12_ELEMENTS_LAYOUT_ARRAY;
@@ -115,6 +123,16 @@ bool TlasBuilder::build(ID3D12GraphicsCommandList4* cmd, bool force) {
     desc.DestAccelerationStructureData    = m_result->GetGPUVirtualAddress();
     desc.ScratchAccelerationStructureData = m_scratch->GetGPUVirtualAddress();
     desc.SourceAccelerationStructureData  = 0;
+
+    if (!rebuild) {
+        // In-place update: source == destination.
+        desc.Inputs.Flags = (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)(
+            desc.Inputs.Flags | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE);
+        desc.SourceAccelerationStructureData = m_result->GetGPUVirtualAddress();
+        ++m_refitsSinceBuild;
+    } else {
+        m_refitsSinceBuild = 0;
+    }
 
     cmd->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
 

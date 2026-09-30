@@ -31,17 +31,20 @@ bool ChunkMesher::renderable(Voxel v, int level, const BlockInfo*& info) const {
     const BlockId id = voxel_id(v);
     if (id == AIR_ID) return false;
     info = &m_reg.info(id);
+    // The ocean surface stands in for world water.
+    if (m_hideWater && info->water) return false;
     if (level == 0) return info->isCube;
     if ((v & VOX_ANY) == 0) return false;
     float side;
     return !lamp_voxel(v, level, *info, side);
 }
 
-// Applies opacity and same-state rules to one neighboring voxel.
 bool ChunkMesher::occludes(Voxel neighbour, Voxel self, int level, bool selfCullSame) const {
     const BlockId nid = voxel_id(neighbour);
     if (nid == AIR_ID) return false;
     const BlockInfo& ni = m_reg.info(nid);
+    // Hidden water must not cull the sea floor.
+    if (m_hideWater && ni.water) return false;
     const bool same = nid == voxel_id(self) || (ni.water && m_reg.info(voxel_id(self)).water);
     if (level == 0) {
         if (ni.fullOpaque) return true;
@@ -148,7 +151,6 @@ void ChunkMesher::emit_face_quad(int face, const int corner[4][3], float s, floa
     push_triangles(idx[0], idx[1], idx[2], idx[3], material, out, omm0, omm1);
 }
 
-// Greedily merges coplanar cube faces with matching materials.
 void ChunkMesher::greedy_faces(int level, const MeshParams& p, ChunkMesh& out) {
     const float s = (float)(1 << level);
     const float uvScale = (32.0f * s <= 16384.0f) ? s : 1.0f;
@@ -333,7 +335,6 @@ void ChunkMesher::lamp_cubes(int level, const MeshParams& p, ChunkMesh& out) {
     }
 }
 
-// Emits non-cube model quads and preserves their culling metadata.
 void ChunkMesher::model_quads(const MeshParams& p, ChunkMesh& out) {
     (void)p;
     for (int z = 0; z < CHUNK_SIZE; ++z)
@@ -363,9 +364,9 @@ void ChunkMesher::model_quads(const MeshParams& p, ChunkMesh& out) {
     }
 }
 
-// Builds a chunk mesh from a padded neighbor window.
 void ChunkMesher::mesh(const NodeKey& key, const MeshParams& params, ChunkMesh& out) {
     out.clear();
+    m_hideWater = params.hideWater;
     m_opaqueLit.clear(); m_opaque.clear(); m_alphaLit.clear(); m_alpha.clear();
     if (++m_gen == 0u) { std::fill(m_cornerGen.begin(), m_cornerGen.end(), 0u); m_gen = 1u; }
     const int level = key.level;

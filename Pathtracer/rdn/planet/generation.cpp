@@ -40,7 +40,6 @@ void cell_blas_sizes(ID3D12Device5* device, uint32_t K,
 }
 }
 
-// Starts a worker plan while retaining the live generation for diffing.
 void GenerationBuilder::begin(ID3D12Device5* device, const GenerationParams& params,
                               const CameraView& cam, const Generation* live,
                               const IHeightmapSource& heightmap, WorkerPool& workers) {
@@ -60,7 +59,6 @@ void GenerationBuilder::begin(ID3D12Device5* device, const GenerationParams& par
     m_cellBuildCount = 0;
     m_batches.clear();
     m_pending = Batch{};
-    m_lastBlasRecordMs = 0.0f;
     m_planMs.store(0.0f, std::memory_order_relaxed);
     m_planDone.store(false, std::memory_order_release);
 
@@ -69,7 +67,6 @@ void GenerationBuilder::begin(ID3D12Device5* device, const GenerationParams& par
     });
 }
 
-// Builds the desired cut and records changed cells for tessellation.
 void GenerationBuilder::plan_job_(GenerationParams params, CameraView cam,
                                   const Generation* live) {
     using clock = std::chrono::high_resolution_clock;
@@ -133,7 +130,6 @@ void GenerationBuilder::plan_job_(GenerationParams params, CameraView cam,
     m_planDone.store(true, std::memory_order_release);
 }
 
-// Moves completed cells through tessellation and BLAS readiness states.
 void GenerationBuilder::poll() {
     if (m_state != State::Planning) return;
     if (!m_planDone.load(std::memory_order_acquire)) return;
@@ -233,14 +229,9 @@ void GenerationBuilder::tess_job_(uint32_t dirty_idx) {
     cb.state.store(CS_Ready, std::memory_order_release);
 }
 
-// Records bounded BLAS builds and retains resources until their fence retires.
 uint32_t GenerationBuilder::record_ready_blas(ID3D12GraphicsCommandList4* compute_cl,
                                               uint32_t budget) {
-    m_lastBlasRecordMs = 0.0f;
     if (m_state != State::Streaming) return 0;
-
-    using clock = std::chrono::high_resolution_clock;
-    const auto t0 = clock::now();
 
     ComPtr<ID3D12Resource> scratch;
 
@@ -301,8 +292,6 @@ uint32_t GenerationBuilder::record_ready_blas(ID3D12GraphicsCommandList4* comput
 
     if (scratch) m_pending.transients.push_back(scratch);
 
-    const auto t1 = clock::now();
-    m_lastBlasRecordMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
     return recorded;
 }
 
@@ -326,15 +315,6 @@ void GenerationBuilder::reclaim(uint64_t completed_fence) {
         }
     }
     m_batches.resize(w);
-}
-
-bool GenerationBuilder::all_recorded() const {
-    if (m_state != State::Streaming) return false;
-    for (uint32_t i = 0; i < m_cellBuildCount; ++i) {
-        const uint8_t s = m_cellBuilds[i].state.load(std::memory_order_acquire);
-        if (s != CS_Recorded && s != CS_Built) return false;
-    }
-    return true;
 }
 
 bool GenerationBuilder::done() const {

@@ -5,8 +5,7 @@
 #include "../Common.h"
 #include "../minecraft/voxel_streamer.h"
 
-// Opt-in capture for repeatable scene comparisons, including the actual pass
-// timings and published geometry/light counts rather than pool allocations.
+// Opt-in CSV for repeatable scene comparisons.
 class PerformanceCapture {
     std::ofstream output;
     uint64_t frame = 0;

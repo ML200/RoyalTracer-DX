@@ -21,12 +21,11 @@ struct IExternalStream {
     virtual ~IExternalStream() = default;
     virtual uint32_t instance_capacity() const = 0;
     virtual void record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) = 0;
+    // forceRefit: same instances, rewritten BLAS contents.
     virtual void append_instances(TlasBuilder& tlas, InstanceProperties* props, const DVec3& sceneOrigin,
-                                  uint32_t hitGroup, bool& forceRebuild) = 0;
+                                  uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) = 0;
     virtual void on_submitted(uint64_t copyFence, uint64_t computeFence) = 0;
 };
-
-constexpr uint32_t TERRAIN_INSTANCE_BASE = 1u << 20;
 
 constexpr uint32_t MAX_TERRAIN_CELLS = 4096;
 
@@ -107,7 +106,6 @@ struct ThroughputEstimator {
 
 class StreamOrchestrator {
 public:
-    // Initializes terrain pools, workers, and asynchronous generation state.
     void init(ID3D12Device5* device, DeviceContext* ctx, const StreamConfig& cfg);
 
     void bind_geometry(ID3D12Resource* combinedVtx, uint8_t* vtxMapped,
@@ -118,13 +116,14 @@ public:
                        uint32_t terrainLeafSlots, uint32_t terrainMatIDBase,
                        uint32_t terrainTriLightBase);
 
-    // Selects visible terrain, schedules work, and prepares frame uploads.
     void begin_frame(uint32_t frame_index, const CameraView& cam);
     void submit_work(const SceneInstanceDesc* scene, uint32_t scene_count,
                      uint32_t terrain_hit_group, uint32_t external_hit_group = 0);
     void end_frame();
 
     void set_external(IExternalStream* s) { m_external = s; }
+    // Second stream (ocean); same TLAS.
+    void set_external2(IExternalStream* s) { m_external2 = s; }
     void bind_instance_properties(ID3D12Resource* props) { m_instanceProps = props; }
 
     struct RockVariantGPU {
@@ -214,9 +213,13 @@ private:
     void record_tlas(const SceneInstanceDesc* scene, uint32_t scene_count,
                      uint32_t terrain_hit_group, uint32_t external_hit_group,
                      ID3D12GraphicsCommandList4* compute_cl);
-    uint32_t external_capacity() const { return m_external ? m_external->instance_capacity() : 0u; }
+    uint32_t external_capacity() const {
+        return (m_external ? m_external->instance_capacity() : 0u) +
+               (m_external2 ? m_external2->instance_capacity() : 0u);
+    }
 
     IExternalStream* m_external = nullptr;
+    IExternalStream* m_external2 = nullptr;
     DeviceContext*  m_ctx    = nullptr;
     ID3D12Device5*  m_device = nullptr;
     StreamConfig    m_cfg;
@@ -254,8 +257,6 @@ private:
 
     ComPtr<ID3D12Resource> m_terrainTable;
     TerrainSlotGPU*        m_terrainTableMapped = nullptr;
-    uint64_t               m_terrainNodePrev[MAX_TERRAIN_CELLS] = {};
-    uint64_t               m_curNode[MAX_TERRAIN_CELLS] = {};
 
     static constexpr uint32_t TS_RING     = 4;
     static constexpr uint32_t TS_PER_SLOT = 4;

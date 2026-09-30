@@ -131,14 +131,7 @@ add_executable(Pathtracer WIN32
         rdn/planet/chunk_mesh.h
         rdn/planet/blas_pool.h
         rdn/planet/blas_pool.cpp
-        rdn/planet/scratch_pool.h
-        rdn/planet/scratch_pool.cpp
-        rdn/planet/upload_ring.h
-        rdn/planet/upload_ring.cpp
         rdn/planet/heightmap_source.h
-        rdn/planet/heightmap_source.cpp
-        rdn/planet/heightmap_procedural.h
-        rdn/planet/heightmap_procedural.cpp
         rdn/planet/heightmap_cubemap.h
         rdn/planet/heightmap_cubemap.cpp
         rdn/planet/worker_pool.h
@@ -147,8 +140,6 @@ add_executable(Pathtracer WIN32
         rdn/planet/tessellator.cpp
         rdn/planet/queue_sync.h
         rdn/planet/queue_sync.cpp
-        rdn/planet/geometry_pool.h
-        rdn/planet/geometry_pool.cpp
         rdn/planet/generation.h
         rdn/planet/generation.cpp
         rdn/planet/rock_scatter.h
@@ -157,6 +148,10 @@ add_executable(Pathtracer WIN32
         rdn/planet/stream_orchestrator.cpp
         rdn/planet/tlas_builder.h
         rdn/planet/tlas_builder.cpp
+        rdn/ocean/OceanCommon.h
+        rdn/ocean/OceanQuadtree.h
+        rdn/ocean/OceanSystem.h
+        rdn/ocean/OceanSystem.cpp
 
         rdn/minecraft/mc_types.h
         rdn/minecraft/mc_config.h
@@ -203,6 +198,8 @@ add_executable(Pathtracer WIN32
         engine/Scene/SceneManager.cpp
         engine/Scene/EmissiveCubes.h
         engine/Scene/EmissiveCubes.cpp
+        engine/Scene/Ocean.h
+        engine/Scene/Ocean.cpp
         engine/Camera/FlyCamController.h
         engine/Camera/FlyCamController.cpp
         engine/EngineApp.h
@@ -271,7 +268,7 @@ if(PATHTRACER_ENABLE_DLSSNR)
         endif()
         file(SHA256 "${DLSSNR_RUNTIME_FILE}" _nr_hash)
         if(NOT _nr_hash STREQUAL "e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e")
-            message(FATAL_ERROR "Unrecognized DLSS-NR binary. This experimental bridge is pinned to the tested signed 310.8.0 runtime; see docs/DLSS5.md.")
+            message(FATAL_ERROR "Unrecognized DLSS-NR binary. This experimental bridge is pinned to the tested signed 310.8.0 runtime.")
         endif()
         add_custom_target(copy_dlssnr_runtime ALL
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Pathtracer>/dlssnr"
@@ -327,7 +324,6 @@ add_executable(PlanetTests
         rdn/planet/blas_cells.cpp
         rdn/planet/chunk_mesh.h
         rdn/planet/heightmap_source.h
-        rdn/planet/heightmap_source.cpp
         rdn/planet/heightmap_procedural.h
         rdn/planet/heightmap_procedural.cpp
         rdn/planet/worker_pool.h
@@ -377,7 +373,7 @@ target_link_libraries(MinecraftTests PRIVATE DirectXTex)
 target_compile_features(MinecraftTests PRIVATE cxx_std_23)
 target_compile_definitions(MinecraftTests PRIVATE NOMINMAX)
 
-# Opt-in scene survey: exact LOD geometry counts and isolated DXR traversal timing.
+# Opt-in: LOD geometry counts and DXR traversal timing.
 get_target_property(MINECRAFT_SURVEY_SOURCES MinecraftTests SOURCES)
 list(FILTER MINECRAFT_SURVEY_SOURCES EXCLUDE REGEX "tests/MinecraftTests.cpp$")
 add_executable(MinecraftBvhSurvey EXCLUDE_FROM_ALL

@@ -22,10 +22,6 @@ class EngineApp : public DXSample {
     void OnButtonUp(UINT message, UINT32 lParam) override;
     void OnMouseMove(UINT8 wParam, UINT32 lParam) override;
 
-    Renderer& GetRenderer() { return m_renderer; }
-    SceneManager& GetSceneManager() { return m_sceneManager; }
-    FlyCamController& GetFlyCam() { return m_flyCam; }
-
   private:
     std::unique_ptr<SceneDefinition> m_sceneDef;
     Renderer m_renderer;

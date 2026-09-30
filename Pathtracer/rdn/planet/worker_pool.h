@@ -18,17 +18,14 @@ public:
     WorkerPool(const WorkerPool&)            = delete;
     WorkerPool& operator=(const WorkerPool&) = delete;
 
-    // Enqueue a fire-and-forget job.
     void enqueue(std::function<void()> job);
 
-    // Runs indexed work while the caller helps drain the queue.
+    // Blocks; the caller helps drain the queue.
     void parallel_for(uint32_t count, const std::function<void(uint32_t)>& body);
 
     uint32_t thread_count() const { return (uint32_t)m_threads.size(); }
-    size_t   pending();
 
 private:
-    // Workers sleep until jobs arrive or shutdown begins.
     void worker_loop();
     bool pop_and_run();
 

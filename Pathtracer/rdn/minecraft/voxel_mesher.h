@@ -40,13 +40,14 @@ struct ChunkMesh {
 
 struct MeshParams {
     bool flatMaterials = false;
+    // Omit all water; the ocean surface replaces it.
+    bool hideWater = false;
 };
 
 class ChunkMesher {
 public:
     ChunkMesher(const BlockRegistry& reg, const VoxelStore& store);
 
-    // Reads neighbors for culling and writes one renderable chunk mesh.
     void mesh(const NodeKey& key, const MeshParams& params, ChunkMesh& out);
 
     static void face_quad_uvs(int face, int w, int h, float uvScale, float uv[4][2]);
@@ -71,6 +72,9 @@ private:
     void emit_quad(const Vec3f p[4], const float uv[4][2], const Vec3f& n, uint16_t material, ChunkMesh& out, uint64_t omm0 = 0, uint64_t omm1 = 0);
     void emit_face_quad(int face, const int corner[4][3], float s, float uvScale, float insetVoxels, uint16_t material, ChunkMesh& out, uint64_t omm0 = 0, uint64_t omm1 = 0, float waterTopOffset = 0.0f, float waterBottomOffset = 0.0f);
     void push_triangles(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t i3, uint16_t material, ChunkMesh& out, uint64_t omm0, uint64_t omm1);
+
+    // Copy of MeshParams::hideWater for helpers without params.
+    bool m_hideWater = false;
 
     const BlockRegistry& m_reg;
     const VoxelStore&    m_store;

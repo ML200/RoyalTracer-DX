@@ -14,7 +14,7 @@ constexpr uint32_t TERRAIN_GEO_INVALID = 0xFFFFFFFFu;
 
 class TerrainGeoPool {
 public:
-    // Reserves contiguous leaf ranges within combined scene buffers.
+    // Leaf ranges within the combined scene buffers.
     void init(uint32_t vbase_elems, uint32_t ibase_elems, uint32_t capacity_leaves) {
         m_vbase    = vbase_elems;
         m_ibase    = ibase_elems;
@@ -23,7 +23,7 @@ public:
         m_used = 0;
     }
 
-    // Uses best-fit allocation so cells remain compact.
+    // Best fit.
     uint32_t allocate(uint32_t k) {
         if (k == 0) k = 1;
         size_t   best      = (size_t)-1;
@@ -60,7 +60,6 @@ public:
         return off;
     }
 
-    // Reinserts a range and merges adjacent free spans.
     void free(uint32_t off, uint32_t k) {
         if (k == 0 || off == TERRAIN_GEO_INVALID) return;
         m_used -= k;
@@ -86,8 +85,6 @@ public:
         return m_ibase + leaf_off * TERRAIN_LEAF_INDICES;
     }
 
-    uint32_t capacity_leaves() const { return m_capacity; }
-    uint32_t used_leaves()     const { return m_used; }
     uint32_t free_leaves()     const { return m_capacity - m_used; }
 
 private:

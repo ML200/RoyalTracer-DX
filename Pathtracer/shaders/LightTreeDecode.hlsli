@@ -1,5 +1,4 @@
-#ifndef LIGHT_TREE_DECODE_HLSLI
-#define LIGHT_TREE_DECODE_HLSLI
+#pragma once
 
 bool LT_CompactNodes() { return (rs_flags & RS_FLAG_COMPACT_LIGHT_TREE) != 0u; }
 
@@ -37,8 +36,7 @@ LT_BlasFrame LT_LoadBlasFrame(uint offset) {
     return f;
 }
 float LT_BoundRound(float value,bool upper) {
-    // Cover interpolation rounding when a mesh extent is small relative to its
-    // local-coordinate offset. The integer quantizer also expands one grid unit.
+    // 2 ulps outward to cover interpolation rounding.
     if(value==0.0f) return asfloat(upper?2u:0x80000002u);
     return asfloat(asuint(value)+((value>0.0f)==upper?2u:0xfffffffeu));
 }
@@ -74,4 +72,3 @@ LightBLASNodeGpu LT_LoadBLAS(uint offset,uint index,LT_BlasFrame f) {
 LightBLASNodeGpu LT_LoadBLAS(uint offset,uint index) {
     return LT_LoadBLAS(offset,index,LT_LoadBlasFrame(offset));
 }
-#endif

@@ -1,17 +1,13 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
-#include "CumulusRender_v8.hlsli"
 
+// Writes scratch slices 10 (radiance) and 11 (transmittance).
 [numthreads(8, 8, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-    if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-    gDispatchIdx = DTid;
+    if (DTid.x >= IMG_W || DTid.y >= IMG_H) return;
 
     const uint2 pixel = DTid.xy;
     const uint pixelIdx = MapPixelID(float2(IMG_W, IMG_H), pixel);
-    gScratchPing[uint3(pixel,CUMULUS_NORMAL_SLOT)] = 0.0f;
-    gScratchPing[uint3(pixel,CUMULUS_DEPTH_SLOT)] = 0.0f;
     const bool isMeshHit = load_instID(g_sample_current, pixelIdx) != 0xFFFFFFFFu;
 
     uint seed = initRandomData(pixel, uint2(0, 0), (uint)time, 71u);
@@ -31,25 +27,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
     const float maxDistanceKm = isMeshHit
         ? length(load_x1(g_sample_current, pixelIdx) - rayOrigin) / WORLD_UNITS_PER_KM
         : -1.0f;
-
-    uint spatialSeed=initRandomData(pixel,uint2(0,0),0u,97u);
-    float rayJitter = frac(float(spatialSeed & 65535u)/65536.0f + (uint(time)%4096u)*.61803398875f);
-    CumulusResult cloud = IntegrateCumulus(rayDir,sun.dirWS,maxDistanceKm,
-        (uint)cloudViewSteps,rayJitter,false,2.0f/(abs(projection._m11)*float(IMG_H)));
-    float3 viewTr = cloud.transmittance;
-    bool hitPlanet = cloud.hitPlanet;
-    float3 scatter = cloud.radiance;
+    const uint  spatialSeed = initRandomData(pixel, uint2(0, 0), 0u, 97u);
+    const float rayJitter   = frac(float(spatialSeed & 65535u) / 65536.0f + (uint(time) % 4096u) * .61803398875f);
+    bool   hitPlanet;
+    float3 viewTr;
+    const float3 scatter = IntegrateScattering(rayDir, sun.dirWS, viewTr, hitPlanet, maxDistanceKm,
+        (uint)ATMOS_VIEW_STEPS, rayJitter) * SKY_INTENSITY;
     float3 radiance = scatter;
     if (!isMeshHit)
         radiance += EvaluateSkyBackgroundBehind(rayDir, sun, hitPlanet, scatter) * viewTr;
 
-#if ATM_DEBUG_RING == 1
-    float dbgTr = saturate(dot(viewTr, float3(0.33333f, 0.33333f, 0.33334f)));
-    float dbgScatter = dot(scatter, float3(0.33333f, 0.33333f, 0.33334f));
-    dbgScatter = saturate(1.0f - exp(-max(dbgScatter, 0.0f) * 4.0f));
-    radiance = float3(dbgTr, dbgScatter, 0.0f) * 0.5f;
-    viewTr = 0.0f;
-#endif
+    if (ATM_DEBUG_RING == 1u)
+    {
+        const float dbgTr = saturate(dot(viewTr, float3(0.33333f, 0.33333f, 0.33334f)));
+        float dbgScatter = dot(radiance, float3(0.33333f, 0.33333f, 0.33334f));
+        dbgScatter = saturate(1.0f - exp(-max(dbgScatter, 0.0f) * 4.0f));
+        radiance = float3(dbgTr, dbgScatter, 0.0f) * 0.5f;
+        viewTr = 0.0f;
+    }
 
     gScratchPing[uint3(pixel, 10)] = float4(radiance, 0.0f);
     gScratchPing[uint3(pixel, 11)] = float4(viewTr, 0.0f);

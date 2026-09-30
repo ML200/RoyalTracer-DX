@@ -41,7 +41,6 @@ void EmissiveCubes::Init(const Params& params, SceneManager& sm, Renderer& rende
     std::vector<UINT> sharedIndices;
     GenCube(params.cubeSize * 0.5f, 0, sharedVerts, sharedIndices);
 
-    // Share cube geometry; each instance supplies its own material.
     Material firstMat;
     firstMat.Kd = {1, 1, 1, 1};
     firstMat.Ke = {1, 1, 1};
@@ -121,7 +120,6 @@ void EmissiveCubes::Update(float dt, SceneManager& sm) {
             c.targetVelocity = {d.x * spd, d.y * spd, d.z * spd};
             c.changeTimer = dT(m_rng);
         }
-        // Smooth direction changes so animated lights do not snap.
         float lr = std::min(1.0f, dt * 2);
         c.velocity.x += (c.targetVelocity.x - c.velocity.x) * lr;
         c.velocity.y += (c.targetVelocity.y - c.velocity.y) * lr;

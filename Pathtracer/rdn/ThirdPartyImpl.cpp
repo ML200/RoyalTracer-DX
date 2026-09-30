@@ -12,7 +12,7 @@
 #define TINYGLTF3_IMPLEMENTATION
 #include "../lib/tiny_gltf_v3.h"
 
-// Keep the decoder backend consistent with Renderer_Pipeline.cpp.
+// Must match Renderer_Pipeline.cpp.
 #define TINYEXR_USE_MINIZ 0
 #define TINYEXR_USE_STB_ZLIB 1
 #define TINYEXR_IMPLEMENTATION

@@ -1,24 +1,18 @@
-#ifndef LIGHT_TREE_LEARNING_HLSLI
-#define LIGHT_TREE_LEARNING_HLSLI
-#include "PersistentSamplingBuffer_v8.hlsli"
-#ifdef LT_TEST_NO_CAMERA
-cbuffer LightTreeTestConstants : register(b0, space1) {
-    uint workCount,testMode,triangleCount,testSeed;
-    float3 testCameraPosition;float testRewardScale;
-}
-#define LT_WORLD_ORIGIN float3(0,0,0)
-#else
-#define LT_WORLD_ORIGIN sceneOriginWorld
-#endif
+#pragma once
 
-// Hash cell keys before bucket probing.
+// Cell header (LT_CELL_HEADER bytes): 0 alive, 4 cut size, 8 updates, 12 last trained frame,
+// 16 sample history, 20 retention score, 24 last touched (ms), 28 calibrated, 32 position,
+// 44 initial cut size, 48 normal, 60 last split, 64 request lock, 68 last fed frame,
+// 72 created frame, 76 request source, 80 requested key, 96 requested position,
+// 112 requested normal.
+
 uint LTC_Hash(uint v) { v^=v>>16;v*=0x7feb352du;v^=v>>15;v*=0x846ca68bu;return v^(v>>16); }
 
-uint LTC_KeyAddress(uint slot) { return LT_BUFFER_OFFSET+slot*LT_KEY_BYTES; }
-uint LTC_Cell(uint slot) { return LT_BUFFER_OFFSET+LT_CELL_CAPACITY*LT_KEY_BYTES+slot*LT_CELL_HEADER; }
+uint LTC_KeyAddress(uint slot) { return lt_bufferBase+slot*LT_KEY_BYTES; }
+uint LTC_Cell(uint slot) { return lt_bufferBase+LT_CELL_CAPACITY*LT_KEY_BYTES+slot*LT_CELL_HEADER; }
 uint LTC_Index(uint cell) { return (cell-LTC_Cell(0u))/LT_CELL_HEADER; }
 
-uint LTC_FrozenBase() { return LT_BUFFER_OFFSET+LT_CELL_CAPACITY*(LT_KEY_BYTES+LT_CELL_HEADER); }
+uint LTC_FrozenBase() { return lt_bufferBase+LT_CELL_CAPACITY*(LT_KEY_BYTES+LT_CELL_HEADER); }
 uint LTC_StatsBase() { return LTC_FrozenBase()+LT_CELL_CAPACITY*LT_CUT_MAX*LT_FROZEN_BYTES; }
 uint LTC_Cluster(uint cell,uint slot) { return LTC_FrozenBase()+(LTC_Index(cell)*LT_CUT_MAX+slot)*LT_FROZEN_BYTES; }
 uint LTC_ClusterIndex(uint cluster) { return (cluster-LTC_FrozenBase())/LT_FROZEN_BYTES; }
@@ -31,27 +25,29 @@ uint LTC_NormalFace(float3 n) {
 }
 float3 LTC_FaceNormal(uint face) { float3 n=0;n[face/2u]=(face&1u)!=0u?-1.0f:1.0f;return n; }
 float3 LTC_CameraPosition() {
-#ifdef LT_TEST_NO_CAMERA
-    return testCameraPosition;
-#else
     return mul(viewI,float4(0,0,0,1)).xyz;
-#endif
 }
-// Map camera distance to a clamped adaptive grid level.
+float3 LTC_CameraForward() { return mul(viewI,float4(0,0,1,0)).xyz; }
+// Behind the camera plane by more than its width; no view = in front.
+bool LTC_Behind(float3 x,float width) {
+    const float3 f=LTC_CameraForward();
+    const float l2=dot(f,f);
+    if(!(l2>0.25f)) return false;
+    return dot(x-LTC_CameraPosition(),f)*rsqrt(l2)<-width;
+}
 float LTC_ContinuousLevel(float3 x) {
-    float width=max(spmis_normalFuzz,1e-4f);
-    float growth=max(asfloat(spmis_normalBits),0.001f);
+    float width=max(lt_cellSize,1e-4f);
+    float growth=max(lt_lodScale,0.001f);
     return clamp(log2(max(1.0f,length(x-LTC_CameraPosition())*growth/width)),0.0f,float(LT_MAX_LEVEL));
 }
 uint LTC_Level(float3 x) { return (uint)LTC_ContinuousLevel(x); }
-uint LTC_Now() { return asuint(spmis_searchR0); }
+uint LTC_Now() { return lt_now; }
 uint4 LTC_KeyAtLevel(float3 x,float3 n,uint level) {
-    float width=max(spmis_normalFuzz,1e-4f)*exp2(float(level));
-    int3 grid=(int3)floor((x+LT_WORLD_ORIGIN)/width);
+    float width=max(lt_cellSize,1e-4f)*exp2(float(level));
+    int3 grid=(int3)floor((x+sceneOriginWorld)/width);
     uint3 normal=(uint3)clamp(floor(n*3.0f+3.5f),0.0f,6.0f);
     return uint4(asuint(grid),normal.x+7u*normal.y+49u*normal.z+((level+1u)<<9u));
 }
-uint4 LTC_Key(float3 x,float3 n) { return LTC_KeyAtLevel(x,n,LTC_Level(x)); }
 uint LTC_KeyLevel(uint4 key) { return (key.w>>9u)-1u; }
 uint LTC_Slot(uint4 k) { return LTC_Hash(k.x^LTC_Hash(k.y)^LTC_Hash(k.z)^LTC_Hash(k.w))&(LT_GRID_CAPACITY-1u); }
 uint LTC_Probe(uint4 key,uint probe) {
@@ -62,12 +58,15 @@ bool LTC_Enabled() { return (rs_flags & (LT_FLAG_LEARNING|RS_FLAG_NO_MESH_LIGHTS
 
 bool LTC_UseSurfaceLearning() { return LTC_Enabled(); }
 
-float3 LTC_TrainShare(float roughness,uint matID,float3 full,float3 broad) {
-    const float lo=spmis_searchGrow;
+// Glossy picks below the training floor train as white diffuse (view-independent).
+float3 LTC_TrainShare(float roughness,uint matID,float3 value,bool broadPick) {
+    const float lo=lt_learnRoughness;
     const bool smoothCoat=LoadPc(matID)>0.01f && LoadPcr(matID)<lo;
-    return (roughness>=lo && !smoothCoat)?full:broad;
+    return (broadPick || (roughness>=lo && !smoothCoat))?value:INV_PI;
 }
 static const uint LTC_EXPIRED_SCORE=0x40000000u;
+// Behind-camera cells are replaced first, but stay below the expiry bands.
+static const uint LTC_BEHIND_SCORE=0x20000000u;
 bool LTC_Replaceable(uint cell,bool underPressure=false) {
     return LTC_Index(cell)<LT_GRID_CAPACITY && (g_sharc.Load(cell)!=1u ||
         g_sharc.Load(cell+20u)>=(underPressure?1u:LTC_EXPIRED_SCORE));
@@ -79,48 +78,74 @@ void LTC_UpdateRetention(uint cell) {
     uint score=0u;
     if(LTC_Index(cell)<LT_GRID_CAPACITY) {
         uint level=LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(LTC_Index(cell))));
-        float3 x=asfloat(g_sharc.Load3(cell+32u))-LT_WORLD_ORIGIN;
+        float3 x=asfloat(g_sharc.Load3(cell+32u))-sceneOriginWorld;
         uint desired=LTC_Level(x),age=LTC_Now()-g_sharc.Load(cell+24u);
         bool distant=level+1u<desired;
+        // Idleness first; idle behind-camera cells expire on the short timer.
+        bool behind=LTC_Behind(x,max(lt_cellSize,1e-4f)*exp2(float(level)));
+        bool stale=distant||behind;
+        uint aged=min(age,LTC_BEHIND_SCORE-1u),flags=behind?LTC_BEHIND_SCORE:0u;
 
-        if(age>LT_CELL_PRESSURE_MS) score=min(age,LTC_EXPIRED_SCORE-1u);
+        if(age>LT_CELL_PRESSURE_MS) score=aged|flags;
 
-        if(age>(distant?LT_CELL_DISTANT_MS:LT_CELL_HISTORY_MS))
-            score=min(age,LTC_EXPIRED_SCORE-1u)|(distant?0x80000000u:LTC_EXPIRED_SCORE);
+        if(age>(stale?LT_CELL_DISTANT_MS:LT_CELL_HISTORY_MS))
+            score=aged|flags|(distant?0x80000000u:LTC_EXPIRED_SCORE);
     }
     g_sharc.Store(cell+20u,score);
 }
-// Probe the fixed-size hash table for an exact key.
+// Loads a bucket's keys before comparing: one round trip per bucket.
 bool LTC_FindExact(uint4 key,out uint cell) {
     cell=0u;
-    [unroll] for(uint probe=0;probe<LT_CELL_PROBES;++probe) {
-        uint index=LTC_Probe(key,probe);
-        if(all(g_sharc.Load4(LTC_KeyAddress(index))==key)) {cell=LTC_Cell(index);return true;}
+    [unroll] for(uint bucket=0u;bucket<LT_CELL_PROBES/LT_BUCKET_SIZE;++bucket) {
+        const uint base=LTC_Probe(key,bucket*LT_BUCKET_SIZE);
+        uint4 stored[LT_BUCKET_SIZE];
+        [unroll] for(uint i=0u;i<LT_BUCKET_SIZE;++i) stored[i]=g_sharc.Load4(LTC_KeyAddress(base+i));
+        [unroll] for(uint j=0u;j<LT_BUCKET_SIZE;++j)
+            if(all(stored[j]==key)) {cell=LTC_Cell(base+j);return true;}
     }
     return false;
 }
-bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell) {
+// Own cell or ancestor, else (own = false) a neighbour or the root.
+bool LTC_FindFrom(float3 x,float3 n,uint level,out uint cell,out bool own) {
+    own=true;
     [loop] for(uint parent=0;parent<LT_PARENT_LEVELS && level+parent<=LT_MAX_LEVEL;++parent)
         if(LTC_FindExact(LTC_KeyAtLevel(x,n,level+parent),cell)) return true;
+    own=false;
+#if LT_BORROW_NEIGHBOURS
+    // Only the two nearest sides across the normal, nearer first.
+    const uint axis=LTC_NormalFace(n)/2u;
+    const float width=max(lt_cellSize,1e-4f)*exp2(float(level));
+    const float3 within=frac((x+sceneOriginWorld)/width)-0.5f;
+    uint first=(axis+1u)%3u,second=(axis+2u)%3u;
+    if(abs(within[second])>abs(within[first])) { const uint swap=first;first=second;second=swap; }
+    [unroll] for(uint probe=0u;probe<2u;++probe) {
+        const uint side=probe==0u?first:second;
+        float3 offset=0.0f;offset[side]=within[side]>=0.0f?width:-width;
+        if(LTC_FindExact(LTC_KeyAtLevel(x+offset,n,level),cell)) return true;
+    }
+#endif
     cell=LTC_Cell(LT_GRID_CAPACITY+LTC_NormalFace(n));
     return g_sharc.Load(cell)==1u;
 }
-bool LTC_Find(float3 x,float3 n,out uint cell) {
-    cell=0u;return LTC_Enabled() && LTC_FindFrom(x,n,LTC_Level(x),cell);
+bool LTC_Find(float3 x,float3 n,out uint cell,out bool own) {
+    cell=0u;own=false;return LTC_Enabled() && LTC_FindFrom(x,n,LTC_Level(x),cell,own);
 }
-struct LTC_Proposal { uint fine,coarse;float blend; };
-// Select fine and ancestor cells for a blended proposal.
+bool LTC_Find(float3 x,float3 n,out uint cell) {
+    bool own;return LTC_Find(x,n,cell,own);
+}
+// own/ownCoarse false: borrowed or root, keep requesting a cell.
+struct LTC_Proposal { uint fine,coarse;float blend;bool own,ownCoarse; };
 bool LTC_GetProposal(float3 x,float3 n,out LTC_Proposal proposal,bool warmup=false) {
     proposal=(LTC_Proposal)0;if(!LTC_Enabled()) return false;
     float level=LTC_ContinuousLevel(x);
     uint selectedLevel=0u;
 
     [loop] for(uint pass=0u;pass<2u;++pass) {
-        uint found;
-        bool ok=LTC_FindFrom(x,n,pass==0u?(uint)level:selectedLevel+1u,found);
-        if(pass!=0u) {proposal.coarse=found;break;}
+        uint found;bool own;
+        bool ok=LTC_FindFrom(x,n,pass==0u?(uint)level:selectedLevel+1u,found,own);
+        if(pass!=0u) {proposal.coarse=found;proposal.ownCoarse=own;break;}
         if(!ok) return false;
-        proposal.fine=found;proposal.coarse=found;
+        proposal.fine=found;proposal.coarse=found;proposal.own=own;proposal.ownCoarse=own;
         uint index=LTC_Index(proposal.fine);
         if(index>=LT_GRID_CAPACITY) return true;
         selectedLevel=LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)));
@@ -134,7 +159,7 @@ bool LTC_GetProposal(float3 x,float3 n,out LTC_Proposal proposal,bool warmup=fal
     return true;
 }
 // Queue refinement without blocking the sampling path.
-void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alternatives) {
+void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alternatives,bool feedSource=true) {
     uint index=LTC_Index(sourceCell);
     uint4 key=LTC_KeyAtLevel(x,n,desired);uint candidate=LT_SENTINEL;
 
@@ -168,12 +193,28 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
     }
     uint old;g_sharc.InterlockedCompareExchange(candidate+64u,0u,1u,old);
     if(old!=0u) return;
+    // No close ancestor: seed from the best learned neighbour, not the root.
+    {
+        uint level=LTC_KeyLevel(key);
+        if(index>=LT_GRID_CAPACITY || LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)))>level+1u) {
+            float width=max(lt_cellSize,1e-4f)*exp2(float(level));
+            uint best=0u;
+            [loop] for(uint side=0u;side<6u;++side) {
+                float3 offset=0.0f;offset[side/2u]=(side&1u)!=0u?-width:width;
+                uint neighbour;
+                if(!LTC_FindExact(LTC_KeyAtLevel(x+offset,n,level),neighbour)) continue;
+                uint history=g_sharc.Load(neighbour+16u);
+                if(history>best) {best=history;index=LTC_Index(neighbour);}
+            }
+        }
+    }
     g_sharc.Store4(candidate+80u,key);
-    g_sharc.Store3(candidate+96u,asuint(x+LT_WORLD_ORIGIN));
+    g_sharc.Store3(candidate+96u,asuint(x+sceneOriginWorld));
     g_sharc.Store3(candidate+112u,asuint(n));
     g_sharc.Store(candidate+76u,index);
 
-    g_sharc.InterlockedExchange(sourceCell+68u,sharc_frame,old);
+    // Borrowing must not keep the lender alive.
+    if(feedSource) g_sharc.InterlockedExchange(sourceCell+68u,sharc_frame,old);
 }
 void LTC_RequestRefinement(float3 x,float3 n,uint parentCell,uint desired) {
     uint index=LTC_Index(parentCell);
@@ -290,7 +331,6 @@ uint LTC_ClusterForTriangle(uint cell,uint count,uint tri,uint slot) {
     return LTC_Contains(LTC_LoadNode(a),tri,slot)?a:LT_SENTINEL;
 }
 
-// Evaluate a triangle PDF inside one frozen cut.
 float LTC_CellPdf(float3 x,float3 n,uint cell,uint tri,uint slot,out uint token) {
     token=0u;
     uint node=0u,start=LT_SENTINEL,depth=0u;float probability=1.0f;
@@ -303,6 +343,13 @@ float LTC_CellPdf(float3 x,float3 n,uint cell,uint tri,uint slot,out uint token)
     }
     return probability*LT_PdfSubtree(x,n,tri,slot,node,start,depth);
 }
+// LTC_CellPdf's token without the tree walk.
+uint LTC_CellToken(uint cell,uint tri,uint slot) {
+    uint count=cell==LT_SENTINEL?0u:g_sharc.Load(cell+4u);
+    if(count==0u || count>LT_CUT_MAX) return 0u;
+    uint a=LTC_ClusterForTriangle(cell,count,tri,slot);
+    return a==LT_SENTINEL?0u:LTC_ClusterIndex(a)+1u;
+}
 uint LTC_RefreshToken(float3 x,float3 n,uint cell,uint tri,uint slot,uint ticket) {
     if(ticket>=4u || LTC_Index(cell)>=LT_GRID_CAPACITY) return 0u;
     uint parent=LTC_Cell(LT_GRID_CAPACITY+LTC_NormalFace(n));
@@ -313,7 +360,6 @@ uint LTC_RefreshToken(float3 x,float3 n,uint cell,uint tri,uint slot,uint ticket
     uint count=g_sharc.Load(parent+4u),a=LTC_ClusterForTriangle(parent,count,tri,slot);
     return a==LT_SENTINEL?0u:LTC_ClusterIndex(a)+1u;
 }
-// Sample the learned mixture, then attach training tokens.
 LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true) {
 
     LTC_Proposal proposal=(LTC_Proposal)0;
@@ -328,17 +374,20 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
             if(request==0u) {
                 desired=LTC_Level(x);
                 uint index=LTC_Index(proposal.fine);
-                uint parentLevel=index>=LT_GRID_CAPACITY?min(desired+LT_PARENT_LEVELS,LT_MAX_LEVEL+1u):LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)));
+                // A borrowed neighbour counts as no cell, like the root.
+                uint parentLevel=(index>=LT_GRID_CAPACITY || !proposal.own)
+                    ?min(desired+LT_PARENT_LEVELS,LT_MAX_LEVEL+1u):LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)));
                 if(parentLevel<=desired) continue;
                 alternatives=min(parentLevel-desired-1u,LT_PARENT_LEVELS-1u);
             } else {
                 if(proposal.coarse==proposal.fine) break;
                 desired=min(LTC_Level(x)+1u,LT_MAX_LEVEL);
                 uint index=LTC_Index(proposal.coarse);
-                if(!(index>=LT_GRID_CAPACITY || LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)))>desired)) break;
+                if(!(index>=LT_GRID_CAPACITY || !proposal.ownCoarse ||
+                     LTC_KeyLevel(g_sharc.Load4(LTC_KeyAddress(index)))>desired)) break;
                 alternatives=0u;
             }
-            LTC_RequestCell(x,n,proposal.fine,desired,alternatives);
+            LTC_RequestCell(x,n,proposal.fine,desired,alternatives,proposal.own);
         }
 
         refreshTicket=min((uint)(RandomFloatSingle(rng)*float(4u*LT_PARENT_FEEDBACK_RATE)),4u*LT_PARENT_FEEDBACK_RATE-1u);
@@ -347,6 +396,7 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
         cell=useCoarse?proposal.coarse:proposal.fine;
         uint count=g_sharc.Load(cell+4u);
         if(count!=0u && count<=LT_CUT_MAX) {
+            // Independent per lane; wave-stratified draws show as stripes.
             float target=RandomFloatSingle(rng);
             uint lo=0u,hi=count-1u;
             [loop] while(lo<hi) {
@@ -364,7 +414,8 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
     LT_Sample sample=LT_SampleSubtree(x,n,rng,node,start,sampleSlot);
     if(cell!=LT_SENTINEL) {
         sample.pdf*=probability;
-        sample.learningToken=uint2(sample.id==LT_SENTINEL?0u:LTC_Token(cell,chosen),0u);
+        // Picks that find no light still train, with zero reward.
+        sample.learningToken=uint2(LTC_Token(cell,chosen),0u);
     }
     if(!learned || sample.id==LT_SENTINEL) return sample;
 
@@ -372,21 +423,21 @@ LT_Sample LT_SampleLight(float3 x,float3 n,inout uint rng,bool useLearning=true)
     if(proposal.blend>0.0f) pdfCell=useCoarse?proposal.fine:proposal.coarse;
     else if(proposal.coarse!=proposal.fine) pdfCell=proposal.coarse;
     if(pdfCell!=LT_SENTINEL) {
-        uint otherToken;
-        float other=LTC_CellPdf(x,n,pdfCell,sample.id,sampleSlot,otherToken);
         if(proposal.blend>0.0f) {
+            uint otherToken;
+            float other=LTC_CellPdf(x,n,pdfCell,sample.id,sampleSlot,otherToken);
             sample.pdf=useCoarse?lerp(other,sample.pdf,proposal.blend):lerp(sample.pdf,other,proposal.blend);
             sample.learningToken.y=useCoarse?sample.learningToken.x:otherToken;
             if(useCoarse) sample.learningToken.x=otherToken;
         } else {
-
-            sample.learningToken.y=otherToken;
+            // Warm-up: coarse cell trains, its pdf stays out.
+            sample.learningToken.y=LTC_CellToken(pdfCell,sample.id,sampleSlot);
         }
     } else sample.learningToken.y=LTC_RefreshToken(x,n,proposal.fine,sample.id,sampleSlot,refreshTicket);
     return sample;
 }
 
-// Match learned sampling with its mixture PDF.
+// Must match LT_SampleLight.
 float LT_PdfSelectTriangle(float3 x,float3 n,uint tri,uint inst,bool useLearning=true) {
     const uint slot=LT_SlotOfInstance(inst);
     if(tri==LT_SENTINEL || slot==LT_SENTINEL || (rs_flags & RS_FLAG_NO_MESH_LIGHTS)!=0u) return 0;
@@ -404,7 +455,7 @@ float LT_PdfSelectTriangle(float3 x,float3 n,uint tri,uint inst,bool useLearning
 }
 uint LTC_BatchAddress(uint cluster) {
     uint index=LTC_ClusterIndex(cluster);
-    return LT_BUFFER_OFFSET+LT_CELL_CAPACITY*LT_CELL_BYTES+index*LT_BATCH_BYTES;
+    return lt_bufferBase+LT_CELL_CAPACITY*LT_CELL_BYTES+index*LT_BATCH_BYTES;
 }
 void LTC_ClearBatch(uint cluster) {
     g_sharc.Store(LTC_Stats(cluster)+LT_ST_SELECTED,0u);
@@ -441,7 +492,6 @@ float2 LTC_BatchMoments(uint cluster) {
     uint address=LTC_BatchAddress(cluster);
     return float2(LTC_ReadAccumulator(address),LTC_ReadAccumulator(address+LT_ACCUMULATOR_BYTES));
 }
-// Accumulate bounded reward moments for a selected cluster.
 void LT_TrainToken(uint token,float contributionOverPdf) {
     if(token==0u || !LTC_Enabled()) return;
     uint a=LTC_TokenAddress(token);
@@ -481,4 +531,3 @@ void LT_Train(float3 x,float3 n,uint tri,uint inst,float contributionOverPdf) {
     uint token=LTC_ClusterIndex(a)+1u;
     LT_TrainToken(token,contributionOverPdf);
 }
-#endif

@@ -18,7 +18,7 @@ struct RockMesh {
     std::vector<uint32_t>   indices;
 };
 
-// Generates deterministic deformed icosphere variants for instancing.
+// Deformed icospheres.
 std::vector<RockMesh> generate_rock_variants(int count, int subdiv, uint32_t seed);
 
 struct RockInstance {
@@ -49,7 +49,7 @@ class RockScatter {
 public:
     void configure(const RockScatterConfig& cfg, int variant_count);
 
-    // Rebuilds camera-local rocks only after crossing the movement threshold.
+    // Rebuilds only past the movement threshold.
     bool update(const DVec3& camera_world, const IRockHeight& height);
 
     const std::vector<RockInstance>& live()   const { return m_live; }

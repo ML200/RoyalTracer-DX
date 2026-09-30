@@ -1,5 +1,3 @@
-#define COMPUTE_PASS
-#define SPMIS_GRID_NONCOHERENT
 #include "Includes_v8.hlsli"
 #include "RestirLite_v8.hlsli"
 
@@ -7,12 +5,11 @@
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
-    gDispatchIdx = tid;
     const uint2 pixel = tid.xy;
     const uint2 dims = uint2(IMG_W, IMG_H);
     const uint px = MapPixelID(dims, (int2)pixel);
     if (load_flagsWord(g_sample_current, px) & SD_FLAG_NOBOUNCE) return;
-    LiteReservoir rc = LiteLoad(g_Reservoirs_current, px);
+    LiteReservoir rc = LiteLoad(g_liteReservoirs, px);
     if (rc.M == 0u) return;
     const SDRecord sd = load_SD(g_sample_current, px);
     const LiteReceiver rcv = LiteReceiverFromSD(sd);
@@ -45,7 +42,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         if ((mask & (1u << s)) == 0u) continue;
         const uint3 mine = g_pathStateBuffer.Load3(LiteShiftAddress(px, s));
         const uint p = mine.z;
-        const uint2 partner = g_Reservoirs_current.Load2(LiteAddress(p) + 24u);
+        const uint2 partner = g_liteReservoirs.Load2(LiteAddress(p) + 24u);
         qpx[s] = p;
         Mi[s] = min((float)(partner.y & 255u), cap);
         Wi[s] = asfloat(partner.x);
@@ -88,7 +85,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     if (selected >= 0)
     {
 
-        const LiteReservoir ri = LiteLoad(g_Reservoirs_current, qpx[selected]);
+        const LiteReservoir ri = LiteLoad(g_liteReservoirs, qpx[selected]);
         outR.s = ri.s;
         visSel = UnpackRGB9E5(visPk[selected]);
         ySel = LiteWorldPosition(ri.s);
@@ -104,7 +101,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     if (shade)
     {
         float2 iors; uint medium; float3 absorb;
-        load_rg_primaryExtra(g_pathStateBuffer, px, iors, medium, absorb);
+        load_rg_primaryExtra(px, iors, medium, absorb);
         contribution = LiteExactBroad(sd, iors, lSel.dir) * outR.s.radiance * lSel.geom * visSel * outR.W;
         if (any(isnan(contribution)) || any(isinf(contribution))) contribution = 0.0f;
     }

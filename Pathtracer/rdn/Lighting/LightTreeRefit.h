@@ -9,7 +9,7 @@
 #include <atomic>
 
 namespace lt {
-// Refit preserves learned node indices while updating bounds.
+// Refit keeps learned node indices stable.
 
 struct BLASRootLocal {
     Aabb localAabb;
@@ -44,7 +44,6 @@ struct TLASRefitResult {
 };
 
 inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(const std::vector<LightTriangle>& tris) {
-    // Aggregate triangles per mesh before transforming them into TLAS leaves.
     std::map<UINT, std::vector<uint32_t>> groups;
     for (uint32_t i = 0; i < (uint32_t)tris.size(); ++i)
         groups[tris[i].meshID].push_back(i);
@@ -156,7 +155,7 @@ class TLASRebuilder {
                           const std::vector<InstanceXformCPU>& xforms, uint32_t buildBins = 64,
                           const std::vector<LightSlotGpu>& baseSlots = {}, const std::vector<TLASExtraLeaf>& extra = {},
                           uint32_t slotCount = 0, uint32_t extraVersion = 0) {
-        // Build leaves in world space while preserving stable instance slots.
+        // World-space leaves; instance slots stay stable.
         m_bins = buildBins;
         slotCount = (std::max)(slotCount, (uint32_t)slots.size());
 
@@ -181,7 +180,7 @@ class TLASRebuilder {
 
             XMFLOAT3X3 norm33;
             computeNormal33FromWorld(world, norm33);
-            // Non-similarity transforms invalidate the cone orientation bound.
+            // Non-similarity transforms widen the cone.
             XMFLOAT3 worldAxis = transformNormalW(root.localCone.axis, norm33);
 
             Cone worldCone;
@@ -557,7 +556,6 @@ class LightTreeRefitManager {
     }
 
     bool PollResult(TLASRefitResult& outResult) {
-        // Poll without blocking the render thread on the background refit.
         if (!m_pending.load())
             return false;
         if (m_future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)

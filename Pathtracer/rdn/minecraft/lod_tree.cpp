@@ -7,7 +7,6 @@
 
 namespace mc {
 
-// Precomputes occupied chunks and root coverage for every LOD level.
 void LodTree::configure(const VoxelStore& store) {
     m_store = &store;
     m_roots.clear();
@@ -47,7 +46,7 @@ double LodTree::node_distance(const NodeKey& k, const double cam[3]) {
     return std::sqrt(d2);
 }
 
-// Refines while projected voxel size exceeds the configured threshold.
+// Projected voxel size above threshold.
 bool LodTree::refines(const NodeKey& k, const double cam[3], float f) const {
     if (k.level == 0) return false;
     return node_distance(k, cam) < (double)f * (double)(1 << k.level);
@@ -98,7 +97,6 @@ void LodTree::select(const double cam[3], float lodFactor, LodCut& out, planet::
     else select_serial(cam, lodFactor, out);
 }
 
-// Builds a deterministic breadth-first cut on the calling thread.
 void LodTree::select_serial(const double cam[3], float f, LodCut& out) const {
     for (uint32_t i = 0; i < out.rootCount; ++i) select_rec(i, cam, f, out);
 }
@@ -187,7 +185,6 @@ bool LodTree::render_rec(LodCut& cut, uint32_t nodeIndex, const ReadyFn& ready, 
     return false;
 }
 
-// Replaces unready cut nodes with resident descendants or ancestors.
 void LodTree::render_list(LodCut& cut, const ReadyFn& ready, std::vector<RenderItem>& out,
                           const ResidentBelowFn& residentBelow, planet::WorkerPool* pool) const {
     out.clear();

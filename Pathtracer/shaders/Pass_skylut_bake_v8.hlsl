@@ -1,4 +1,3 @@
-#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
 RWTexture2D<float4> gTransmittanceLUTOut : register(u25);
@@ -20,7 +19,6 @@ void mainTransmittance(uint3 DTid : SV_DispatchThreadID)
     gTransmittanceLUTOut[DTid.xy] = float4(tr, 1.0f);
 }
 
-// Bake solar transmittance into the atmosphere lookup table.
 float3 BakeSunTransmittance(float3 Q, float3 L)
 {
     float t0, t1;
@@ -67,7 +65,7 @@ groupshared float3 gs_L2 [SKY_MS_DIRS];
 groupshared float3 gs_fms[SKY_MS_DIRS];
 
 [numthreads(64, 1, 1)]
-// Integrate multiple scattering into one LUT texel.
+// One group per LUT texel.
 void mainMultiScatter(uint3 Gid : SV_GroupID, uint Gi : SV_GroupIndex)
 {
     const float Rb = ATMOS_BOTTOM_RADIUS;

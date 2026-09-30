@@ -1,9 +1,36 @@
+// Carries no data; one field keeps the struct valid.
 struct [raypayload] TracePayload
 {
-    uint dummy : read(caller) : write(caller);
+    uint unused : read(caller) : write(caller);
 };
 
 static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
+
+// Per-raygen reorder toggles (e.g. PT_SER_REORDER=0 via RDN_SHADER_DEFINES).
+#ifndef CAMERA_SER_REORDER
+#define CAMERA_SER_REORDER 1
+#endif
+#ifndef PT_SER_REORDER
+#define PT_SER_REORDER 1
+#endif
+#ifndef SHARC_SER_REORDER
+#define SHARC_SER_REORDER 1
+#endif
+
+// Material context of a path vertex.
+struct HitContext {
+    float3 hitPos;
+    float3 hitNormal;
+    uint   matID;
+    uint   instID;
+    bool   backface;
+    half3  hitLocalKd;
+    half   hitLocalPr;
+    half   hitLocalPm;
+    half2  iors;
+    uint   mediumMatID;
+    half3  absorptionTint;
+};
 
 struct HitInfo {
     float3 hitPos;
@@ -14,10 +41,25 @@ struct HitInfo {
     bool   backface;
     uint   lightID;
     float2 uv;
+    float  uvFootprint;   // beam width at the hit, in UV units
+
+    // Ocean state from the cascades (roughness depends on the footprint).
+    bool   isOcean;
+    float3 oceanKd;
+    float  oceanPr;
+    uint   oceanMaterialOffset;
+    // For the reconstruction's albedo guide (OceanSurface).
+    float  oceanFoam;
+    float  oceanBubbles;
 };
 
-#ifdef ENABLE_RAY_QUERY_INLINE
+uint ResolveSurfaceMaterial(uint matID, HitInfo hit)
+{
+    return hit.isOcean ? OceanParams().materialBase +
+        hit.oceanMaterialOffset : matID;
+}
 
+// Self-intersection offset (Waechter & Binder 2019, Ray Tracing Gems).
 static const float RTG_ORIGIN      = 1.0f / 32.0f;
 static const float RTG_FLOAT_SCALE = 1.0f / 65536.0f;
 static const float RTG_INT_SCALE   = 256.0f;
@@ -35,23 +77,41 @@ inline float3 offset_ray(float3 p, float3 n)
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
-inline bool IsRayValid(float3 origin, float3 direction, float tMax)
+// Bad rays can hang the GPU. Integer tests: fast-math may drop float NaN/Inf checks.
+static const float RAY_ORIGIN_LIMIT = 5.0e7f;
+
+inline bool IsRayDescValid(RayDesc r)
 {
-    if (any(isnan(direction)) || any(isinf(direction))) return false;
-    if (any(isnan(origin))    || any(isinf(origin)))    return false;
-    const float d2 = dot(direction, direction);
-    if (d2 < 0.25f || d2 > 4.0f) return false;
-    if (tMax <= 1e-4f) return false;
-    if (any(abs(origin) > 5.0e7f)) return false;
-    return true;
+    const uint3 origin    = asuint(r.Origin)    & 0x7FFFFFFFu;
+    const uint3 direction = asuint(r.Direction) & 0x7FFFFFFFu;
+    const uint  tMin      = asuint(r.TMin);
+    const uint  tMax      = asuint(r.TMax);
+    if (any(origin > asuint(RAY_ORIGIN_LIMIT))) return false;   // NaN, Inf, or outside the scene
+    if (any(direction > asuint(2.0f))) return false;            // NaN, Inf, or far from unit length
+    if (tMin > 0x7F7FFFFFu || tMax > 0x7F7FFFFFu) return false;  // negative, NaN or Inf extents
+    if (tMax <= tMin) return false;                             // inverted or empty extents
+    // All finite from here, so the float test is safe.
+    const float d2 = dot(r.Direction, r.Direction);
+    return d2 >= 0.25f && d2 <= 4.0f;
+}
+
+// An invalid ray becomes an empty-mask ray, i.e. a plain miss. No reorder here.
+inline dx::HitObject TraceRayChecked(RaytracingAccelerationStructure bvh, uint rayFlags, uint instanceMask, RayDesc ray)
+{
+    if (!IsRayDescValid(ray))
+    {
+        ray.Origin    = float3(0.0f, 0.0f, 0.0f);
+        ray.Direction = float3(0.0f, 0.0f, 1.0f);
+        ray.TMin      = 0.0f;
+        ray.TMax      = 1.0f;
+        instanceMask  = 0u;
+    }
+    TracePayload payload = (TracePayload)0;
+    return dx::HitObject::TraceRay(bvh, rayFlags, instanceMask, 0, 1, 0, ray, payload);
 }
 
 inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
 {
-#if DISABLE_ALPHA_TEST
-
-    return true;
-#else
     const uint matID = materialIDs[instanceProps[instID].materialBase + primID];
     const int  texID = LoadAlbedoTexID(matID);
 
@@ -75,49 +135,6 @@ inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
     if (LoadInvertAlpha(matID)) alpha = 1.0f - alpha;
 
     return alpha >= LoadAlphaThreshold(matID);
-#endif
-}
-
-inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
-{
-    const float3 link = B - A;
-    const float3 oA = offset_ray(A, dot( link, nA) >= 0.0f ? nA : -nA);
-    const float3 oB = offset_ray(B, dot(-link, nB) >= 0.0f ? nB : -nB);
-
-    const float3 conn = oB - oA;
-
-    if (dot(conn, link) <= 0.0f) return true;
-
-    const float dist = length(conn);
-
-    if (dist <= EPSILON) return true;
-
-    const float3 direction = conn / dist;
-
-    if (!IsRayValid(oA, direction, dist)) return false;
-
-    RayDesc ray;
-    ray.Origin    = oA;
-    ray.Direction = direction;
-    ray.TMin      = 0.001f;
-    ray.TMax      = dist*0.998f;
-
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-
-    [loop]
-    for (uint i = 0u; q.Proceed() && i < 128u; ++i)
-    {
-        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-        {
-            const uint cInstID = q.CandidateInstanceID();
-            const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-            if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
-                q.CommitNonOpaqueTriangleHit();
-        }
-    }
-    return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
 inline float3 CandidateGeoNormalW(uint instID, uint primID)
@@ -142,7 +159,38 @@ inline float3 ThinGlassShadowTr(uint matID, uint instID, uint primID, float3 dir
     return (1.0f - F) * LoadTf(matID);
 }
 
-inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
+// Previous minus current displacement at a stitched vertex.
+float3 OceanVertexMotion(uint instID, float2 uv) {
+    const float size = asfloat(instanceProps[instID]._pad[1]);
+    const uint stitch = instanceProps[instID]._pad[0];
+    const uint2 ij = (uint2)round(uv * OCEAN_TILE_GRID);
+    const OceanVertexSource src = OceanStitchSource(ij.x, ij.y, stitch);
+    const float step = size / OCEAN_TILE_GRID;
+    const float2 origin = float2(instanceProps[instID].objectToWorld[0][3], instanceProps[instID].objectToWorld[2][3]);
+    const OceanParamsGPU P = OceanParams();
+    const uint current = OceanDispSlot(P), previous = OceanPrevDispSlot(P);
+    // Must match the vertex build (Ocean_Tiles_v8.hlsl).
+    const float2 qLo = origin + float2(src.lo) * step;
+    const float wLo = OceanGeometryWidth(qLo, P);
+    float3 delta = OceanDisplacementFrom(qLo, wLo, previous) - OceanDisplacementFrom(qLo, wLo, current);
+    if (src.w > 0.0f) {
+        const float2 qHi = origin + float2(src.hi) * step;
+        const float wHi = OceanGeometryWidth(qHi, P);
+        delta = lerp(delta, OceanDisplacementFrom(qHi, wHi, previous) - OceanDisplacementFrom(qHi, wHi, current), src.w);
+    }
+    return delta;
+}
+float3 OceanPreviousHit(uint instID, uint primID, float2 bary, float3 hitPos) {
+    const uint base = instanceProps[instID].indexBase + 3u * primID;
+    const float3 a = OceanVertexMotion(instID, (float2)BTriVertex[indices[base]].texCoord);
+    const float3 b = OceanVertexMotion(instID, (float2)BTriVertex[indices[base+1]].texCoord);
+    const float3 c = OceanVertexMotion(instID, (float2)BTriVertex[indices[base+2]].texCoord);
+    // Current origin frame; prevView is already rebased (Camera::PollSceneOrigin).
+    return hitPos + a * (1-bary.x-bary.y) + b * bary.x + c * bary.y;
+}
+
+inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
+    bool explicitWater = false, bool waterAttenuation = true)
 {
     const float3 link = B - A;
     const float3 oA = offset_ray(A, dot( link, nA) >= 0.0f ? nA : -nA);
@@ -155,19 +203,21 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
     if (dist <= EPSILON) return 1.0.xxx;
 
     const float3 direction = conn / dist;
-    if (!IsRayValid(oA, direction, dist)) return 0.0.xxx;
 
     RayDesc ray;
     ray.Origin    = oA;
     ray.Direction = direction;
     ray.TMin      = 0.001f;
     ray.TMax      = dist * 0.998f;
+    // Endpoints closer than TMin touch.
+    if (ray.TMax <= ray.TMin) return 1.0.xxx;
+    if (!IsRayDescValid(ray)) return 0.0.xxx;
 
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
        | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
 
-    float3 tr = 1.0.xxx;
+    float3 tr = explicitWater || !waterAttenuation ? 1.0f.xxx : OceanShadowTransmittance(oA, oB);
     [loop]
     for (uint i = 0u; q.Proceed() && i < 128u; ++i)
     {
@@ -177,6 +227,8 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
             const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
             const uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
 
+            if (explicitWater && LoadIsOceanMaterial(cMatID)) continue;
+
             if (LoadIsThinGlass(cMatID))
             {
 
@@ -184,9 +236,12 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
             }
             else if (LoadKd_w(cMatID) < 1.0f - EPSILON)
             {
-
                 const float3 nW = CandidateGeoNormalW(cInstID, cPrimID);
-                tr *= 1.0f - FresnelDielectric(-direction, nW, 1.0f, LoadNi(cMatID)).x;
+                // Crossing direction sets the IOR ratio; past the critical angle, TIR blocks it.
+                const float ior = max(LoadNi(cMatID), 1.0f);
+                const bool leaving = dot(direction, nW) > 0.0f;
+                tr *= 1.0f - FresnelDielectricTIR(-direction, nW, leaving ? ior : 1.0f,
+                                                  leaving ? 1.0f : ior).x;
             }
             else if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
             {
@@ -195,16 +250,6 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
         }
     }
     return (q.CommittedStatus() == COMMITTED_NOTHING) ? tr : 0.0.xxx;
-}
-
-inline float3 ReconnectVis(float3 x1, float3 n1_s, uint matID, float3 x2, float3 n2_s)
-{
-    if (matID == MATID_ENV_MISS)
-    {
-        const float3 md = normalize(x2);
-        return VisibilityTransmittance(x1, n1_s, x1 + md * RAY_TMAX_PLANET, -md);
-    }
-    return VisibilityTransmittance(x1, n1_s, x2, n2_s);
 }
 
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
@@ -286,22 +331,30 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     return Nopt;
 }
 
-// Sample and sanitize material albedo at the requested ray level.
-float3 EvaluateAlbedo(uint matID, float2 uv, uint level)
+float PixelConeAngle() { return 2.0f / max(projection._m11 * float(IMG_H), 1e-6f); }
+
+float TexFootprintLod(Texture2D<float4> tex, float uvFootprint)
+{
+    uint w, h;
+    tex.GetDimensions(w, h);
+    return log2(max(uvFootprint * float(max(w, h)), 1e-8f)) + PT_TEXTURE_LOD_BIAS;
+}
+
+float3 EvaluateAlbedo(uint matID, float2 uv, float uvFootprint)
 {
     float3 albedo = LoadKd_rgb(matID);
     const int texID = LoadAlbedoTexID(matID);
     if (texID != -1)
     {
-        float2 albedoUV = uv * LoadAlbedoUVScale(matID);
+        const float2 scale = LoadAlbedoUVScale(matID);
         Texture2D<float4> tex = ResourceDescriptorHeap[texID];
-        albedo = SampleMaterialTex(tex, albedoUV, level).rgb;
+        albedo = SampleMaterialTex(tex, uv * scale, TexFootprintLod(tex, uvFootprint * max(scale.x, scale.y))).rgb;
     }
     return albedo;
 }
 
-// Fetch roughness and metalness with material-specific texture rules.
-float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
+// Returns (roughness, metalness).
+float2 EvaluatePBRProperties(uint matID, float2 uv, float uvFootprint)
 {
 
     if (FORCE_DIFFUSE)
@@ -313,9 +366,9 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
     const int rmaID = LoadRmaTexID(matID);
     if (rmaID != -1)
     {
-        float2 rmaUV = uv * LoadRmaUVScale(matID);
+        const float2 scale = LoadRmaUVScale(matID);
         Texture2D<float4> tex = ResourceDescriptorHeap[rmaID];
-        float4 rmaSample = SampleMaterialTex(tex, rmaUV, level);
+        float4 rmaSample = SampleMaterialTex(tex, uv * scale, TexFootprintLod(tex, uvFootprint * max(scale.x, scale.y)));
 
         pbrProps.x = rmaSample.g;
         pbrProps.y = rmaSample.b;
@@ -323,12 +376,32 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
     return pbrProps;
 }
 
-inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, uint level = 0)
+inline void RefetchMaterialUV(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, float uvFootprint = 0.0f)
 {
-    localKd = EvaluateAlbedo(matID, uv, level);
-    float2 pbr = EvaluatePBRProperties(matID, uv, level);
+    localKd = EvaluateAlbedo(matID, uv, uvFootprint);
+    float2 pbr = EvaluatePBRProperties(matID, uv, uvFootprint);
     localPr = pbr.x;
     localPm = pbr.y;
+}
+
+// Ocean: scene material, roughness floored by the footprint-filtered ripple spread.
+inline void RefetchMaterial(uint matID, HitInfo hit, out float3 localKd, out float localPr, out float localPm)
+{
+    [branch]
+    if (hit.isOcean)
+    {
+        if (OceanParams().debugMode != 0u)
+        {
+            localKd = hit.oceanKd;
+            localPr = hit.oceanPr;
+            localPm = 0.0f;
+            return;
+        }
+        RefetchMaterialUV(matID, hit.uv, localKd, localPr, localPm, hit.uvFootprint);
+        localPr = max(localPr, hit.oceanPr);
+        return;
+    }
+    RefetchMaterialUV(matID, hit.uv, localKd, localPr, localPm, hit.uvFootprint);
 }
 
 inline dx::HitObject TraceRay_Custom(
@@ -339,19 +412,13 @@ inline dx::HitObject TraceRay_Custom(
     uint lowHint = 0u,
     uint lowHintBits = 0u)
 {
+    dx::HitObject hitObj = TraceRayChecked(SceneBVH, rayFlags, instanceMask, ray);
 
-    TracePayload payload = (TracePayload)0;
-
-    dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
-
+#if CAMERA_SER_REORDER
     const uint hint = ((hitObj.IsHit() ? (0x40u | (hitObj.GetInstanceID() & 0x3Fu)) : 0u) << lowHintBits) | lowHint;
     dx::MaybeReorderThread(hitObj, hint, 7u + lowHintBits);
+#endif
     return hitObj;
-}
-
-inline float3 EvalMissState(float3 rayDir, float3 sunDisk)
-{
-    return EvaluateSky(rayDir);
 }
 
 inline uint LightRecordOf(uint instID, uint primID)
@@ -371,14 +438,14 @@ inline uint LightRecordOf(uint instID, uint primID)
     return gTriToLightId[base + primID];
 }
 
-// Interpolate hit attributes and derive the complete shading state.
+// footprint: beam width at the hit, world units; selects texture mips.
 HitInfo EvalSurfaceStateImpl(
     uint   instID,
     uint   primID,
     float2 bc2,
     float3 originOrDir,
     bool   viewIsDir,
-    uint   level
+    float  footprint
 )
 {
 
@@ -461,6 +528,7 @@ HitInfo EvalSurfaceStateImpl(
     float3 geoNormW;
     float3 tangentW_geom;
     float3 bitangentW_geom;
+    float  uvPerWorld;   // UV per world unit
 
     {
         const float3x4 M = instanceProps[instID].objectToWorld;
@@ -479,6 +547,9 @@ HitInfo EvalSurfaceStateImpl(
 
         const float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
         const float invDet = (abs(det) > 1e-8f) ? rcp(det) : 0.0f;
+        const float3 e1w = mul(R, e1_local);
+        const float3 e2w = mul(R, e2_local);
+        uvPerWorld = sqrt(abs(det) / max(length(cross(e1w, e2w)), 1e-20f));
 
         const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
         const float3 bitanO = (e2_local * dUV1.x - e1_local * dUV2.x) * invDet;
@@ -491,11 +562,44 @@ HitInfo EvalSurfaceStateImpl(
     HitInfo hit = (HitInfo)0.0f;
     hit.uv = uv;
 
+    float3 viewDir = viewIsDir ? originOrDir : (posW - originOrDir);
+    viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
+    // Grazing angles stretch the beam.
+    hit.uvFootprint = footprint * uvPerWorld / max(abs(dot(viewDir, geoNormW)), 0.05f);
+
+    [branch]
+    if (IS_OCEAN_INSTANCE(instID))
+    {
+        // Area-equivalent grazing footprint.
+        const float cosV = max(abs(dot(viewDir, geoNormW)), 1e-3f);
+        const float width = footprint * rsqrt(cosV);
+
+        // Sample at the undisplaced UV position; posW.xz would shift off the crests.
+        const float tileSize = asfloat(instanceProps[instID]._pad[1]);
+        const float2 tileOrigin = float2(instanceProps[instID].objectToWorld[0][3],
+                                         instanceProps[instID].objectToWorld[2][3]);
+        const float2 oceanPosition = tileOrigin + uv * tileSize;
+        const OceanSurface sea = OceanEvalSurface(oceanPosition, width, uv, tileSize);
+
+        normW = sea.normal;
+        // Keep it on the hit triangle's side; cascades and mesh are filtered differently.
+        if (dot(normW, geoNormW) < 0.0f)
+            normW = normalize(normW - 2.0f * dot(normW, geoNormW) * geoNormW);
+
+        hit.isOcean = true;
+        hit.oceanKd = sea.albedo;
+        hit.oceanPr = sea.roughness;
+        hit.oceanMaterialOffset = sea.materialOffset;
+        hit.oceanFoam = sea.foam;
+        hit.oceanBubbles = sea.bubbles;
+    }
+
     const int normalTexID = LoadNormalTexID(materialID);
     [branch]
     if (normalTexID != -1)
     {
-        const float2 normalUV = uv * LoadNormalUVScale(materialID);
+        const float2 normalScale = LoadNormalUVScale(materialID);
+        const float2 normalUV    = uv * normalScale;
 
         float3 tangentW = tangentW_geom - dot(tangentW_geom, normW) * normW;
         tangentW *= rsqrt(max(dot(tangentW, tangentW), 1e-20f));
@@ -505,15 +609,12 @@ HitInfo EvalSurfaceStateImpl(
         if (dot(bitangentW, bitangentW_geom) < 0.0f) bitangentW = -bitangentW;
 
         Texture2D<float4> nTex = ResourceDescriptorHeap[normalTexID];
-        const float3 n_tan =
-            SampleMaterialTex(nTex, normalUV, level).xyz * 2.0f - 1.0f;
+        const float3 n_tan = SampleMaterialTex(nTex, normalUV,
+            TexFootprintLod(nTex, hit.uvFootprint * max(normalScale.x, normalScale.y))).xyz * 2.0f - 1.0f;
 
         normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;
         normW *= rsqrt(max(dot(normW, normW), 1e-20f));
     }
-
-    float3 viewDir = viewIsDir ? originOrDir : (posW - originOrDir);
-    viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
 
     const bool   isBackface      = (dot(viewDir, geoNormW) > 0.0f);
     const float3 geoNormOriented = isBackface ? -geoNormW : geoNormW;
@@ -535,15 +636,14 @@ HitInfo EvalSurfaceStateImpl(
     return hit;
 }
 
-// Evaluate a surface from a ray origin and barycentric hit.
-HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3 origin, uint level)
+HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3 origin, float footprint = 0.0f)
 {
-    return EvalSurfaceStateImpl(instID, primID, bc2, origin, false, level);
+    return EvalSurfaceStateImpl(instID, primID, bc2, origin, false, footprint);
 }
 
-HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir, uint level)
+HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir, float footprint = 0.0f)
 {
-    return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, level);
+    return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, footprint);
 }
 
 inline float3 GetEmissionFast(in uint instID, in uint primID)
@@ -560,5 +660,3 @@ inline uint GetMatIDFast(in uint instID, in uint primID){
 }
 
 #include "SurfaceVertex_v8.hlsli"
-
-#endif

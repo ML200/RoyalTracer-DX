@@ -6,7 +6,6 @@
 
 namespace mc {
 
-// Initializes level maps for the world's vertical section range.
 void VoxelStore::configure(int minSectionY, int maxSectionY) {
     m_minSy0 = minSectionY;
     m_maxSy0 = maxSectionY;
@@ -37,10 +36,6 @@ const Section* VoxelStore::section(int level, int sx, int sy, int sz) const {
     return col.sections[(size_t)(sy - minSy)].get();
 }
 
-Section* VoxelStore::section_mut(int level, int sx, int sy, int sz) {
-    return const_cast<Section*>(section(level, sx, sy, sz));
-}
-
 Section& VoxelStore::ensure_section(int level, int sx, int sy, int sz) {
     while ((int)m_levels.size() <= level) m_levels.emplace_back(std::make_unique<ColumnMap>());
     const int minSy = min_section_y(level), maxSy = max_section_y(level);
@@ -51,7 +46,6 @@ Section& VoxelStore::ensure_section(int level, int sx, int sy, int sz) {
     return *slot;
 }
 
-// Returns air for missing sections or coordinates outside the store.
 Voxel VoxelStore::get(int level, int x, int y, int z) const {
     const Section* s = section(level, floor_shift(x, 4), floor_shift(y, 4), floor_shift(z, 4));
     if (!s) return 0;
@@ -127,10 +121,6 @@ bool VoxelStore::column_bounds(int level, int& minSx, int& maxSx, int& minSz, in
     return true;
 }
 
-size_t VoxelStore::column_count(int level) const {
-    return (level >= 0 && level < (int)m_levels.size()) ? m_levels[level]->size() : 0;
-}
-
 namespace {
 inline bool occluding(Voxel n, int level, const BlockRegistry& reg) {
     const BlockId id = voxel_id(n);
@@ -140,7 +130,6 @@ inline bool occluding(Voxel n, int level, const BlockRegistry& reg) {
 }
 }
 
-// Chooses a representative voxel while preserving exposed and emissive flags.
 Voxel VoxelStore::downsample(const BlockRegistry& reg, int childLevel, const Voxel v[8], uint8_t exposed, uint8_t exposedUp) const {
     bool occ = false, all = true, any = false;
     BlockId bestId = AIR_ID;
@@ -194,8 +183,7 @@ Voxel VoxelStore::downsample(const BlockRegistry& reg, int childLevel, const Vox
         return make_voxel(AIR_ID, false, false, occ, emissive);
     }
     if (reg.info(bestId).water) {
-        // Preserve the highest water top instead of snapping it to the parent roof.
-        // Different water states share the same height payload and fluid boundary.
+        // Highest top over all water states, not the parent roof.
         uint32_t height = 0;
         for (int i = 0; i < 8; ++i) {
             if (!reg.info(voxel_id(v[i])).water || (childLevel > 0 && (v[i] & VOX_ANY) == 0)) continue;
@@ -207,7 +195,6 @@ Voxel VoxelStore::downsample(const BlockRegistry& reg, int childLevel, const Vox
     return make_voxel(bestId, true, all, occ, emissive);
 }
 
-// Derives each coarser level from eight neighboring child voxels.
 void VoxelStore::build_lod(const BlockRegistry& reg, int levelCount, planet::WorkerPool* pool, int decorMaxLevel) {
     if (levelCount < 1) levelCount = 1;
     if (levelCount > MAX_LOD_LEVELS) levelCount = MAX_LOD_LEVELS;
@@ -284,7 +271,6 @@ void VoxelStore::build_lod(const BlockRegistry& reg, int levelCount, planet::Wor
     }
 }
 
-// Updates level zero and marks affected coarse chunks stale.
 void VoxelStore::set_block(int x, int y, int z, BlockId id, const BlockRegistry& reg, std::vector<uint64_t>& stale) {
     std::unique_lock<std::shared_mutex> lk(m_lock);
     stale.clear();
