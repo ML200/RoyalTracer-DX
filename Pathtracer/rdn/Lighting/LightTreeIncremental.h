@@ -274,7 +274,7 @@ inline void RequestIncrementalRefit(LightTreeRefitManager& manager, std::vector<
                                     std::vector<LightInstanceRef> slots, std::vector<LightSlotGpu> slotRecords,
                                     std::vector<InstanceXformCPU> xforms, std::vector<TLASExtraLeaf> extra,
                                     uint32_t slotCount, uint32_t extraVersion, IncrementalTLAS* tree,
-                                    bool forceRebuild, bool compactGpuNodes = true) {
+                                    bool forceRebuild) {
     manager.RequestCustom([roots = std::move(blasRoots), sl = std::move(slots), rec = std::move(slotRecords),
                            xf = std::move(xforms), ex = std::move(extra), slotCount, extraVersion, tree,
                            forceRebuild]() {
@@ -303,6 +303,6 @@ inline void RequestIncrementalRefit(LightTreeRefitManager& manager, std::vector<
         r.extraLeafCount = extraCount;
         r.incremental = !rebuilt;
         return r;
-    }, compactGpuNodes);
+    });
 }
 }

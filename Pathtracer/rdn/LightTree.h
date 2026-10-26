@@ -107,7 +107,7 @@ struct LightInstanceRef {
 namespace lt {
 #pragma pack(push, 1)
 
-// Full-precision CPU/decoded records; GPU resources use Light*NodePacked.
+// GPU node records, mirrored in Data_v8.hlsli.
 struct LightTLASNodeGpu {
     XMFLOAT3 bmin;
     float power;
@@ -409,7 +409,6 @@ class LightTreeBuilder {
 
   public:
     struct Settings {
-        bool compactGpuNodes = true;
         uint32_t maxLeafTris = 1;
         bool useTwoLevel = true;
         uint32_t buildBins = 64;
@@ -542,9 +541,9 @@ class LightTreeBuilder {
     // Flattens mesh trees into shared buffers.
     void UploadAll(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
         LT_TIME_SCOPE(L"UploadAll()");
-        const uint32_t nodeWords = LightBLASNodeStride(m_cfg.compactGpuNodes) / sizeof(uint32_t);
+        const uint32_t nodeWords = sizeof(LightBLASNodeGpu) / sizeof(uint32_t);
         std::vector<uint32_t> gpuBlasNodes;
-        gpuBlasNodes.reserve((totalBLASNodeCount() + m_blas.size()) * nodeWords);
+        gpuBlasNodes.reserve(totalBLASNodeCount() * nodeWords);
         std::vector<uint32_t> gpuLeafTriIndex;
         gpuLeafTriIndex.reserve(totalLeafIndexCount());
         std::vector<BlasRangeGpu> gpuRanges;
@@ -560,20 +559,18 @@ class LightTreeBuilder {
             std::vector<LightBLASNodeGpu> nodes;
             nodes.reserve(b.nodes.size());
             for (const auto& n : b.nodes) nodes.push_back(toGpu(n));
-            const auto packed = EncodeLightBLAS(nodes, m_cfg.compactGpuNodes, r.triIndexOffset);
+            const auto packed = EncodeLightBLAS(nodes, r.triIndexOffset);
             gpuBlasNodes.insert(gpuBlasNodes.end(), packed.begin(), packed.end());
 
             gpuLeafTriIndex.insert(gpuLeafTriIndex.end(), b.leafTriList.begin(), b.leafTriList.end());
             gpuRanges.push_back(r);
         }
 
-        const auto gpuTlasNodes = m_cfg.compactGpuNodes ? PackTLAS(m_tlas) : std::vector<LightTLASNodePacked>{};
-
         LT_LOG(L"UploadAll: BLASNodes=" << gpuBlasNodes.size() / nodeWords << L", LeafTriIndex=" << gpuLeafTriIndex.size()
                                         << L", BLASRanges=" << gpuRanges.size() << L", Slots=" << m_slotGpu.size()
                                         << L", TLASNodes=" << m_tlas.size());
         const auto KiB = [](uint64_t b) { return b / 1024.0; };
-        LT_LOG(L"  sizes: TLAS=" << KiB(m_tlas.size() * LightTLASNodeStride(m_cfg.compactGpuNodes)) << L" KiB" << L", BLAS="
+        LT_LOG(L"  sizes: TLAS=" << KiB(m_tlas.size() * sizeof(LightTLASNodeGpu)) << L" KiB" << L", BLAS="
                                  << KiB(gpuBlasNodes.size() * sizeof(uint32_t)) << L" KiB" << L", Ranges="
                                  << KiB(gpuRanges.size() * sizeof(BlasRangeGpu)) << L" KiB" << L", Slots="
                                  << KiB(m_slotGpu.size() * sizeof(LightSlotGpu)) << L" KiB" << L", LeafIdx="
@@ -591,7 +588,7 @@ class LightTreeBuilder {
         m_gpu.BLASNodes = uploadVector(device, cmdList, gpuBlasNodes);
         m_gpu.LeafTriIndex = uploadVector(device, cmdList, gpuLeafTriIndex);
         m_gpu.BLASRanges = uploadVector(device, cmdList, gpuRanges);
-        m_gpu.TLASNodes = m_cfg.compactGpuNodes ? uploadVector(device, cmdList, gpuTlasNodes) : uploadVector(device, cmdList, m_tlas);
+        m_gpu.TLASNodes = uploadVector(device, cmdList, m_tlas);
         m_gpu.TriToBLAS = uploadVector(device, cmdList, triToBLAS);
         m_gpu.TriBitTrail = uploadVector(device, cmdList, m_triBitTrails);
         m_gpu.BLASBitTrail = uploadVector(device, cmdList, m_slotBitTrails);
@@ -695,8 +692,6 @@ class LightTreeBuilder {
         LT_LOG(L"ReleaseStaging: " << m_gpu.staging.size() << L" upload buffers freed");
         m_gpu.staging.clear();
     }
-
-    bool CompactGpuNodes() const { return m_cfg.compactGpuNodes; }
 
     const GpuBuffers& GetGpu() const { return m_gpu; }
 
@@ -924,7 +919,7 @@ class LightTreeBuilder {
         uint32_t n = 0;
         for (size_t i = 0; i < m_blas.size(); ++i) {
             nodeOff[i] = n;
-            n += static_cast<uint32_t>(m_blas[i].nodes.size()) + (m_cfg.compactGpuNodes ? 1u : 0u);
+            n += static_cast<uint32_t>(m_blas[i].nodes.size());
         }
         m_slotGpu.assign(m_slots.size(), LightSlotGpu{});
         for (size_t s = 0; s < m_slots.size(); ++s) {

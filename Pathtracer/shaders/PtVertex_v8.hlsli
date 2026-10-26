@@ -1,20 +1,66 @@
 #pragma once
-// Per-vertex shading, run inline by the trace raygen.
+// Per-vertex shading of the trace raygen, run in its hit, miss and callable shaders.
 #include "PtDefer_v8.hlsli"
+#include "PtNee_v8.hlsli"
 
-struct PtVertexIO {
-    uint   flags;
-    float  pdf;      // in: previous scatter pdf; out: MIS/footprint pdf
-    float  spread;   // path footprint, in/out
-    float  dist;     // path length, in/out
-    uint   cone;     // lobe cone for the cache test, in/out (PtConePack)
-    uint   dirPk;    // out: next direction
-    uint   nPk;      // out: shading normal at pos
-    float3 pos;      // out: next ray's origin vertex (SSS exit included)
-    float3 color;    // out: throughput multiplier (PV_CAPTURED), or sky radiance on a miss
-    uint   auxPk;    // out: packed radiance or weight, per the result flags
-    float3 nee;      // out: in-place light sample (PV_NEE)
-    float3 neeLite;  // out: its reuse-suffix share (broad only at the park)
+// The whole raygen <-> material interface, 64 bytes; ray and hit come from system values. Only the
+// 36 input bytes go in; the raygen reads the outputs only where the result flags say they are set.
+#define PT_IO  read(caller, closesthit, miss) : write(caller, closesthit, miss)
+#define PT_OUT read(caller) : write(closesthit, miss)
+struct [raypayload] PtVertexIO {
+    uint   flags     : PT_IO;
+    float  pdf       : PT_IO;   // in: previous scatter pdf; out: MIS/footprint pdf
+    float  spread    : PT_IO;   // path footprint, in/out
+    float  dist      : PT_IO;   // path length, in/out
+    uint   cone      : PT_IO;   // lobe cone for the cache test, in/out (PtConePack)
+    uint   dirPk     : PT_OUT;  // next direction; on a miss the escaped one
+    uint   nPk       : PT_IO;   // in: previous vertex's shading normal; out: this vertex's
+    float3 pos       : PT_IO;   // in: previous vertex; out: next ray's origin vertex (SSS exit included)
+    float3 color     : PT_OUT;  // throughput multiplier (PV_CAPTURED), or sky radiance on a miss
+    uint   auxPk     : PT_OUT;  // packed radiance or weight, per the result flags
+    uint   neePk     : PT_OUT;  // water light sample, PvPackRadiance (PV_NEE); queue slot (PV_NEE_QUEUED)
+    uint   neeLitePk : PT_OUT;  // the water sample's reuse-suffix share (broad only at the park)
+};
+#undef PT_IO
+#undef PT_OUT
+
+// Miss table order (Renderer::CreateShaderBindingTable).
+static const uint PT_MISS_SKY     = 0u;  // Miss: sky and sun
+static const uint PT_MISS_PRIMARY = 1u;  // PtPrimaryShade: the camera record's vertex
+static const uint PT_MISS_PRIMARY_LEAN = 2u;  // PtPrimaryShadeLean: the same off the sea
+
+// Callable table order (PtCallables_v8.hlsl): rare or heavy work kept out of the raygen and the
+// material shaders, so their code and registers stay small. Other light samples run deferred
+// (PtNee_v8.hlsli, Pass_pt_nee_v8).
+static const uint PT_CALLABLE_LIGHT_PDF     = 0u;
+static const uint PT_CALLABLE_SSS           = 1u;
+static const uint PT_CALLABLE_WATER_SEGMENT = 2u;
+static const uint PT_CALLABLE_NEE_WATER     = 3u;  // water light samples (PT_NEE_IN_WATER/WATER_DIRECT)
+
+// Subsurface random walk (PtSss), 36 bytes.
+struct PtSssIO {
+    float3 pos;     // in: entry; out: exit
+    uint   nPk;     // in: entry normal; out: exit normal (PackNormal)
+    uint   matID;
+    uint   seed;    // in: the walk's seed; out: 1 if it exited
+    float3 weight;  // out: walk throughput
+};
+
+// One water segment of a path (PtWaterSegment), 24 bytes.
+struct PtWaterSegmentIO {
+    float3 origin;  // in: ray origin; out: segment transmittance
+    uint   dirPk;   // in: ray direction (PackNormal); out: in-scattered radiance, PvPackRadiance
+    float  hitDist; // ray distance to the hit, TMax on a miss
+    uint   bits;    // depth | PT_WATER_SAMPLED
+};
+#define PT_WATER_SAMPLED (1u << 31u)  // sample the sun and lights in the segment
+
+// Emitter MIS density of the previous vertex's light sample (PtLightPdf), 24 bytes.
+struct PtLightPdfIO {
+    float3 pos;      // the previous vertex
+    uint   nPk;      // its shading normal (PackNormal)
+    uint   lightID;  // in: the emitter record; out: area density (asuint)
+    uint   instID;
 };
 
 // Input flags (raygen -> vertex).
@@ -33,6 +79,8 @@ struct PtVertexIO {
 #define PV_IN_WATER_MEDIUM  (1u << 29u)
 #define PV_IN_WATER_SCATTERED (1u << 30u)
 #define PV_IN_SUN_OWNED     (1u << 31u)  // sun already sampled in the water for this chain
+// Water state only the full hit shader handles; Pass_pt_trace keeps it away from HitLean_v8.hlsl.
+#define PV_IN_WATER_ANY     (PV_IN_WATER_DIRECT | PV_IN_WATER_MEDIUM | PV_IN_WATER_SCATTERED | PV_IN_SUN_OWNED)
 
 // Result flags (vertex -> raygen).
 #define PV_RESULT_MASK      7u
@@ -53,12 +101,14 @@ struct PtVertexIO {
 #define PV_STRATEGY_SHIFT   13u  // 2 bits
 #define PV_PRIMARY_LITE     (1u << 15u)
 #define PV_SSS_WALKED       (1u << 16u)  // the subsurface exit consumed one extra depth
-#define PV_NEE              (1u << 17u)  // nee/neeLite hold this in-place vertex's light sample
+#define PV_NEE              (1u << 17u)  // neePk/neeLitePk hold this in-place vertex's water light sample
 #define PV_WATER_DIRECT     (1u << 18u)
 #define PV_WATER_MEDIUM     (1u << 19u)
 #define PV_WATER_SCATTERED  (1u << 20u)
 #define PV_LITE_NEE         (1u << 21u)  // the deferred primary feeds the reuse reservoir (DVF_LITE_NEE)
 #define PV_SUN_OWNED        (1u << 22u)
+#define PV_LAST_NEXT        (1u << 23u)  // over the bounce budget, unresolved: the next vertex is emission only
+#define PV_NEE_QUEUED       (1u << 24u)  // the light sample is deferred: neePk is its queue slot (PtNee_v8.hlsli)
 
 // Lobe cone as two f16: width here, growth per unit distance (SharcLobeConeAngle).
 uint PtConePack(float width, float angle)
@@ -76,112 +126,62 @@ uint PvInputFlags(uint ps, bool pending, bool immediate, bool last)
         (pending ? PV_IN_PENDING : 0u) | (immediate ? PV_IN_IMMEDIATE : 0u) | (last ? PV_IN_LAST : 0u);
 }
 
-// Light-tree and sun sample of an in-place vertex, on the picked lobe group.
-void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, float3 rayDir, uint pathSeed,
-    uint depth, bool blue, uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath, bool inWater,
-    out float3 direct, out float3 liteDirect)
+// Callee side of PtLightPdfIO (PtCallables_v8.hlsl).
+void PtLightPdfEval(inout PtLightPdfIO p)
 {
-    direct = 0.0f;
-    liteDirect = 0.0f;
-    const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
-    const bool useLearnedLights = LTC_UseSurfaceLearning();
-    uint sNee = RcBounceSeed(pathSeed, depth, RC_STREAM_NEE);
-    [loop]
-    for (uint tech = 0u; tech < 2u; ++tech)
-    {
-        // Widen the water's picked GGX lobe for the sun only.
-        const bool sunTech = tech == 1u;
-        const half neePr = (waterDirect && sunTech && group == LOBE_GROUP_SPEC)
-            ? (half)OceanHighlightRoughness(ctx.hitLocalPr, LoadOceanSunLobeRoughness())
-            : ctx.hitLocalPr;
-
-        float3 L = 0.0f, visTarget = 0.0f, visTargetN = 0.0f, radiance = 0.0f;
-        float  lightPdf = 0.0f, cosSurf = 0.0f;
-        uint2  token = 0u;
-        bool   sampled = false;
-        OceanWaterSun waterSun = (OceanWaterSun)0;
-        if (tech == 0u)
-        {
-            if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u || waterDirect) continue;
-            const LT_Sample pick = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee, useLearnedLights);
-            token = pick.learningToken;
-            const LT_LightSampleResult light = LT_SamplePointOnLightTree(ctx.hitPos, pick, sNee);
-            const float3 toLight = light.position - ctx.hitPos;
-            const float  dist    = sqrt(max(dot(toLight, toLight), 1e-20f));
-            L = toLight / dist;
-            cosSurf = dot(ctx.hitNormal, L);
-            if (cosSurf > 1e-6f && dot(light.normal, -L) > 1e-6f && light.pdfSolidAngle > 1e-20f)
-            {
-                sampled    = true;
-                visTarget  = light.position;
-                visTargetN = light.normal;
-                radiance   = light.emission;
-                lightPdf   = light.pdfSolidAngle;
-            }
-        }
-        else
-        {
-            float2 rSun = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
-            if (blue) rSun = PtBlue2(pixel, blueIndex, depth, BN_PAIR_SUN);
-            if (inWater)
-            {
-                if (OceanSampleWaterSun(ctx.hitPos, rSun, waterSun))
-                {
-                    L = waterSun.L;
-                    cosSurf = dot(ctx.hitNormal, L);
-                    sampled  = cosSurf > 1e-6f;
-                    radiance = waterSun.radiance;
-                    lightPdf = waterSun.pdf;
-                }
-            }
-            else
-            {
-                const SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
-                L = sun.direction;
-                cosSurf = dot(ctx.hitNormal, L);
-                if (cosSurf > 1e-6f && sun.pdf > 1e-20f)
-                {
-                    sampled    = true;
-                    visTarget  = ctx.hitPos + sun.direction * RAY_TMAX_PLANET;
-                    visTargetN = -sun.direction;
-                    radiance   = sun.radiance;
-                    lightPdf   = sun.pdf;
-                }
-            }
-        }
-
-        float reward = 0.0f;
-        if (sampled)
-        {
-            const bool waterSunTech = inWater && sunTech;
-            const float3 visT = waterSunTech ? OceanWaterSunReach(ctx.hitPos, ctx.hitNormal, waterSun)
-                : VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN, false, !waterDirect);
-            if (any(visT > 0.0f))
-            {
-                const BrdfData lobe = EvaluateLobe(spPath, group, ctx.matID, ctx.hitNormal, ctx.hitNormal, L,
-                    -rayDir, ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
-                if (lobe.pdf > 0.0f)
-                {
-                    const float3 broad = group == LOBE_GROUP_BROAD ? lobe.val : 0.0f;
-                    reward = dot(radiance * cosSurf * visT *
-                        LTC_TrainShare((float)ctx.hitLocalPr, ctx.matID, lobe.val, group == LOBE_GROUP_BROAD) / lightPdf,
-                        float3(0.2126f, 0.7152f, 0.0722f));
-                    // Water direct light and the in-water sun have no BSDF partner.
-                    const float  misWeight  = waterDirect || waterSunTech ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
-                    const float3 lightScale = radiance * cosSurf * visT * (misWeight / (lightPdf * groupP));
-                    direct += lobe.val * lightScale;
-                    if (litePath) liteDirect += (liteBroadOnly ? broad : lobe.val) * lightScale;
-                }
-            }
-        }
-        // Failed picks train too, with zero reward.
-        if (tech == 0u) LT_TrainSample(token, reward);
-    }
+    p.lightID = asuint(LT_Pdf_LightTree_Area(p.pos, UnpackNormal(p.nPk), p.lightID, p.instID,
+        LTC_UseSurfaceLearning()));
 }
 
-// SSS walk, cache, lobe pick, capture, continuation; ordered to cut live state.
+// Callee side of PtSssIO (PtCallables_v8.hlsl).
+void PtSssWalk(inout PtSssIO p)
+{
+    uint seed = p.seed;
+    const SSSWalkResult w = SubsurfaceWalk(p.pos, UnpackNormal(p.nPk), p.matID, seed);
+    p.pos    = w.exitPos;
+    p.nPk    = PackNormal(w.exitNormal);
+    p.seed   = w.valid ? 1u : 0u;
+    p.weight = w.wTotal;
+}
+
+// Callee side of PtWaterSegmentIO (PtCallables_v8.hlsl): in-scatter and attenuation up to the hit.
+void PtWaterSegmentShade(inout PtWaterSegmentIO p, uint2 pixel)
+{
+    const float3 origin = p.origin;
+    const float3 dir    = UnpackNormal(p.dirPk);
+    uint sVolume = RcBounceSeed(PtPathSeed(pixel, PT_SAMPLE_INDEX), p.bits & ~PT_WATER_SAMPLED, 0x57415452u);
+    const float segment = OceanBoundaryDistance(origin, dir, p.hitDist);
+    const float3 inScatter = OceanSegmentInScatter(origin, dir, segment, (p.bits & PT_WATER_SAMPLED) != 0u, sVolume);
+    float3 sigmaA, sigmaS; float phaseG;
+    OceanMediumCoefficients(sigmaA, sigmaS, phaseG);
+    p.origin = OceanMediumTransmittance(sigmaA + sigmaS, segment);
+    p.dirPk  = PvPackRadiance(inScatter);
+}
+
+// Caller side of a water light sample (PtNeeWater), packed like PtVertexIO.neePk / neeLitePk.
+void PtVertexWaterNee(PtNeeIO p, out uint neePk, out uint neeLitePk)
+{
+    CallShader(PT_CALLABLE_NEE_WATER, p);
+    neePk     = p.kdRG;
+    neeLitePk = p.kdBPr;
+}
+
+// Caller side: area density of the previous vertex's light sample for this emitter.
+float PtLightPdfArea(float3 prevPos, uint prevNPk, uint lightID, uint instID)
+{
+    PtLightPdfIO p;
+    p.pos     = prevPos;
+    p.nPk     = prevNPk;
+    p.lightID = lightID;
+    p.instID  = instID;
+    CallShader(PT_CALLABLE_LIGHT_PDF, p);
+    return asfloat(p.lightID);
+}
+
+// SSS walk, cache, lobe pick, capture, continuation; ordered to cut live state. primary: the camera
+// record (a compile-time constant at both call sites; only it has depth-1 work).
 void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirIn, bool flipIOR,
-    uint2 pixel, uint pixelIdx, uint presetOut)
+    uint2 pixel, uint pixelIdx, uint presetOut, bool primary)
 {
     const uint inFlags    = io.flags;
     const uint depth      = (inFlags >> PV_IN_DEPTH_SHIFT) & 0x7Fu;
@@ -205,7 +205,9 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     float3 dir    = 0.0f;
     float  pdfOut = io.pdf;
     bool   alive  = true;
-    float3 nee = 0.0f, neeLite = 0.0f;
+    bool   doNee  = false;            // a water light sample (PtNeeWater)
+    uint   neeSlot = PT_NEE_NO_SLOT;  // a deferred one (Pass_pt_nee_v8)
+    uint   neeBits = 0u;
     g_regularizeRoughness = io.spread > 0.0f ? PT_REGULARIZE_ROUGHNESS : 0.0f;
 
     // Subsurface walk first; the exit is a white Lambertian vertex.
@@ -218,13 +220,19 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         const float pEnter = saturate(LoadSSSWeight(ctx.matID) * fT);
         if (RandomFloatSingle(sSss) < pEnter)
         {
-            const SSSWalkResult w = SubsurfaceWalk(ctx.hitPos, ctx.hitNormal, ctx.matID, sSss);
-            if (!w.valid) alive = false;
+            PtSssIO w;
+            w.pos   = ctx.hitPos;
+            w.nPk   = PackNormal(ctx.hitNormal);
+            w.matID = ctx.matID;
+            w.seed  = sSss;
+            CallShader(PT_CALLABLE_SSS, w);
+            if (w.seed == 0u) alive = false;
             else
             {
-                color *= w.wTotal * (float3)ctx.hitLocalKd;
-                ctx.hitPos         = w.exitPos;
-                ctx.hitNormal      = w.exitNormal;
+                const float3 exitN = UnpackNormal(w.nPk);
+                color *= w.weight * (float3)ctx.hitLocalKd;
+                ctx.hitPos         = w.pos;
+                ctx.hitNormal      = exitN;
                 ctx.backface       = false;
                 ctx.hitLocalKd     = (half3)float3(1, 1, 1);
                 ctx.hitLocalPr     = (half)1.0f;
@@ -232,8 +240,8 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                 ctx.iors           = (half2)float2(1.0f, 1.0f);
                 ctx.mediumMatID    = MEDIUM_INVALID;
                 ctx.absorptionTint = (half3)float3(1, 1, 1);
-                geoN    = w.exitNormal;
-                rayDir  = -w.exitNormal;
+                geoN    = exitN;
+                rayDir  = -exitN;
                 flipIOR = false;
                 res |= PV_SSS_WALKED;
                 walked     = true;
@@ -263,9 +271,9 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         cacheRefused = !accepted;
         float3 cached = 0.0f;
         bool hit = false;
+        // One query site: forced (SharcQueryForced) behind a deferred vertex, else drawn (SharcQueryDraws).
         if (accepted)
-            hit = (pending && !inWater) ? SharcQueryForced(SharcMakeSurface(ctx, geoN), sCache, cached)
-                                        : SharcQueryDraws(SharcMakeSurface(ctx, geoN), sCache, cached);
+            hit = SharcQueryStochastic(SharcMakeSurface(ctx, geoN), pending && !inWater, sCache, cached);
         float layerT = 0.0f;
         if (hit)
         {
@@ -290,7 +298,7 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     const bool  wide      = SharcScatterHasSpread(strategy, ctx.matID, ctx.hitLocalPr);
     const bool waterDirect = LoadIsOceanMaterial(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID;
     bool liteSurface = false;
-    if (depth == 1u)
+    if (primary)
     {
         // Reuse: broad NEE of any deferring pick, continuation of broad picks only.
         liteSurface = LITE_ENABLED && !inWater && !waterDirect && !sssEntered &&
@@ -307,10 +315,18 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         const bool neeBase = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
         const bool capture     = !waterDirect && !inWater && wide && !pending;
-        // In-place NEE: water surface, in water, or where the cache can't answer.
-        const bool inlineNee   = !capture && (waterDirect ||
-            (neeBase && wide && (inWater || !cacheSurface || cacheRefused)));
-        const bool budgetBreak = !freeBounce && diffDepth >= (uint)pt_maxDiffuseBounces;
+        // In-place NEE: water surface, in water, or where the cache can't answer. Water samples run here
+        // (PtNeeWater; they may precede the deferred vertex); the rest, always after it, are queued for
+        // Pass_pt_nee_v8. Without one (or with the queue full) MIS_NONE keeps light hits unweighted.
+        const bool waterNee = !capture && (waterDirect || (neeBase && wide && inWater));
+        if (!waterDirect && !inWater && pending && neeBase && wide && (!cacheSurface || cacheRefused))
+            neeSlot = PtNeeQueueAppend();
+        const bool inlineNee = waterNee || neeSlot != PT_NEE_NO_SLOT;
+        // Over budget, stop where the deferred pass, a light sample or the cache resolved the vertex;
+        // otherwise its direct light needs one more, emission-only segment (as at the depth limit).
+        const bool overBudget  = !freeBounce && diffDepth >= (uint)pt_maxDiffuseBounces;
+        const bool budgetBreak = overBudget && (capture || inlineNee || (res & PV_CACHE_HIT) != 0u);
+        if (overBudget && !budgetBreak) res |= PV_LAST_NEXT;
 
         if (capture)
         {
@@ -332,9 +348,12 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         }
         else if (inlineNee)
         {
-            PtInlineNee(ctx, spPath, group, groupP, rayDir, pathSeed, depth, blue, pixel, blueIndex,
-                liteX2 && cacheSurface, depth >= 2u && liteVertex, inWater, nee, neeLite);
-            res |= PV_NEE | (inWater ? PV_SUN_OWNED : 0u);
+            // Requested at the end, where little else is live.
+            doNee = waterNee;
+            neeBits = (blue ? PT_NEE_BLUE : 0u) | (liteX2 && cacheSurface ? PT_NEE_LITE_BROAD : 0u) |
+                (depth >= 2u && liteVertex ? PT_NEE_LITE_PATH : 0u) | (inWater ? PT_NEE_IN_WATER : 0u) |
+                (waterDirect ? PT_NEE_WATER_DIRECT : 0u);
+            res |= waterNee ? PV_NEE | (inWater ? PV_SUN_OWNED : 0u) : PV_NEE_QUEUED;
         }
 
         if (budgetBreak)
@@ -387,17 +406,9 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
             cone.y += SharcLobeConeAngle(strategy, ctx.matID, ctx.hitLocalPr, abs(dot(n, rayDir)),
                 passThrough && !LoadIsThinGlass(ctx.matID) ? (float)ctx.iors.x / (float)ctx.iors.y : 0.0f);
 
-            // Capture: pdf-only call, so the compiler strips the value.
-            BrdfData lobe;
-            if (capture)
-            {
-                lobe.pdf = EvaluateLobe(spPath, group, ctx.matID, n, n, dir, -rayDir,
-                    ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y).pdf;
-                lobe.val = 0.0f;
-            }
-            else
-                lobe = EvaluateLobe(spPath, group, ctx.matID, n, n, dir, -rayDir,
-                    ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+            // One evaluation site (instruction fetch bound); a capture keeps only the density.
+            const BrdfData lobe = EvaluateLobe(spPath, group, ctx.matID, n, n, dir, -rayDir,
+                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
             const float pdfTotal = groupP * (guideQ > 0.0f ? max(lerp(lobe.pdf, guidePdf, guideQ), 0.0f) : lobe.pdf);
             const bool  valid    = dot(dir, dir) > 1e-12f && pdfTotal > 1e-6f;
             if (OceanDirectLightingOwnsRay(waterDirect, dot(dir, n)) ||
@@ -435,7 +446,8 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                 if (!valid || any(isnan(W)) || any(isinf(W)) || !any(W > 0.0f)) alive = false;
                 else
                 {
-                    if (passThrough) res |= PV_PASS_THROUGH;
+                    // Pass-through keeps the previous vertex's MIS, MIS_NONE included.
+                    if (passThrough) res |= PV_PASS_THROUGH | (misNoneIn ? PV_MIS_NONE : 0u);
                     else
                     {
                         // MIS only against an in-place light sample.
@@ -471,8 +483,18 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     io.pos     = ctx.hitPos;
     io.color   = color;
     io.auxPk   = auxPk;
-    io.nee     = nee;
-    io.neeLite = neeLite;
+    io.neePk     = 0u;
+    io.neeLitePk = 0u;
+    if (neeSlot != PT_NEE_NO_SLOT)
+    {
+        // The raygen adds the path's weights to the slot (PtNeeQueueStoreWeights).
+        PtNeeQueueStoreRequest(neeSlot, PtNeeRequest(ctx, io.nPk, rayDir, group, groupP, depth, sample, neeBits),
+            pixel);
+        io.neePk = neeSlot;
+    }
+    else if (doNee)
+        PtVertexWaterNee(PtNeeRequest(ctx, io.nPk, rayDir, group, groupP, depth, sample, neeBits), io.neePk,
+            io.neeLitePk);
 }
 
 // Primary vertex from the camera record; geoN is in scratch while the cache is on.
@@ -501,7 +523,7 @@ void PtPrimaryContext(uint2 pixel, uint pixelIdx, out HitContext ctx, out float3
 
 // Secondary hit context; false if resolved here (emitter or bounce limit).
 bool PtHitContext(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex,
-    float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, float3 prevN, uint pixelIdx,
+    float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, uint prevNPk, uint pixelIdx,
     out HitContext ctx, out float3 geoN, out bool flipIOR, out uint presetOut)
 {
     const uint   depth    = (io.flags >> PV_IN_DEPTH_SHIFT) & 0x7Fu;
@@ -550,8 +572,7 @@ bool PtHitContext(inout PtVertexIO io, uint instID, uint geometryIndex, uint pri
             float misWeight = 1.0f;
             if ((io.flags & PV_IN_MIS_NONE) == 0u)
             {
-                const float lightPdfArea = LT_Pdf_LightTree_Area(prevPos, prevN, hinfo.lightID, instID,
-                    LTC_UseSurfaceLearning());
+                const float lightPdfArea = PtLightPdfArea(prevPos, prevNPk, hinfo.lightID, instID);
                 const float cosLight   = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
                 const float lightPdfSA = (cosLight > EPSILON) ? (lightPdfArea * max(hitT * hitT, EPSILON) / cosLight) : 0.0f;
                 misWeight = io.pdf / max(io.pdf + lightPdfSA, EPSILON);
@@ -620,6 +641,40 @@ void PtShadeMiss(inout PtVertexIO io, float3 rayOrigin, float3 rayDir)
 
     io.flags = PV_MISS;
     io.pdf   = sunSAPdf > 0.0f ? sunMisBsdf : 1.0f;
+    io.dirPk = PackNormal(rayDir);  // the miss record's direction, so the raygen need not keep it
     io.color = underground ? float3(0, 0, 0) : EvaluateSky(rayDir);
     io.auxPk = PvPackRadiance(sunRad);
+}
+
+// Shader entries (Hit_v8.hlsl, HitLean_v8.hlsl, Miss_v8.hlsl); one PtVertexShade site each.
+// Lean: the water bits are known clear, so the water code compiles out.
+void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex, float2 barycentrics,
+    float hitT, float3 rayDir, uint2 pixel)
+{
+    if (PT_HIT_LEAN) io.flags &= ~PV_IN_WATER_ANY;
+    const uint pixelIdx = MapPixelID(uint2(IMG_W, IMG_H), pixel);
+    HitContext ctx;
+    float3 geoN;
+    bool   flipIOR;
+    uint   presetOut;
+    if (PtHitContext(io, instID, geometryIndex, primitiveIndex, barycentrics, hitT, rayDir, io.pos, io.nPk,
+            pixelIdx, ctx, geoN, flipIOR, presetOut))
+        PtVertexShade(io, ctx, geoN, rayDir, flipIOR, pixel, pixelIdx, presetOut, false);
+}
+
+// The camera record starts every path (Pass_pt_trace_v8: PvInputFlags(PtPsInit(s), ...), unit pdf, no
+// spread or cone, never in water), so all but the sample index is restated as constants and it folds.
+void PtShadePrimary(inout PtVertexIO io, float3 rayDir, uint2 pixel)
+{
+    // PtPsSample is 4 bits wide, so keep its top bit too (it lands on bit 17).
+    io.flags  = PvInputFlags(PtPsInit(0u), false, false, false) | (io.flags & (0xFu << PV_IN_SAMPLE_SHIFT));
+    io.pdf    = 1.0f;
+    io.spread = 0.0f;
+    io.cone   = 0u;
+    const uint pixelIdx = MapPixelID(uint2(IMG_W, IMG_H), pixel);
+    HitContext ctx;
+    float3 geoN;
+    bool   flipIOR;
+    PtPrimaryContext(pixel, pixelIdx, ctx, geoN, flipIOR);
+    PtVertexShade(io, ctx, geoN, rayDir, flipIOR, pixel, pixelIdx, 0u, true);
 }

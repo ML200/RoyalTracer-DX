@@ -123,6 +123,7 @@ struct State {
     StatusFn status = nullptr;
     DebugInfoIdFn debugInfoId = nullptr;
     bool enabled = false;
+    bool shaderDebugInfo = false;
     std::wstring outDir;
     std::mutex files;
 };
@@ -211,10 +212,17 @@ inline void Enable() {
     const Result r = enable(kVersionApi, kWatchDx, kDeferDebugInfoCallbacks, &OnCrashDump, &OnShaderDebugInfo,
                             &OnDescription, nullptr, nullptr);
     s.enabled = Ok(r);
-    if (s.enabled)
+    // Driver shader debug info (source-level crash mapping) adds considerable shader compilation time, so it is
+    // opt-in; the kept DXIL serves only that mapping.
+    s.shaderDebugInfo = s.enabled && GetEnvironmentVariableA("RT_AFTERMATH_SHADER_DEBUG", nullptr, 0) > 0;
+    if (s.shaderDebugInfo)
         SetEnvironmentVariableW(L"RT_AFTERMATH_SHADER_DIR", s.outDir.c_str());
     CrashLogF(L"[aftermath] %ls: %ls (0x%08X)\n", s.enabled ? L"GPU crash dumps on" : L"enable failed", dll.c_str(),
               (unsigned)r);
+    if (s.enabled)
+        CrashLog(s.shaderDebugInfo ? L"[aftermath] shader debug info on (RT_AFTERMATH_SHADER_DEBUG set)\n"
+                                   : L"[aftermath] shader debug info off; set RT_AFTERMATH_SHADER_DEBUG=1 for "
+                                     L"source-level crash mapping\n");
 }
 
 // After device creation, on the native device.
@@ -222,7 +230,8 @@ inline void InitDevice(ID3D12Device* device) {
     State& s = Get();
     if (!s.enabled)
         return;
-    const Result r = s.initDx12(kVersionApi, kResourceTracking | kShaderDebugInfo | kShaderErrorReporting, device);
+    const Result r = s.initDx12(
+        kVersionApi, kResourceTracking | kShaderErrorReporting | (s.shaderDebugInfo ? kShaderDebugInfo : 0u), device);
     CrashLogF(L"[aftermath] DX12 initialize: 0x%08X\n", (unsigned)r);
 }
 

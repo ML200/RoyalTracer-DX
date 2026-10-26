@@ -9,6 +9,8 @@ void main(uint3 tid : SV_DispatchThreadID)
     if (any(tid.xy >= imgSize)) return;
     const uint2 pixel    = tid.xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
+    // Pass_pt_nee_v8 has drained the light-sample queue; empty it for the next sample.
+    if (all(tid.xy == 0u)) g_pathStateBuffer.Store(PtNeeQueueBase(), 0u);
 
     const uint info = DvLoadInfo(pixelIdx);
     if ((info & DV_VALID) == 0u) return;

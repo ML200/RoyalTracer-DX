@@ -26,6 +26,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "RaytracingPipelineGenerator.h"
 
 #include "dxcapi.h"
+#include <algorithm>
+#include <cstdint>
+#include <numeric>
 #include <unordered_set>
 #include <stdexcept>
 
@@ -64,28 +67,155 @@ void RayTracingPipelineGenerator::SetMaxRecursionDepth(UINT maxDepth) {
     m_maxRecursionDepth = maxDepth;
 }
 
-Microsoft::WRL::ComPtr<ID3D12StateObject> RayTracingPipelineGenerator::Generate() {
+static Microsoft::WRL::ComPtr<ID3D12StateObject> CreateOrThrow(ID3D12Device5* device,
+                                                                const D3D12_STATE_OBJECT_DESC& desc) {
+    Microsoft::WRL::ComPtr<ID3D12StateObject> stateObject;
+    HRESULT hr = device->CreateStateObject(&desc, IID_PPV_ARGS(&stateObject));
+    if (FAILED(hr)) {
+        char buf[256];
+        sprintf_s(buf, "Could not create the raytracing %s (HRESULT 0x%08X)",
+                  desc.Type == D3D12_STATE_OBJECT_TYPE_COLLECTION ? "collection" : "state object", (unsigned)hr);
+        throw std::logic_error(buf);
+    }
+    return stateObject;
+}
 
+Microsoft::WRL::ComPtr<ID3D12StateObject> RayTracingPipelineGenerator::Generate() {
+#ifdef _DEBUG
+    CheckAssociationSymbols();
+#endif
+    std::vector<size_t> libraries(m_libraries.size()), hitGroups(m_hitGroups.size());
+    std::iota(libraries.begin(), libraries.end(), size_t(0));
+    std::iota(hitGroups.begin(), hitGroups.end(), size_t(0));
+    return CreateStateObject(D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, libraries, hitGroups);
+}
+
+size_t RayTracingPipelineGenerator::PrepareCollections() {
+    // Collections drop association symbols defined elsewhere, so a misspelled one would otherwise go unnoticed.
+    CheckAssociationSymbols();
+
+    // A hit group compiles with the libraries of its shaders. Groups sharing a library share a collection;
+    // unrelated ones (e.g. two closest-hit variants) compile side by side.
+    auto libraryOf = [&](const std::wstring& symbol) -> size_t {
+        for (size_t i = 0; i < m_libraries.size(); ++i) {
+            const std::vector<std::wstring>& exports = m_libraries[i].m_exportedSymbols;
+            if (std::find(exports.begin(), exports.end(), symbol) != exports.end())
+                return i;
+        }
+        return SIZE_MAX;
+    };
+    std::vector<size_t> parent(m_libraries.size());
+    std::iota(parent.begin(), parent.end(), size_t(0));
+    auto root = [&](size_t i) -> size_t {
+        while (parent[i] != i)
+            i = parent[i] = parent[parent[i]];
+        return i;
+    };
+    std::vector<bool> hasHitShader(m_libraries.size(), false);
+    std::vector<size_t> groupLibrary(m_hitGroups.size(), SIZE_MAX);
+    for (size_t g = 0; g < m_hitGroups.size(); ++g) {
+        const HitGroup& group = m_hitGroups[g];
+        for (const std::wstring* symbol :
+             {&group.m_closestHitSymbol, &group.m_anyHitSymbol, &group.m_intersectionSymbol}) {
+            const size_t lib = symbol->empty() ? SIZE_MAX : libraryOf(*symbol);
+            if (lib == SIZE_MAX)
+                continue;
+            hasHitShader[lib] = true;
+            if (groupLibrary[g] == SIZE_MAX)
+                groupLibrary[g] = lib;
+            else
+                parent[root(lib)] = root(groupLibrary[g]);
+        }
+    }
+
+    m_collections.clear();
+    std::vector<size_t> collectionOfRoot(m_libraries.size(), SIZE_MAX);
+    for (size_t i = 0; i < m_libraries.size(); ++i) {
+        if (!hasHitShader[i]) {
+            m_collections.push_back({{i}, {}, nullptr});
+            continue;
+        }
+        size_t& c = collectionOfRoot[root(i)];
+        if (c == SIZE_MAX) {
+            c = m_collections.size();
+            m_collections.emplace_back();
+        }
+        m_collections[c].libraries.push_back(i);
+    }
+    for (size_t g = 0; g < m_hitGroups.size(); ++g) {
+        // A group without a known shader gets its own collection, whose creation reports the missing symbol.
+        if (groupLibrary[g] == SIZE_MAX)
+            m_collections.push_back({{}, {g}, nullptr});
+        else
+            m_collections[collectionOfRoot[root(groupLibrary[g])]].hitGroups.push_back(g);
+    }
+    return m_collections.size();
+}
+
+void RayTracingPipelineGenerator::CreateCollection(size_t index) {
+    Collection& collection = m_collections[index];
+    collection.stateObject =
+        CreateStateObject(D3D12_STATE_OBJECT_TYPE_COLLECTION, collection.libraries, collection.hitGroups);
+}
+
+std::wstring RayTracingPipelineGenerator::CollectionName(size_t index) const {
+    std::wstring name;
+    for (size_t i : m_collections[index].libraries)
+        for (const std::wstring& e : m_libraries[i].m_exportedSymbols)
+            name += (name.empty() ? L"" : L"+") + e;
+    return name;
+}
+
+Microsoft::WRL::ComPtr<ID3D12StateObject> RayTracingPipelineGenerator::LinkCollections() {
+    std::vector<D3D12_EXISTING_COLLECTION_DESC> collections;
+    collections.reserve(m_collections.size());
+    for (const Collection& collection : m_collections) {
+        if (!collection.stateObject)
+            throw std::logic_error("Every collection must be created before linking");
+        collections.push_back({collection.stateObject.Get(), 0, nullptr});
+    }
+
+    std::vector<D3D12_STATE_SUBOBJECT> subobjects;
+    for (const D3D12_EXISTING_COLLECTION_DESC& collection : collections)
+        subobjects.push_back({D3D12_STATE_SUBOBJECT_TYPE_EXISTING_COLLECTION, &collection});
+
+    // The same configuration every collection carries; all of them must match.
+    const D3D12_RAYTRACING_SHADER_CONFIG shaderConfig = {m_maxPayLoadSizeInBytes, m_maxAttributeSizeInBytes};
+    subobjects.push_back({D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderConfig});
+    ID3D12RootSignature* globalRootSignature =
+        m_globalRootSignature ? m_globalRootSignature : m_dummyGlobalRootSignature.Get();
+    subobjects.push_back({D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRootSignature});
+    const D3D12_RAYTRACING_PIPELINE_CONFIG1 pipelineConfig = {m_maxRecursionDepth, m_pipelineFlags};
+    subobjects.push_back({D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1, &pipelineConfig});
+
+    const D3D12_STATE_OBJECT_DESC desc = {D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, (UINT)subobjects.size(),
+                                          subobjects.data()};
+    return CreateOrThrow(m_device, desc);
+}
+
+Microsoft::WRL::ComPtr<ID3D12StateObject>
+RayTracingPipelineGenerator::CreateStateObject(D3D12_STATE_OBJECT_TYPE type, const std::vector<size_t>& libraries,
+                                               const std::vector<size_t>& hitGroups) const {
     UINT64 subobjectCount =
-        m_libraries.size() + m_hitGroups.size() + 1 + 1 + 2 * m_rootSignatureAssociations.size() + 2 + 1;
+        libraries.size() + hitGroups.size() + 1 + 1 + 2 * m_rootSignatureAssociations.size() + 2 + 1;
 
     // Associations store element pointers, so this allocation must remain stable.
     std::vector<D3D12_STATE_SUBOBJECT> subobjects(subobjectCount);
 
     UINT currentIndex = 0;
 
-    for (const Library& lib : m_libraries) {
+    for (size_t i : libraries) {
         D3D12_STATE_SUBOBJECT libSubobject = {};
         libSubobject.Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
-        libSubobject.pDesc = &lib.m_libDesc;
+        libSubobject.pDesc = &m_libraries[i].m_libDesc;
 
         subobjects[currentIndex++] = libSubobject;
     }
 
-    for (const HitGroup& group : m_hitGroups) {
+    for (size_t i : hitGroups) {
         D3D12_STATE_SUBOBJECT hitGroup = {};
         hitGroup.Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
-        hitGroup.pDesc = &group.m_desc;
+        hitGroup.pDesc = &m_hitGroups[i].m_desc;
 
         subobjects[currentIndex++] = hitGroup;
     }
@@ -102,7 +232,7 @@ Microsoft::WRL::ComPtr<ID3D12StateObject> RayTracingPipelineGenerator::Generate(
 
     std::vector<std::wstring> exportedSymbols = {};
     std::vector<LPCWSTR> exportedSymbolPointers = {};
-    BuildShaderExportList(exportedSymbols);
+    BuildShaderExportList(libraries, hitGroups, exportedSymbols);
 
     exportedSymbolPointers.reserve(exportedSymbols.size());
     for (const auto& name : exportedSymbols) {
@@ -120,7 +250,26 @@ Microsoft::WRL::ComPtr<ID3D12StateObject> RayTracingPipelineGenerator::Generate(
     shaderPayloadAssociationObject.pDesc = &shaderPayloadAssociation;
     subobjects[currentIndex++] = shaderPayloadAssociationObject;
 
-    for (RootSignatureAssociation& assoc : m_rootSignatureAssociations) {
+    // A collection may only associate its own symbols; a pipeline keeps every symbol so typos fail creation.
+    std::unordered_set<std::wstring> localSymbols;
+    for (size_t i : libraries)
+        localSymbols.insert(m_libraries[i].m_exportedSymbols.begin(), m_libraries[i].m_exportedSymbols.end());
+    for (size_t i : hitGroups)
+        localSymbols.insert(m_hitGroups[i].m_hitGroupName);
+
+    // Reserved: the subobjects point into both.
+    std::vector<std::vector<LPCWSTR>> associationSymbols;
+    std::vector<D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION> associations;
+    associationSymbols.reserve(m_rootSignatureAssociations.size());
+    associations.reserve(m_rootSignatureAssociations.size());
+
+    for (const RootSignatureAssociation& assoc : m_rootSignatureAssociations) {
+        std::vector<LPCWSTR>& symbols = associationSymbols.emplace_back();
+        for (size_t s = 0; s < assoc.m_symbols.size(); ++s)
+            if (type != D3D12_STATE_OBJECT_TYPE_COLLECTION || localSymbols.count(assoc.m_symbols[s]))
+                symbols.push_back(assoc.m_symbolPointers[s]);
+        if (symbols.empty())
+            continue;
 
         D3D12_STATE_SUBOBJECT rootSigObject = {};
         rootSigObject.Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
@@ -128,13 +277,14 @@ Microsoft::WRL::ComPtr<ID3D12StateObject> RayTracingPipelineGenerator::Generate(
 
         subobjects[currentIndex++] = rootSigObject;
 
-        assoc.m_association.NumExports = static_cast<UINT>(assoc.m_symbolPointers.size());
-        assoc.m_association.pExports = assoc.m_symbolPointers.data();
-        assoc.m_association.pSubobjectToAssociate = &subobjects[(currentIndex - 1)];
+        D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION& association = associations.emplace_back();
+        association.NumExports = static_cast<UINT>(symbols.size());
+        association.pExports = symbols.data();
+        association.pSubobjectToAssociate = &subobjects[(currentIndex - 1)];
 
         D3D12_STATE_SUBOBJECT rootSigAssociationObject = {};
         rootSigAssociationObject.Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
-        rootSigAssociationObject.pDesc = &assoc.m_association;
+        rootSigAssociationObject.pDesc = &association;
 
         subobjects[currentIndex++] = rootSigAssociationObject;
     }
@@ -165,19 +315,11 @@ Microsoft::WRL::ComPtr<ID3D12StateObject> RayTracingPipelineGenerator::Generate(
     subobjects[currentIndex++] = pipelineConfigObject;
 
     D3D12_STATE_OBJECT_DESC pipelineDesc = {};
-    pipelineDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+    pipelineDesc.Type = type;
     pipelineDesc.NumSubobjects = currentIndex;
     pipelineDesc.pSubobjects = subobjects.data();
 
-    Microsoft::WRL::ComPtr<ID3D12StateObject> rtStateObject;
-
-    HRESULT hr = m_device->CreateStateObject(&pipelineDesc, IID_PPV_ARGS(&rtStateObject));
-    if (FAILED(hr)) {
-        char buf[256];
-        sprintf_s(buf, "Could not create the raytracing state object (HRESULT 0x%08X)", (unsigned)hr);
-        throw std::logic_error(buf);
-    }
-    return rtStateObject;
+    return CreateOrThrow(m_device, pipelineDesc);
 }
 
 void RayTracingPipelineGenerator::CreateDummyRootSignatures() {
@@ -221,11 +363,13 @@ void RayTracingPipelineGenerator::CreateDummyRootSignatures() {
     }
 }
 
-void RayTracingPipelineGenerator::BuildShaderExportList(std::vector<std::wstring>& exportedSymbols) {
+void RayTracingPipelineGenerator::BuildShaderExportList(const std::vector<size_t>& libraries,
+                                                        const std::vector<size_t>& hitGroups,
+                                                        std::vector<std::wstring>& exportedSymbols) const {
     std::unordered_set<std::wstring> exports;
 
-    for (const Library& lib : m_libraries) {
-        for (const auto& exportName : lib.m_exportedSymbols) {
+    for (size_t i : libraries) {
+        for (const auto& exportName : m_libraries[i].m_exportedSymbols) {
 #ifdef _DEBUG
             if (exports.find(exportName) != exports.end()) {
                 throw std::logic_error("Multiple definition of a symbol in the imported DXIL libraries");
@@ -236,9 +380,8 @@ void RayTracingPipelineGenerator::BuildShaderExportList(std::vector<std::wstring
     }
 
 #ifdef _DEBUG
-    std::unordered_set<std::wstring> all_exports = exports;
-
-    for (const auto& hitGroup : m_hitGroups) {
+    for (size_t i : hitGroups) {
+        const HitGroup& hitGroup = m_hitGroups[i];
         if (!hitGroup.m_anyHitSymbol.empty() && exports.find(hitGroup.m_anyHitSymbol) == exports.end()) {
             throw std::logic_error("Any hit symbol not found in the imported DXIL libraries");
         }
@@ -250,21 +393,11 @@ void RayTracingPipelineGenerator::BuildShaderExportList(std::vector<std::wstring
         if (!hitGroup.m_intersectionSymbol.empty() && exports.find(hitGroup.m_intersectionSymbol) == exports.end()) {
             throw std::logic_error("Intersection symbol not found in the imported DXIL libraries");
         }
-
-        all_exports.insert(hitGroup.m_hitGroupName);
-    }
-
-    for (const auto& assoc : m_rootSignatureAssociations) {
-        for (const auto& symb : assoc.m_symbols) {
-            if (!symb.empty() && all_exports.find(symb) == all_exports.end()) {
-                throw std::logic_error("Root association symbol not found in the "
-                                       "imported DXIL libraries and hit group names");
-            }
-        }
     }
 #endif
 
-    for (const auto& hitGroup : m_hitGroups) {
+    for (size_t i : hitGroups) {
+        const HitGroup& hitGroup = m_hitGroups[i];
         if (!hitGroup.m_anyHitSymbol.empty()) {
             exports.erase(hitGroup.m_anyHitSymbol);
         }
@@ -279,6 +412,23 @@ void RayTracingPipelineGenerator::BuildShaderExportList(std::vector<std::wstring
 
     for (const auto& name : exports) {
         exportedSymbols.push_back(name);
+    }
+}
+
+void RayTracingPipelineGenerator::CheckAssociationSymbols() const {
+    std::unordered_set<std::wstring> all_exports;
+    for (const Library& lib : m_libraries)
+        all_exports.insert(lib.m_exportedSymbols.begin(), lib.m_exportedSymbols.end());
+    for (const HitGroup& hitGroup : m_hitGroups)
+        all_exports.insert(hitGroup.m_hitGroupName);
+
+    for (const auto& assoc : m_rootSignatureAssociations) {
+        for (const auto& symb : assoc.m_symbols) {
+            if (!symb.empty() && all_exports.find(symb) == all_exports.end()) {
+                throw std::logic_error("Root association symbol not found in the "
+                                       "imported DXIL libraries and hit group names");
+            }
+        }
     }
 }
 

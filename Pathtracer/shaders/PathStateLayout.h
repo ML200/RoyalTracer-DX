@@ -32,10 +32,14 @@
 #define PS_GUIDE_ROOTS_BYTES 16u
 #define PS_TRAIN_SPILL_PLANE (PS_GUIDE_ROOTS_PLANE + PS_GUIDE_ROOTS_BYTES)
 #define PS_TRAIN_SPILL_BYTES 12u
-#define PS_PATH_STATE_BYTES  (PS_TRAIN_SPILL_PLANE + PS_TRAIN_SPILL_BYTES)
+
+// Deferred light-sample queue (PtNee_v8.hlsli): slot 0 holds the count, then one request per slot.
+#define PS_NEE_PLANE         (PS_TRAIN_SPILL_PLANE + PS_TRAIN_SPILL_BYTES)
+#define PS_NEE_BYTES         64u
+#define PS_PATH_STATE_BYTES  (PS_NEE_PLANE + PS_NEE_BYTES)
 
 #ifdef __cplusplus
 static_assert(PS_DEFER_END == 232u, "deferred record layout changed; update the shader planes");
-static_assert(PS_PATH_STATE_BYTES == 260u, "path-state size changed; update the shader planes");
+static_assert(PS_PATH_STATE_BYTES == 324u, "path-state size changed; update the shader planes");
 static_assert(PS_LITE_SHIFT_BYTES >= 44u, "the lite shift record is 44 bytes per pixel; keep it inside the aliased vertex record");
 #endif

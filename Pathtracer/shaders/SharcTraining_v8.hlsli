@@ -123,7 +123,7 @@ void SharcTrainingCommit(SharcTrainingState state)
 void GuideInitializeEntry(uint e, GuideKey k)
 {
     g_sharc.Store4(e + GUIDE_CELL, uint4(asuint(k.cell), k.meta));
-    [unroll] for (uint b = 16u; b < GUIDE_ENTRY_BYTES; b += 16u)
+    [loop] for (uint b = 16u; b < GUIDE_ENTRY_BYTES; b += 16u)
         g_sharc.Store4(e + b, 0u);
     g_sharc.Store4(e + GUIDE_CHALLENGER, 0xffffffffu);
     g_sharc.Store(e + GUIDE_EVIDENCE, sharc_frame);

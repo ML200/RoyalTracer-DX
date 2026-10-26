@@ -48,7 +48,6 @@ int main() {
         for (const auto& pass : p) Require(!pass.executedLastFrame, "Unexecuted passes shown as active");
 
         IntegratorSettings base;
-        Require(!base.compactLightTree, "Light tree compaction must default off");
         Require(base.sharcEnabled, "Default is not PT with SHARC");
         Require(base.liteEnabled && base.liteSpatial, "Default diffuse spatial reuse is disabled");
         auto changed = base;
@@ -56,7 +55,7 @@ int main() {
         changed.sharcDebugCoarse = true;
         changed.lightTreeDebug = true;
         Require(changed.ReconstructionKey() == base.ReconstructionKey(), "Inspection invalidates underlying reconstruction");
-        for (int control = 0; control < 10; ++control) {
+        for (int control = 0; control < 9; ++control) {
             changed = base;
             if (control == 0) changed.sharcEnabled = false;
             if (control == 1) changed.forceDiffuseMats = true;
@@ -67,7 +66,6 @@ int main() {
             if (control == 6) changed.lightTreeLearning = false;
             if (control == 7) changed.lightTreeCellExponent += 1;
             if (control == 8) changed.lightTreeLodScale *= 2;
-            if (control == 9) changed.compactLightTree = true;
             Require(changed.ReconstructionKey() != base.ReconstructionKey(), "Transport edit retains incompatible reconstruction");
         }
         std::cout << "PASS: render pass selection, default PT/SHARC and history invalidation.\n";

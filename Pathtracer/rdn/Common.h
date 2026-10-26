@@ -139,7 +139,6 @@ struct GeometryOffsets {
 };
 
 struct IntegratorSettings {
-    bool compactLightTree = false;
     bool lightTreeLearning = true;
     bool lightTreeReset = false;
     int lightTreeCellExponent = 0;
@@ -200,7 +199,7 @@ struct IntegratorSettings {
     // Changes here reset reconstruction history.
     auto ReconstructionKey() const {
         const bool lite = liteEnabled;
-        return std::make_tuple(maxBounces, maxDiffuseBounces, texturePointFilter, forceDiffuseMats, compactLightTree,
+        return std::make_tuple(maxBounces, maxDiffuseBounces, texturePointFilter, forceDiffuseMats,
                                lightTreeLearning, lightTreeCellExponent, lightTreeLodScale, sharcEnabled, lite,
                                lite && liteDebugView, lite && liteUnshadowedTargets);
     }

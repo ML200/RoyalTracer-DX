@@ -48,9 +48,7 @@ struct MatPacked {
     uint sss_radius_g;
 };
 
-#include "LightTreePacked.h"
-
-// Decoded form; see LightTreeDecode.hlsli.
+// GPU node layouts, read as uint4 records by LightTreeDecode.hlsli.
 struct LightTLASNodeGpu
 {
     float3 bmin;     float power;

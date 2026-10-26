@@ -93,15 +93,13 @@ void LTC_UpdateRetention(uint cell) {
     }
     g_sharc.Store(cell+20u,score);
 }
-// Loads a bucket's keys before comparing: one round trip per bucket.
+// One key per iteration, in probe order: a bucket's keys share cache lines, so this costs little
+// latency, and no bucket of uint4 keys is held in registers (they set the callables' peak).
 bool LTC_FindExact(uint4 key,out uint cell) {
     cell=0u;
-    [unroll] for(uint bucket=0u;bucket<LT_CELL_PROBES/LT_BUCKET_SIZE;++bucket) {
-        const uint base=LTC_Probe(key,bucket*LT_BUCKET_SIZE);
-        uint4 stored[LT_BUCKET_SIZE];
-        [unroll] for(uint i=0u;i<LT_BUCKET_SIZE;++i) stored[i]=g_sharc.Load4(LTC_KeyAddress(base+i));
-        [unroll] for(uint j=0u;j<LT_BUCKET_SIZE;++j)
-            if(all(stored[j]==key)) {cell=LTC_Cell(base+j);return true;}
+    [loop] for(uint probe=0u;probe<LT_CELL_PROBES;++probe) {
+        const uint slot=LTC_Probe(key,probe);
+        if(all(g_sharc.Load4(LTC_KeyAddress(slot))==key)) {cell=LTC_Cell(slot);return true;}
     }
     return false;
 }
@@ -173,7 +171,7 @@ void LTC_RequestCell(float3 x,float3 n,uint sourceCell,uint desired,uint alterna
         if(attempt!=0u) key=LTC_KeyAtLevel(x,n,desired+1u+sharc_frame%alternatives);
         uint best=0u;
 
-        [unroll] for(uint probe=0;probe<LT_CELL_PROBES;++probe) {
+        [loop] for(uint probe=0;probe<LT_CELL_PROBES;++probe) {
             uint slot=LTC_Probe(key,probe);uint4 stored=g_sharc.Load4(LTC_KeyAddress(slot));
             if(all(stored==key)) return;
             uint c=LTC_Cell(slot);

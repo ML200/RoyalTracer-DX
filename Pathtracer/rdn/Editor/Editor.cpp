@@ -1521,8 +1521,6 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
     }
 
     ImGui::SeparatorText("Light sampling");
-    ImGui::Checkbox("Compact light tree", &rs.compactLightTree);
-    ImGui::SetItemTooltip("Uses less GPU memory; performance depends on the scene. Changing this rebuilds light buffers.");
     ImGui::Checkbox("Learn light clusters", &rs.lightTreeLearning);
     ImGui::SetItemTooltip("Learns visible light contributions per receiver cell at all distances; every receiver "
                           "samples from the learned cuts.");

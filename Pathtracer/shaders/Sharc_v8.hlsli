@@ -295,7 +295,7 @@ void SharcInitializeEntry(uint e, int3 node, uint meta, SharcSurface s, float3 r
     g_sharc.Store4(e + SHARC_NODE, uint4(asuint(node), meta));
     g_sharc.Store4(e + SHARC_NODE + 16u, uint4(s.instance, s.material, 0u, 0u));
 
-    [unroll] for (uint b = SHARC_FRAME_RGB; b < SHARC_ENTRY_BYTES; b += 16u)
+    [loop] for (uint b = SHARC_FRAME_RGB; b < SHARC_ENTRY_BYTES; b += 16u)
         g_sharc.Store4(e + b, 0u);
     g_sharc.Store(e + SHARC_CONVERGENCE, asuint(1.0f));
     g_sharc.Store(e + SHARC_LAST_UPDATE, sharc_frame);
@@ -310,7 +310,6 @@ uint SharcFindOrInsert(int3 node, uint level, uint axis, SharcSurface s, float3 
     float size = SharcCellSize(level);
     uint states[SHARC_BUCKET_SIZE];
     SharcLoadBucket(bucket, states);
-    const bool merged = SharcMergedNode(states, hash);
     weight = 1.0f;
     uint slot = SHARC_INVALID;
     uint best = SHARC_INVALID;
@@ -324,6 +323,7 @@ uint SharcFindOrInsert(int3 node, uint level, uint axis, SharcSurface s, float3 
         else if (states[p] == SHARC_LOCKED) contended = true;
         else if (states[p] == 0u && slot == SHARC_INVALID) slot = bucket * SHARC_BUCKET_SIZE + p;
     }
+    const bool merged = countbits(matchingSlots) >= SHARC_MERGE_RECORDS;  // SharcMergedNode
     [loop] while (matchingSlots != 0u)
     {
         const uint p = (uint)firstbitlow(matchingSlots);
@@ -503,17 +503,22 @@ void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 rel
     uint meta = SharcMeta(s, level, axis);
     uint hash = SharcHash(node, meta, s.instance, s.material);
     uint bucket = SharcBucketOf(hash);
-    uint states[SHARC_BUCKET_SIZE];
-    SharcLoadBucket(bucket, states);
-    const bool merged = SharcMergedNode(states, hash);
+    // The bucket's matches, four states (one load) at a time: the 16 states never sit in registers
+    // together, and the loads share cache lines. SharcMergedNode is the mask's popcount.
+    uint matchingSlots = 0u;
+    const uint stateBase = SharcStateAddress(bucket * SHARC_BUCKET_SIZE);
+    [loop] for (uint q = 0u; q < SHARC_BUCKET_SIZE / 4u; ++q)
+    {
+        const uint4 v = g_sharc.Load4(stateBase + q * 16u);
+        matchingSlots |= ((v.x == hash ? 1u : 0u) | (v.y == hash ? 2u : 0u) |
+                          (v.z == hash ? 4u : 0u) | (v.w == hash ? 8u : 0u)) << (q * 4u);
+    }
+    const bool merged = countbits(matchingSlots) >= SHARC_MERGE_RECORDS;
     const uint check = SharcCheckHash(node, meta, s.instance, s.material);
     const float size = SharcCellSize(level);
     sum = 0.0f; support = 0.0f;
     float geometricSupport = 0.0f;
 
-    uint matchingSlots = 0u;
-    [unroll] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
-        if (states[p] == hash) matchingSlots |= 1u << p;
     [loop] while (matchingSlots != 0u)
     {
         const uint p = (uint)firstbitlow(matchingSlots);

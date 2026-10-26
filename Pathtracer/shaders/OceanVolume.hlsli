@@ -8,10 +8,9 @@ struct OceanPathHit {
     uint primitive;
     float2 barycentrics;
 };
-OceanPathHit OceanTracePathHit(RayDesc ray) {
+OceanPathHit OceanPathHitOf(dx::HitObject hit, RayDesc ray) {
     OceanPathHit result = (OceanPathHit)0;
     result.distance = ray.TMax;
-    dx::HitObject hit = TraceRayChecked(SceneBVH,RAY_FLAG_FORCE_OMM_2_STATE,0xFF,ray);
     if (hit.IsHit()) {
         BuiltInTriangleIntersectionAttributes attr;
         hit.GetAttributes(attr);
@@ -24,16 +23,27 @@ OceanPathHit OceanTracePathHit(RayDesc ray) {
     }
     return result;
 }
+OceanPathHit OceanTracePathHit(RayDesc ray) {
+    return OceanPathHitOf(TraceRayChecked(SceneBVH,RAY_FLAG_FORCE_OMM_2_STATE,0xFF,ray), ray);
+}
 
-// Next hit, skipping water facets met from the wrong side for the medium.
+// A water facet met from the wrong side for the medium, which the path passes through.
+bool OceanFacetPassed(OceanPathHit h, RayDesc ray, bool inWater) {
+    if (!h.hit || !IS_OCEAN_INSTANCE(h.instance) || h.distance + 1e-3f >= ray.TMax)
+        return false;
+    const float3 n = CandidateGeoNormalW(h.instance, FlatPrimID(h.instance, h.geometry, h.primitive));
+    return (dot(ray.Direction, n) > 0.0f) != inWater;
+}
+
+// Next hit, passing up to 4 such facets.
+// One trace call site: each site carries its own spill and resume code.
 OceanPathHit OceanTracePathHitInMedium(RayDesc ray, bool inWater) {
-    OceanPathHit h = OceanTracePathHit(ray);
-    [loop] for (uint i = 0u; i < 4u && h.hit && IS_OCEAN_INSTANCE(h.instance); ++i) {
-        const float3 n = CandidateGeoNormalW(h.instance, FlatPrimID(h.instance, h.geometry, h.primitive));
-        if ((dot(ray.Direction, n) > 0.0f) == inWater || h.distance + 1e-3f >= ray.TMax)
+    OceanPathHit h = (OceanPathHit)0;
+    [loop] for (uint i = 0u;; ++i) {
+        h = OceanTracePathHit(ray);
+        if (i == 4u || !OceanFacetPassed(h, ray, inWater))
             break;
         ray.TMin = h.distance + 1e-3f;
-        h = OceanTracePathHit(ray);
     }
     return h;
 }
@@ -171,7 +181,7 @@ float OceanConeShare(float3 wo, float g, float cosCone)
     float3 tangent, bitangent;
     GetOrthoBasis(wo, tangent, bitangent);
     float inside = 0.0f;
-    [unroll] for (uint i = 0u; i < 24u; ++i) {
+    [loop] for (uint i = 0u; i < 24u; ++i) {
         const float mu = OceanSamplePhaseCosine(g, (float(i) + 0.5f) / 24.0f);
         const float sn = sqrt(max(1.0f - mu * mu, 0.0f));
         const float phi = 2.39996323f * float(i);

@@ -69,8 +69,8 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            {"newportnews.glb",
-             XMMatrixIdentity(), "Modern Tank Garage"},
+            {"iowa.obj",
+             XMMatrixIdentity(), "TWR"},
             /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
                            XMMatrixIdentity(), "Night City"),*/
@@ -94,7 +94,7 @@ class MainScene : public SceneDefinition {
         //m_emissiveCubes.Init(cubes, sm, r);
 
         Ocean::Params sea;
-        sea.enabled = true;
+        sea.enabled = false;
         sea.windSpeed = 11.0f;   // m/s at 10 m
         sea.fetch = 250000.0f;   // m
         sea.windDirectionDeg = 35.0f;

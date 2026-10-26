@@ -35,7 +35,6 @@ struct TLASRefitResult {
     std::vector<LightTLASNodeGpu> nodes;
     std::vector<LightTreeTrail> blasBitTrails;
     std::vector<LightSlotGpu> slots;
-    std::vector<LightTLASNodePacked> packedNodes;
 
     uint32_t extraVersion = 0;
     uint32_t extraLeafCount = 0;
@@ -522,9 +521,7 @@ class LightTreeRefitManager {
                               [roots = std::move(blasRoots), sl = std::move(slots), rec = std::move(slotRecords),
                                xf = std::move(xforms), ex = std::move(extra), slotCount, extraVersion]() {
                                   TLASRebuilder builder;
-                                  auto result = builder.Build(roots, sl, xf, 64u, rec, ex, slotCount, extraVersion);
-                                  result.packedNodes = PackTLAS(result.nodes);
-                                  return result;
+                                  return builder.Build(roots, sl, xf, 64u, rec, ex, slotCount, extraVersion);
                               });
     }
     void RequestRefit(std::vector<BLASRootLocal> blasRoots, std::vector<LightInstanceRef> slots,
@@ -540,15 +537,13 @@ class LightTreeRefitManager {
         RequestRefit(std::move(blasRoots), std::move(slots), std::move(xforms));
     }
 
-    void RequestCustom(std::function<TLASRefitResult()> job, bool compactGpuNodes = true) {
+    void RequestCustom(std::function<TLASRefitResult()> job) {
         if (m_pending.load())
             return;
         m_pending.store(true);
-        m_future = std::async(std::launch::async, [job = std::move(job), compactGpuNodes]() mutable {
+        m_future = std::async(std::launch::async, [job = std::move(job)]() mutable {
             const auto start = std::chrono::steady_clock::now();
             TLASRefitResult result = job();
-            if (compactGpuNodes)
-                result.packedNodes = PackTLAS(result.nodes);
             result.worker_cpu_ms = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
             return result;

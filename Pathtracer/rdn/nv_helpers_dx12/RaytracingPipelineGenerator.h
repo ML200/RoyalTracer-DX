@@ -54,7 +54,17 @@ class RayTracingPipelineGenerator {
 
     void SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAGS flags);
 
+    // One state object: the driver compiles all of its shaders on the calling thread.
     Microsoft::WRL::ComPtr<ID3D12StateObject> Generate();
+
+    // Collections compile independently, so CreateCollection can run on several threads at once; LinkCollections
+    // then joins them into the pipeline. Every library gets its own collection, except the libraries providing
+    // hit-group shaders, which share one with the hit groups. Returns the collection count.
+    size_t PrepareCollections();
+    // Safe to call concurrently for different indices.
+    void CreateCollection(size_t index);
+    std::wstring CollectionName(size_t index) const;
+    Microsoft::WRL::ComPtr<ID3D12StateObject> LinkCollections();
 
     void SetGlobalRootSignature(ID3D12RootSignature* rootSig);
 
@@ -93,16 +103,29 @@ class RayTracingPipelineGenerator {
         ID3D12RootSignature* m_rootSignaturePointer;
         std::vector<std::wstring> m_symbols;
         std::vector<LPCWSTR> m_symbolPointers;
-        D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION m_association = {};
+    };
+
+    struct Collection {
+        std::vector<size_t> libraries;
+        std::vector<size_t> hitGroups;
+        Microsoft::WRL::ComPtr<ID3D12StateObject> stateObject;
     };
 
     void CreateDummyRootSignatures();
 
-    void BuildShaderExportList(std::vector<std::wstring>& exportedSymbols);
+    void BuildShaderExportList(const std::vector<size_t>& libraries, const std::vector<size_t>& hitGroups,
+                               std::vector<std::wstring>& exportedSymbols) const;
+    void CheckAssociationSymbols() const;
+
+    // The given libraries and hit groups with the shared configuration; reads only, so it is thread-safe.
+    Microsoft::WRL::ComPtr<ID3D12StateObject> CreateStateObject(D3D12_STATE_OBJECT_TYPE type,
+                                                                const std::vector<size_t>& libraries,
+                                                                const std::vector<size_t>& hitGroups) const;
 
     std::vector<Library> m_libraries = {};
     std::vector<HitGroup> m_hitGroups = {};
     std::vector<RootSignatureAssociation> m_rootSignatureAssociations = {};
+    std::vector<Collection> m_collections = {};
 
     UINT m_maxPayLoadSizeInBytes = 0;
 

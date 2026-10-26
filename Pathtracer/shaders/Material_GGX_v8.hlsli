@@ -271,13 +271,18 @@ inline GGXResult EvalGGXAll(
             const float Ess          = GetEssLUT((float)Pr, NdotV);
             const float kms          = (1.0f - Ess) / max(Ess, 1e-6f);
 
-            float3 spec;
+            // A pure dielectric or pure metal skips the term its metalness weights by zero.
+            float3 spec = 0.0f;
 
+            [branch]
+            if (Pm < (half)1.0)
             {
                 const float3 F0_d = ComputeF0Dielectric(etai, etat);
                 spec = ((float)1.0 - (float)Pm) * (F_d_vec * DG2_over_den) * ((float3)1.0 + F0_d * kms);
             }
 
+            [branch]
+            if (Pm > (half)0.0)
             {
                 const float3 F_c = FresnelConductor(Kd, V, H);
                 spec += (float)Pm * (F_c * DG2_over_den) * ((float3)1.0 + Kd * kms);

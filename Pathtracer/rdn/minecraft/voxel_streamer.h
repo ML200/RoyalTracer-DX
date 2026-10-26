@@ -116,7 +116,6 @@ struct LightBinding {
     uint32_t recordBase = 0, recordCapacity = 0;
     uint32_t nodeBase   = 0, nodeCapacity   = 0;
     uint32_t slotBase   = 0;
-    bool compactNodes = true;
 };
 
 class VoxelStreamer final : public planet::IExternalStream {
@@ -199,7 +198,6 @@ private:
         float axis[3] = { 0, 0, 1 };
         float cosTheta = -1.0f, sinTheta = 0.0f;
         uint32_t gen = 0;
-        bool compactNodes = true;
         bool valid() const { return recCount > 0; }
     };
     struct GpuChunk {

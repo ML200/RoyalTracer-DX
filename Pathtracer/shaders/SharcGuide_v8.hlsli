@@ -245,12 +245,6 @@ GuideSet GuideEmpty()
     return g;
 }
 
-uint4 GuideSlotWords(uint4 w0, uint4 w1, uint4 w2, uint4 w3, uint4 w4, uint4 w5, uint4 w6, uint4 w7, uint c)
-{
-    return c == 0u ? w0 : (c == 1u ? w1 : (c == 2u ? w2 : (c == 3u ? w3 :
-        (c == 4u ? w4 : (c == 5u ? w5 : (c == 6u ? w6 : w7))))));
-}
-
 GuideSet GuideBuild(uint e, float3 x, float3 n, bool training = false)
 {
     GuideSet g = GuideEmpty();
@@ -267,15 +261,10 @@ GuideSet GuideBuild(uint e, float3 x, float3 n, bool training = false)
     if (!(freshness > 1e-3f)) return g;
     const float3 center = GuideCellCenter(k);
 
-    const uint4 w0 = g_sharc.Load4(GuideLobeAddress(e, 0u));
-    uint4 w1 = 0u, w2 = 0u, w3 = 0u, w4 = 0u, w5 = 0u, w6 = 0u, w7 = 0u;
-    if (count > 1u) w1 = g_sharc.Load4(GuideLobeAddress(e, 1u));
-    if (count > 2u) { w2 = g_sharc.Load4(GuideLobeAddress(e, 2u)); w3 = g_sharc.Load4(GuideLobeAddress(e, 3u)); }
-    if (count > 4u) { w4 = g_sharc.Load4(GuideLobeAddress(e, 4u)); w5 = g_sharc.Load4(GuideLobeAddress(e, 5u)); }
-    if (count > 6u) { w6 = g_sharc.Load4(GuideLobeAddress(e, 6u)); w7 = g_sharc.Load4(GuideLobeAddress(e, 7u)); }
+    // One lobe per iteration: preloading all eight held 32 registers at the shaders' peak.
     [loop] for (uint c = 0u; c < count; ++c)
     {
-        const uint4 w = GuideSlotWords(w0, w1, w2, w3, w4, w5, w6, w7, c);
+        const uint4 w = g_sharc.Load4(GuideLobeAddress(e, c));
         const float branch = f16tof32(w.y >> 16u) * freshness;
         if (!(branch > 0.0f)) continue;
         float3 axis = UnpackNormal(w.x);
@@ -322,11 +311,17 @@ GuideSet GuideBuildFrom(uint e, uint parent, float3 x, float3 n, bool training =
     return GuideBuild(GuideUsable(e, training) ? e : parent, x, n, training);
 }
 
+// The cell, else its parent. One GuideFind and one GuideBuild, so each inlines once.
 GuideSet GuideBuildAt(GuideKey key, float3 x, float3 n, bool training = false)
 {
-    const uint e = GuideFind(key);
-    if (GuideUsable(e, training)) return GuideBuild(e, x, n, training);
-    return GuideBuild(GuideFind(GuideParentKey(key)), x, n, training);
+    uint e = GUIDE_INVALID;
+    [loop] for (uint level = 0u; level < 2u; ++level)
+    {
+        e = GuideFind(key);
+        if (GuideUsable(e, training)) break;
+        key = GuideParentKey(key);
+    }
+    return GuideBuild(e, x, n, training);
 }
 
 uint2 GuideConeAt(GuideSet g, uint c)

@@ -139,7 +139,7 @@ struct LTNodeCommon
     float cosTheta_o; float sinTheta_o; float power;
     uint4 topology;
 };
-LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index, LT_BlasFrame frame)
+LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index)
 {
     LTNodeCommon c;
     if (phase == 0u)
@@ -151,7 +151,7 @@ LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index, LT_BlasFrame 
     }
     else
     {
-        const LightBLASNodeGpu b = LT_LoadBLAS(nodeOffset, index, frame);
+        const LightBLASNodeGpu b = LT_LoadBLAS(nodeOffset, index);
         c.bmin = b.bmin; c.bmax = b.bmax; c.axis = b.axis;
         c.cosTheta_o = b.cosTheta_o; c.sinTheta_o = b.sinTheta_o; c.power = b.power;
         c.topology = uint4(b.firstChild, b.childCount, b.triFirst, b.triCount);
@@ -159,14 +159,14 @@ LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index, LT_BlasFrame 
     return c;
 }
 // Topology is read only for the taken child (LT_ChildTopology).
-float LT_ChildWeight(uint phase, uint nodeOffset, uint index, LT_BlasFrame frame, float3 xP, float3 nP)
+float LT_ChildWeight(uint phase, uint nodeOffset, uint index, float3 xP, float3 nP)
 {
-    const LTNodeCommon c = LT_LoadChild(phase, nodeOffset, index, frame);
+    const LTNodeCommon c = LT_LoadChild(phase, nodeOffset, index);
     return max(LT_NodeImportance_Common(xP, nP, c.bmin, c.bmax, c.axis, c.cosTheta_o, c.sinTheta_o, c.power), 0.0f);
 }
-uint4 LT_ChildTopology(uint phase, uint nodeOffset, uint index, LT_BlasFrame frame)
+uint4 LT_ChildTopology(uint phase, uint nodeOffset, uint index)
 {
-    return LT_LoadChild(phase, nodeOffset, index, frame).topology;
+    return LT_LoadChild(phase, nodeOffset, index).topology;
 }
 
 // TLAS then BLAS descent, accumulating the exact branch PDF.
@@ -181,7 +181,6 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
     uint   iter = 0u;
     float3 xP = x, nP = n;
     uint   nodeOffset = 0u;
-    LT_BlasFrame frame = (LT_BlasFrame)0;
     uint   node = 0u;
     float  xi = xiT;
     uint4  t = 0u;
@@ -205,9 +204,8 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
                 xP = mul(W2L, float4(x, 1.0));
                 nP = LT_LocalReceiverNormal(W2L, n);
                 nodeOffset = S.nodeOffset; instOut = S.instanceID;
-                frame = LT_LoadBlasFrame(nodeOffset);
                 node = startSlot == LT_SENTINEL ? 0u : startNode;
-                const LightBLASNodeGpu Nroot = LT_LoadBLAS(nodeOffset, node, frame);
+                const LightBLASNodeGpu Nroot = LT_LoadBLAS(nodeOffset, node);
                 t = uint4(Nroot.firstChild, Nroot.childCount, Nroot.triFirst, Nroot.triCount);
                 xi = xiB;
             }
@@ -224,17 +222,17 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
 
         // All siblings in one round trip, the taken child's topology after.
         const uint count = min(t.y, 4u);
-        const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, frame, xP, nP);
+        const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, xP, nP);
         float w1 = 0.0f, w2 = 0.0f, w3 = 0.0f;
-        if (count > 1u) w1 = LT_ChildWeight(phase, nodeOffset, t.x + 1u, frame, xP, nP);
-        if (count > 2u) w2 = LT_ChildWeight(phase, nodeOffset, t.x + 2u, frame, xP, nP);
-        if (count > 3u) w3 = LT_ChildWeight(phase, nodeOffset, t.x + 3u, frame, xP, nP);
+        if (count > 1u) w1 = LT_ChildWeight(phase, nodeOffset, t.x + 1u, xP, nP);
+        if (count > 2u) w2 = LT_ChildWeight(phase, nodeOffset, t.x + 2u, xP, nP);
+        if (count > 3u) w3 = LT_ChildWeight(phase, nodeOffset, t.x + 3u, xP, nP);
 
         float p, xi_next;
         const uint idx = LT_PickAndRescale(w0, w1, w2, w3, count, xi, p, xi_next);
         if (phase == 0u) pdfT *= p; else pdfB *= p;
         node = t.x + idx;
-        t = LT_ChildTopology(phase, nodeOffset, node, frame);
+        t = LT_ChildTopology(phase, nodeOffset, node);
         xi = xi_next;
     }
 }
@@ -312,7 +310,6 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
     uint   iter = 0u;
     float3 xP = x, nP = n;
     uint   nodeOffset = 0u;
-    LT_BlasFrame frame = (LT_BlasFrame)0;
     uint2  trail = 0u;
     uint4  t = 0u;
     [loop] for (;;)
@@ -333,8 +330,7 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
                 xP = mul(W2L, float4(x, 1.0));
                 nP = LT_LocalReceiverNormal(W2L, n);
                 nodeOffset = S.nodeOffset;
-                frame = LT_LoadBlasFrame(nodeOffset);
-                const LightBLASNodeGpu Nroot = LT_LoadBLAS(nodeOffset, startSlot == LT_SENTINEL ? 0u : startNode, frame);
+                const LightBLASNodeGpu Nroot = LT_LoadBLAS(nodeOffset, startSlot == LT_SENTINEL ? 0u : startNode);
                 t = uint4(Nroot.firstChild, Nroot.childCount, Nroot.triFirst, Nroot.triCount);
                 trail = triTrail; iter = startSlot == LT_SENTINEL ? 0u : startDepth;
             }
@@ -368,17 +364,17 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
 
         // As in LT_Descend.
         const uint count = min(t.y, 4u);
-        const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, frame, xP, nP);
+        const float w0 = LT_ChildWeight(phase, nodeOffset, t.x, xP, nP);
         float w1 = 0.0f, w2 = 0.0f, w3 = 0.0f;
-        if (count > 1u) w1 = LT_ChildWeight(phase, nodeOffset, t.x + 1u, frame, xP, nP);
-        if (count > 2u) w2 = LT_ChildWeight(phase, nodeOffset, t.x + 2u, frame, xP, nP);
-        if (count > 3u) w3 = LT_ChildWeight(phase, nodeOffset, t.x + 3u, frame, xP, nP);
+        if (count > 1u) w1 = LT_ChildWeight(phase, nodeOffset, t.x + 1u, xP, nP);
+        if (count > 2u) w2 = LT_ChildWeight(phase, nodeOffset, t.x + 2u, xP, nP);
+        if (count > 3u) w3 = LT_ChildWeight(phase, nodeOffset, t.x + 3u, xP, nP);
         const float sum = w0 + w1 + w2 + w3;
         const float wc = childIdx == 0u ? w0 : (childIdx == 1u ? w1 : (childIdx == 2u ? w2 : w3));
 
         const float p = (sum > 0.0f) ? (wc / sum) : (1.0f / float(t.y));
         if (phase == 0u) pdfTLAS *= p; else pdfBLAS *= p;
-        t = LT_ChildTopology(phase, nodeOffset, t.x + childIdx, frame);
+        t = LT_ChildTopology(phase, nodeOffset, t.x + childIdx);
     }
 }
 #include "LightTreeLearning_v8.hlsli"

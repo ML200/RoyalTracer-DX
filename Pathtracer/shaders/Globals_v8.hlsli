@@ -138,7 +138,11 @@ cbuffer CameraParams : register(b0)
     float dlssWaterResponsivity;
 }
 
-#define OCEAN_ENABLED (oceanEnabled > 0.5f)
+// HitLean_v8.hlsl: Pass_pt_trace sends it no ocean hit and no in-water path, so the sea compiles out.
+#ifndef PT_HIT_LEAN
+#define PT_HIT_LEAN 0
+#endif
+#define OCEAN_ENABLED (!PT_HIT_LEAN && oceanEnabled > 0.5f)
 #define IS_OCEAN_INSTANCE(instID) (OCEAN_ENABLED && ((instID) >= (uint)oceanInstanceBase))
 
 #define SUN_LATITUDE_DEG    sunLatitude

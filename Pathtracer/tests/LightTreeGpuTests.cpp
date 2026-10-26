@@ -10,12 +10,6 @@
 void Check(HRESULT hr) { if (FAILED(hr)) throw std::runtime_error("D3D12 operation failed"); }
 void Require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 
-std::vector<lt::LightTLASNodeGpu> DecodeTLAS(const std::vector<lt::LightTLASNodePacked>& packed) {
-    std::vector<lt::LightTLASNodeGpu> result;
-    for (const auto& p : packed) result.push_back(lt::UnpackTLASNode<lt::LightTLASNodeGpu>(p));
-    return result;
-}
-
 struct Runner {
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
@@ -35,7 +29,6 @@ struct Runner {
     UINT clockMs = 0;
     float lodScale = .05f;
     float rewardScale = 1.0f;
-    bool compactNodes = true;
     XMFLOAT3 testCamera{};
     // Inverse view column 3; zero leaves every cell in front.
     XMFLOAT3 testForward{};
@@ -157,7 +150,6 @@ struct Runner {
     }
 
     void BindLearning(UINT flags, UINT frame=0u, bool reset=false) {
-        if (compactNodes) flags |= RS_FLAG_COMPACT_LIGHT_TREE;
         if(frame!=0u) currentFrame=frame;
         {void* cam=nullptr;Check(cameraBuffer->Map(0,nullptr,&cam));memset(cam,0,4096);
          memcpy(static_cast<float*>(cam)+40,&testForward,sizeof(testForward));
@@ -234,7 +226,6 @@ struct Runner {
         commands->SetComputeRootUnorderedAccessView(4,learningBuffer->GetGPUVirtualAddress());
         UINT push[SHARC_ROOT_CONSTANTS] = {};
         if (noLights) push[2] = RS_FLAG_NO_MESH_LIGHTS;
-        if (compactNodes) push[2] |= RS_FLAG_COMPACT_LIGHT_TREE;
         commands->SetComputeRoot32BitConstants(3, SHARC_ROOT_CONSTANTS, push, 0);
         commands->Dispatch((UINT(expected.size()) + 63u) / 64u, 1, 1);
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -284,7 +275,6 @@ void VerifyNoUnreachableNodes(const std::vector<Node>& nodes) {
 
 void VerifyBuiltTree(Runner& runner, lt::LightTreeBuilder& builder, const std::vector<LightTriangle>& tris,
     bool refit, bool requireDeep) {
-    runner.compactNodes = builder.CompactGpuNodes();
     builder.UploadAll(runner.device.Get(), runner.commands.Get());
     builder.WriteSrvs(runner.device.Get(), runner.Handle(9));
     builder.WriteLookupSrvs(runner.device.Get(), runner.Handle(16));
@@ -294,20 +284,16 @@ void VerifyBuiltTree(Runner& runner, lt::LightTreeBuilder& builder, const std::v
     if (refit) {
         lt::TLASRebuilder rebuilder;
         auto result = rebuilder.Build(lt::ComputeBLASLocalRoots(tris), {}, 4);
-        gpu.TLASNodes = runner.compactNodes ? runner.Upload(lt::PackTLAS(result.nodes)) : runner.Upload(result.nodes);
+        gpu.TLASNodes = runner.Upload(result.nodes);
         gpu.BLASBitTrail = runner.Upload(result.blasBitTrails);
-        runner.Srv(gpu.TLASNodes.Get(), 9, sizeof(lt::LightTLASNodePacked));
+        runner.Srv(gpu.TLASNodes.Get(), 9, 16u);
         runner.Srv(gpu.BLASBitTrail.Get(), 18, 0, DXGI_FORMAT_R32G32_UINT);
     }
     auto emissive = runner.Upload(tris);
     runner.Srv(emissive.Get(), 6, sizeof(LightTriangle));
-    const auto tlas = runner.compactNodes ? DecodeTLAS(runner.Read<lt::LightTLASNodePacked>(gpu.TLASNodes.Get()))
-                                          : runner.Read<lt::LightTLASNodeGpu>(gpu.TLASNodes.Get());
+    const auto tlas = runner.Read<lt::LightTLASNodeGpu>(gpu.TLASNodes.Get());
     VerifyNoUnreachableNodes(tlas);
-    const auto blas = runner.compactNodes ? runner.Read<lt::LightBLASNodePacked>(gpu.BLASNodes.Get())
-                                          : std::vector<lt::LightBLASNodePacked>{};
-    const auto fullBlas = runner.compactNodes ? std::vector<lt::LightBLASNodeGpu>{}
-                                              : runner.Read<lt::LightBLASNodeGpu>(gpu.BLASNodes.Get());
+    const auto blas = runner.Read<lt::LightBLASNodeGpu>(gpu.BLASNodes.Get());
     const auto ranges = runner.Read<lt::BlasRangeGpu>(gpu.BLASRanges.Get());
     const auto indices = runner.Read<uint32_t>(gpu.LeafTriIndex.Get());
     const auto triTrails = runner.Read<lt::LightTreeTrail>(gpu.TriBitTrail.Get());
@@ -318,15 +304,8 @@ void VerifyBuiltTree(Runner& runner, lt::LightTreeBuilder& builder, const std::v
     const auto maxTlasDepth = Walk(tlas, 0, 0, 0, 1.0f, [&](const auto& t, uint64_t path, float pdf) {
         Require(path == blasTrails.at(t.slot), "TLAS trail does not reach its slot");
         const auto& r = ranges.at(t.slot);
-        std::vector<lt::LightBLASNodeGpu> local;
-        if (runner.compactNodes) {
-            Require(r.nodeOffset + r.nodeCount + 1u <= blas.size(), "Packed BLAS range exceeds allocation");
-            for (uint32_t i=0; i<r.nodeCount; ++i)
-                local.push_back(lt::UnpackBLASNode<lt::LightBLASNodeGpu>(blas.data()+r.nodeOffset,i));
-        } else {
-            Require(r.nodeOffset + r.nodeCount <= fullBlas.size(), "Full BLAS range exceeds allocation");
-            local.assign(fullBlas.begin()+r.nodeOffset, fullBlas.begin()+r.nodeOffset+r.nodeCount);
-        }
+        Require(r.nodeOffset + r.nodeCount <= blas.size(), "BLAS range exceeds allocation");
+        const std::vector<lt::LightBLASNodeGpu> local(blas.begin()+r.nodeOffset, blas.begin()+r.nodeOffset+r.nodeCount);
         VerifyNoUnreachableNodes(local);
         maxBlasDepth = std::max(maxBlasDepth, Walk(local, 0, 0, 0, pdf, [&](const auto& b, uint64_t bp, float p) {
             Require(b.triCount == 1, "One-triangle leaf invariant broken");
@@ -384,21 +363,16 @@ void VerifyBoundaryTree(Runner& runner, uint32_t depth, bool deepTlas) {
             nodes[i].triCount = 1; nodes[i].triFirst = i; ranges[i].nodeOffset = i; ranges[i].triIndexOffset = i; triToBlas[i] = i;
         }
     }
-    std::vector<lt::LightBLASNodePacked> packed;
     if (deepTlas) {
-        for (UINT i=0; i<nodes.size(); ++i) {
-            ranges[i].nodeOffset=UINT(packed.size()); ranges[i].nodeCount=1u;
-            auto mesh=lt::PackBLAS(std::vector<lt::LightBLASNodeGpu>{nodes[i]});
-            packed.insert(packed.end(),mesh.begin(),mesh.end());
-        }
+        for (UINT i=0; i<nodes.size(); ++i) ranges[i].nodeCount=1u;
     } else {
-        ranges[0].nodeCount=UINT(nodes.size()); packed=lt::PackBLAS(nodes);
+        ranges[0].nodeCount=UINT(nodes.size());
     }
     std::vector<lt::LightSlotGpu> slots(ranges.size());
     for (UINT i = 0; i < slots.size(); ++i) slots[i] = lt::makeSlotRecord(i, ranges[i].nodeOffset, lt::LT_IDENTITY_4X4);
     auto sg = runner.Upload(slots); runner.Srv(sg.Get(), 7, sizeof(slots[0]));
-    auto tg = runner.Upload(lt::PackTLAS(tlas)); runner.Srv(tg.Get(), 9, sizeof(lt::LightTLASNodePacked));
-    auto bg = runner.Upload(packed); runner.Srv(bg.Get(), 10, sizeof(lt::LightBLASNodePacked));
+    auto tg = runner.Upload(tlas); runner.Srv(tg.Get(), 9, 16u);
+    auto bg = runner.Upload(nodes); runner.Srv(bg.Get(), 10, 16u);
     auto rg = runner.Upload(ranges); runner.Srv(rg.Get(), 11, sizeof(ranges[0]));
     auto ig = runner.Upload(indices); runner.Srv(ig.Get(), 12, 0, DXGI_FORMAT_R32_UINT);
     auto mg = runner.Upload(triToBlas); runner.Srv(mg.Get(), 16, 0, DXGI_FORMAT_R32_UINT);
@@ -428,7 +402,7 @@ void VerifyConeGeometry(Runner& runner) {
     XMStoreFloat4x4(&transforms[0].objectToWorld,XMMatrixScaling(-2,3,4)*XMMatrixRotationY(.4f)*XMMatrixTranslation(100,200,-300));
     lt::LightTreeBuilder builder;builder.Build(tris,transforms);builder.UploadAll(runner.device.Get(),runner.commands.Get());
     builder.WriteSrvs(runner.device.Get(),runner.Handle(9));
-    auto initial=DecodeTLAS(runner.Read<lt::LightTLASNodePacked>(builder.GetGpu().TLASNodes.Get()));
+    auto initial=runner.Read<lt::LightTLASNodeGpu>(builder.GetGpu().TLASNodes.Get());
     lt::TLASRebuilder rebuilder;auto refit=rebuilder.Build(roots,transforms);
     const auto& a=initial[0];const auto& b=refit.nodes[0];
     auto rebased=initial;rebased[0].bmin.x-=1000;rebased[0].bmax.x-=1000;
@@ -639,7 +613,7 @@ void VerifyLearning(Runner& runner, bool twoLevel) {
         t.x={x,y,0};t.y={x,y+.01f,0};t.z={x+.01f,y,0};t.weight=1;
         t.meshID=twoLevel?i/16:0;
     }
-    lt::LightTreeBuilder::Settings settings;settings.compactGpuNodes=runner.compactNodes;
+    lt::LightTreeBuilder::Settings settings;
     lt::LightTreeBuilder builder;builder.Build(tris,settings);builder.UploadAll(runner.device.Get(),runner.commands.Get());
     builder.WriteSrvs(runner.device.Get(),runner.Handle(9));builder.WriteLookupSrvs(runner.device.Get(),runner.Handle(16));builder.WriteSlotSrv(runner.device.Get(),runner.Handle(7));
     auto emission=runner.Upload(tris);runner.Srv(emission.Get(),6,sizeof(LightTriangle));runner.Flush();
@@ -1278,7 +1252,7 @@ int main(int argc, char** argv) {
         runner.VerifyPdf({0.0f}, false, true);
         runner.Srv(runner.instanceBuffer.Get(), 3, sizeof(InstanceProperties));
         std::cout << "Empty mesh-light sampling with null resources passed\n";
-        VerifyLightPacking(runner);
+        VerifyLightNodeEncoding(runner);
         for (uint32_t d : {0u, 16u, 17u, 31u, 32u, 33u})
             for (bool tlas : {false, true}) VerifyBoundaryTree(runner, d, tlas);
 
@@ -1292,22 +1266,14 @@ int main(int argc, char** argv) {
                 tris[i].meshID = instances ? i : 0;
             }
             lt::LightTreeBuilder builder;
-            // One builder and heap across layout changes in both directions.
-            for (bool compact : {false, true, false, true}) {
-                settings.compactGpuNodes = compact;
-                builder.Build(tris, settings);
-                VerifyBuiltTree(runner, builder, tris, false, true);
-                if (instances) VerifyBuiltTree(runner, builder, tris, true, true);
-            }
+            builder.Build(tris, settings);
+            VerifyBuiltTree(runner, builder, tris, false, true);
+            if (instances) VerifyBuiltTree(runner, builder, tris, true, true);
             for (auto& t : tris) { t.x = {0,0,0}; t.y = {0,1,0}; t.z = {0,0,1}; }
             builder.Build(tris, settings);
             VerifyBuiltTree(runner, builder, tris, instances, false);
         }
         VerifyConeGeometry(runner);
-        runner.compactNodes=false;
-        VerifyLearning(runner,false);
-        VerifyLearning(runner,true);
-        runner.compactNodes=true;
         VerifyLearning(runner,false);
         VerifyLearning(runner,true);
         runner.rewardScale=1e-6f;

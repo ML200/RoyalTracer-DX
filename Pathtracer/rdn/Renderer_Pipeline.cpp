@@ -5,12 +5,17 @@
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
 #include "nv_helpers_dx12/RootSignatureGenerator.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <chrono>
+#include <cwchar>
 #include <limits>
 #include <fstream>
 #include <filesystem>
+#include <mutex>
+#include <numeric>
 #include <random>
+#include <thread>
 #include <unordered_set>
 #include <d3dcompiler.h>
 #include <DirectXPackedVector.h>
@@ -227,10 +232,7 @@ void Renderer::CreateAccelerationStructures() {
         XMStoreFloat4x4(&x.objectToWorld, shifted);
         ltXforms.push_back(x);
     }
-    m_lightTreeCompact = m_integratorSettings.compactLightTree;
-    lt::LightTreeBuilder::Settings lightTreeSettings;
-    lightTreeSettings.compactGpuNodes = m_lightTreeCompact;
-    m_lightTree.Build(m_scene.emissiveTriangles, m_scene.lightInstances, ltXforms, lightTreeSettings);
+    m_lightTree.Build(m_scene.emissiveTriangles, m_scene.lightInstances, ltXforms);
     m_publishedLightTLAS = m_lightTree.GetCpuTLASNodes();
     m_frameStats.lightBvh.slots = m_lightTree.SlotCount();
     m_lightTree.PrintMetrics();
@@ -390,6 +392,37 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
     return rsc.Generate(m_ctx.Device(), true);
 }
 
+// Runs the jobs on all cores, starting them in list order. After a failure no further jobs start, and the first
+// exception is rethrown here.
+static void RunParallel(const std::vector<std::function<void()>>& jobs) {
+    if (jobs.empty())
+        return;
+    std::atomic<size_t> next{0};
+    std::mutex errorLock;
+    std::exception_ptr error;
+    auto work = [&] {
+        for (size_t i = next++; i < jobs.size(); i = next++) {
+            try {
+                jobs[i]();
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(errorLock);
+                if (!error)
+                    error = std::current_exception();
+                next = jobs.size();
+            }
+        }
+    };
+    const size_t threadCount = std::min<size_t>(jobs.size(), std::max(1u, std::thread::hardware_concurrency()));
+    std::vector<std::thread> threads;
+    for (size_t t = 1; t < threadCount; ++t)
+        threads.emplace_back(work);
+    work();
+    for (std::thread& t : threads)
+        t.join();
+    if (error)
+        std::rethrow_exception(error);
+}
+
 void Renderer::CreateRaytracingPipeline() {
     m_skyLutsReady = false;
     m_lightLearningResetPending = true;
@@ -402,10 +435,16 @@ void Renderer::CreateRaytracingPipeline() {
     m_hitSignature = CreateHitSignature();
     pipeline.SetGlobalRootSignature(m_rayGenSignature.Get());
 
-    m_csPSOs.clear();
-    uint32_t nextCs = 0, rgSlot = 0;
+    using Clock = std::chrono::steady_clock;
+    auto msSince = [](Clock::time_point t0) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+    };
+    const auto pipelineT0 = Clock::now();
 
-    std::vector<std::wstring> rayGenNames;
+    // Each compute pass gets a PSO; each ray-generation file becomes a library of the ray-tracing pipeline.
+    std::vector<std::wstring> csFiles, libFiles;
+    std::vector<std::vector<std::wstring>> libExports;
+    uint32_t rgSlot = 0;
 
     for (auto& p : m_passes.Passes()) {
         if (p.stage == Stage::Barrier || p.stage == Stage::LoopStart || p.stage == Stage::LoopEnd ||
@@ -413,16 +452,8 @@ void Renderer::CreateRaytracingPipeline() {
             continue;
 
         if (p.stage == Stage::Compute || p.stage == Stage::FixedCompute) {
-            ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
-            D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
-            desc.pRootSignature = m_computeSignature.Get();
-            desc.CS = {cs->GetBufferPointer(), cs->GetBufferSize()};
-            ComPtr<ID3D12PipelineState> pso;
-            LOG(L"[Pipeline] Creating compute PSO: " << p.file);
-            ThrowIfFailed(m_ctx.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
-            LOG(L"[Pipeline] Compute PSO ready: " << p.file);
-            m_csPSOs.push_back(pso);
-            p.psoIdx = nextCs++;
+            p.psoIdx = (uint32_t)csFiles.size();
+            csFiles.push_back(p.file);
             continue;
         }
 
@@ -431,55 +462,154 @@ void Renderer::CreateRaytracingPipeline() {
 
         std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
-        rayGenNames.push_back(base);
-        ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str());
-        pipeline.AddLibrary(lib.Get(), {base.c_str()});
+        libFiles.push_back(p.file);
+        libExports.push_back({base});
         m_passes.RegisterPassIndex(p.file, rgSlot);
         rgSlot++;
+    }
+    const size_t rayGenCount = libFiles.size();
 
+    // Path-tracer material shading: lean variants off the sea, light sampling in callables. A ray-tracing
+    // pipeline runs at the register count of its heaviest shader, run or not, so the water shaders join
+    // only with a sea; without one the raygen never selects them (stand-ins keep their table slots).
+    m_ptWaterShaders = m_ocean.Enabled();
+    std::vector<std::wstring> missExports = {L"Miss"},
+                              callableExports = {L"PtLightPdf", L"PtSss"};
+    if (m_ptWaterShaders) {
+        missExports.push_back(L"PtPrimaryShade");
+        callableExports.insert(callableExports.end(), {L"PtWaterSegment", L"PtNeeWater"});
+    }
+    libFiles.insert(libFiles.end(), {L"Miss_v8.hlsl", L"HitLean_v8.hlsl", L"AnyHit.hlsl", L"PtCallables_v8.hlsl"});
+    libExports.push_back(missExports);
+    libExports.push_back({L"ClosestHitLean", L"PtPrimaryShadeLean"});
+    libExports.push_back({L"AlphaTestAnyHit"});
+    libExports.push_back(callableExports);
+    if (m_ptWaterShaders) {
+        libFiles.push_back(L"Hit_v8.hlsl");
+        libExports.push_back({L"ClosestHit"});
     }
 
-    // Empty closest-hit/miss: CreateStateObject fails without a closest-hit.
-    ComPtr<IDxcBlob> missLib = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
-    ComPtr<IDxcBlob> hitLib = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.hlsl");
-    ComPtr<IDxcBlob> anyHitLib = nv_helpers_dx12::CompileShaderLibrary(L"AnyHit.hlsl");
+    std::vector<ComPtr<IDxcBlob>> csBlobs(csFiles.size()), libBlobs(libFiles.size());
+    std::vector<std::function<void()>> jobs;
+    for (size_t i = 0; i < libFiles.size(); ++i)
+        jobs.push_back([&, i] { libBlobs[i] = nv_helpers_dx12::CompileShaderLibrary(libFiles[i].c_str()); });
+    for (size_t i = 0; i < csFiles.size(); ++i)
+        jobs.push_back([&, i] { csBlobs[i] = nv_helpers_dx12::CompileCS(csFiles[i].c_str(), L"main"); });
+    RunParallel(jobs);
+    LOG(L"[Pipeline] DXIL for " << jobs.size() << L" shaders ready in " << msSince(pipelineT0) << L" ms");
 
-    pipeline.AddLibrary(missLib.Get(), {L"Miss"});
-    pipeline.AddLibrary(hitLib.Get(), {L"ClosestHit"});
-    pipeline.AddLibrary(anyHitLib.Get(), {L"AlphaTestAnyHit"});
+    for (size_t i = 0; i < libFiles.size(); ++i)
+        pipeline.AddLibrary(libBlobs[i].Get(), libExports[i]);
 
-    pipeline.AddHitGroup(L"OpaqueHitGroup", L"ClosestHit");
-    pipeline.AddHitGroup(L"AlphaHitGroup", L"ClosestHit", L"AlphaTestAnyHit");
-    pipeline.AddHitGroup(L"TerrainHitGroup", L"ClosestHit");
+    const std::wstring geometryHit = m_ptWaterShaders ? L"ClosestHit" : L"ClosestHitLean";
+    pipeline.AddHitGroup(L"OpaqueHitGroup", geometryHit);
+    pipeline.AddHitGroup(L"AlphaHitGroup", geometryHit, L"AlphaTestAnyHit");
+    pipeline.AddHitGroup(L"TerrainHitGroup", geometryHit);
+    // Only reached through HitObject::SetShaderTableIndex, after traversal; no any-hit.
+    pipeline.AddHitGroup(L"PtLeanHitGroup", L"ClosestHitLean");
 
-    pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
-    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),
-                                         {L"OpaqueHitGroup", L"AlphaHitGroup", L"TerrainHitGroup"});
+    // Misses and callables share the empty local signature.
+    std::vector<std::wstring> emptyLocal = missExports;
+    emptyLocal.push_back(L"PtPrimaryShadeLean");
+    emptyLocal.insert(emptyLocal.end(), callableExports.begin(), callableExports.end());
+    pipeline.AddRootSignatureAssociation(m_missSignature.Get(), emptyLocal);
+    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"OpaqueHitGroup", L"AlphaHitGroup",
+                                                                L"TerrainHitGroup", L"PtLeanHitGroup"});
 
-    pipeline.SetMaxPayloadSize(4); // TracePayload in Inline_RT_v8.hlsli carries nothing
+    pipeline.SetMaxPayloadSize(64); // PtVertexIO (PtVertex_v8.hlsli); TracePayload carries nothing
 
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
     pipeline.SetMaxRecursionDepth(1);
     pipeline.SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS);
 
-    LOG(L"[Pipeline] Creating ray-tracing state object (" << rayGenNames.size() << L" raygen exports)");
-    m_rtStateObject = pipeline.Generate();
-    LOG(L"[Pipeline] Ray-tracing state object ready");
+    // The driver compiles each collection and each compute PSO single-threaded, so they all run side by side,
+    // largest first (ray-generation collections, then compute shaders by DXIL size).
+    const auto driverT0 = Clock::now();
+    const size_t collectionCount = pipeline.PrepareCollections();
+    std::vector<size_t> csOrder(csFiles.size());
+    std::iota(csOrder.begin(), csOrder.end(), size_t(0));
+    std::sort(csOrder.begin(), csOrder.end(),
+              [&](size_t a, size_t b) { return csBlobs[a]->GetBufferSize() > csBlobs[b]->GetBufferSize(); });
+
+    std::vector<long long> jobMs(collectionCount + csFiles.size());
+    std::vector<std::string> collectionErrors(collectionCount);
+    m_csPSOs.assign(csFiles.size(), nullptr);
+    jobs.clear();
+    for (size_t c = 0; c < collectionCount; ++c)
+        jobs.push_back([&, c] {
+            const auto t0 = Clock::now();
+            try {
+                pipeline.CreateCollection(c);
+            } catch (const std::exception& e) {
+                collectionErrors[c] = e.what(); // handled below by compiling one state object instead
+            }
+            jobMs[c] = msSince(t0);
+        });
+    for (size_t i : csOrder)
+        jobs.push_back([&, i] {
+            const auto t0 = Clock::now();
+            D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+            desc.pRootSignature = m_computeSignature.Get();
+            desc.CS = {csBlobs[i]->GetBufferPointer(), csBlobs[i]->GetBufferSize()};
+            ThrowIfFailed(m_ctx.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&m_csPSOs[i])));
+            jobMs[collectionCount + i] = msSince(t0);
+        });
+    RunParallel(jobs);
+
+    for (size_t c = 0; c < collectionCount; ++c)
+        LOG(L"[Pipeline]   collection " << pipeline.CollectionName(c) << L": " << jobMs[c] << L" ms");
+    for (size_t i : csOrder)
+        LOG(L"[Pipeline]   compute PSO " << csFiles[i] << L": " << jobMs[collectionCount + i] << L" ms");
+
+    LOG(L"[Pipeline] Linking ray-tracing state object (" << rayGenCount << L" raygen exports)");
+    const auto linkT0 = Clock::now();
+    m_rtStateObject.Reset();
+    std::string collectionError;
+    for (const std::string& e : collectionErrors)
+        if (collectionError.empty())
+            collectionError = e;
+    if (collectionError.empty()) {
+        try {
+            m_rtStateObject = pipeline.LinkCollections();
+        } catch (const std::exception& e) {
+            collectionError = e.what();
+        }
+    }
+    if (!m_rtStateObject) {
+        WARN(L"[Pipeline] Collections failed (" << std::wstring(collectionError.begin(), collectionError.end())
+                                                << L"); compiling one state object on this thread instead");
+        m_rtStateObject = pipeline.Generate();
+    }
+    LOG(L"[Pipeline] Ray-tracing state object ready: link " << msSince(linkT0) << L" ms, driver compilation "
+                                                            << msSince(driverT0) << L" ms, total "
+                                                            << msSince(pipelineT0) << L" ms");
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 
     // Keep the driver's default stack (exact at depth 1); log only.
     auto stackOf = [&](const wchar_t* exportName) -> UINT64 {
+        const bool waterOnly = !wcscmp(exportName, L"PtPrimaryShade") || !wcscmp(exportName, L"PtNeeWater") ||
+                               !wcscmp(exportName, L"PtWaterSegment");
+        if (waterOnly && !m_ptWaterShaders)
+            return 0ull; // not in this pipeline
         const UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(exportName);
         return sz >= 0xFFFFFFFFull ? 0ull : sz;
     };
     UINT64 rgStack = 0;
-    for (const auto& name : rayGenNames) {
+    for (size_t i = 0; i < rayGenCount; ++i) {
+        const std::wstring& name = libExports[i][0];
         const UINT64 sz = stackOf(name.c_str());
         LOG(L"[RT] raygen " << name << L" stack " << sz);
         rgStack = std::max(rgStack, sz);
     }
-    LOG(L"[RT] shader stack sizes: raygen " << rgStack << L", any-hit " << stackOf(L"AlphaHitGroup::anyhit")
-                                            << L", miss " << stackOf(L"Miss") << L" (driver default pipeline stack)");
+    LOG(L"[RT] shader stack sizes: raygen " << rgStack << L", closest-hit "
+                                            << stackOf(L"OpaqueHitGroup::closesthit") << L" (lean "
+                                            << stackOf(L"PtLeanHitGroup::closesthit") << L"), any-hit "
+                                            << stackOf(L"AlphaHitGroup::anyhit") << L", miss " << stackOf(L"Miss")
+                                            << L", primary " << stackOf(L"PtPrimaryShade") << L" (lean "
+                                            << stackOf(L"PtPrimaryShadeLean") << L"), callables light pdf "
+                                            << stackOf(L"PtLightPdf") << L", SSS " << stackOf(L"PtSss")
+                                            << L", water NEE " << stackOf(L"PtNeeWater") << L", water segment "
+                                            << stackOf(L"PtWaterSegment") << L" (driver default pipeline stack)");
 }
 
 void Renderer::CreateRaytracingOutputBuffer() {
@@ -990,7 +1120,15 @@ void Renderer::CreateShaderBindingTable() {
         rgEntryCount++;
     }
 
+    // Order matches PT_MISS_SKY, PT_MISS_PRIMARY, PT_MISS_PRIMARY_LEAN (PtVertex_v8.hlsli). Without a sea the
+    // water records are never selected; stand-ins keep the indices.
     m_sbtHelper.AddMissProgram(L"Miss", {});
+    m_sbtHelper.AddMissProgram(m_ptWaterShaders ? L"PtPrimaryShade" : L"PtPrimaryShadeLean", {});
+    m_sbtHelper.AddMissProgram(L"PtPrimaryShadeLean", {});
+
+    // PT_HIT_LEAN_RECORD; every trace skips it with RayContributionToHitGroupIndex = PT_HIT_RECORD_OFFSET
+    // (Inline_RT_v8.hlsli), so the geometry records below keep their instance contributions.
+    m_sbtHelper.AddHitGroup(L"PtLeanHitGroup", {});
 
     for (size_t i = 0; i < m_scene.instances.size(); ++i) {
         const auto& mesh = m_scene.meshes[m_scene.instances[i].meshIndex];
@@ -1010,6 +1148,12 @@ void Renderer::CreateShaderBindingTable() {
 
     m_sbtHelper.AddHitGroup(L"OpaqueHitGroup", {});
     m_sbtHelper.AddHitGroup(L"AlphaHitGroup", {});
+
+    // Order matches PT_CALLABLE_* (PtVertex_v8.hlsli).
+    m_sbtHelper.AddCallableProgram(L"PtLightPdf", {});
+    m_sbtHelper.AddCallableProgram(L"PtSss", {});
+    m_sbtHelper.AddCallableProgram(m_ptWaterShaders ? L"PtWaterSegment" : L"PtSss", {});
+    m_sbtHelper.AddCallableProgram(m_ptWaterShaders ? L"PtNeeWater" : L"PtSss", {});
 
     uint32_t sbtSize = m_sbtHelper.ComputeSBTSize();
     m_sbtStorage = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), sbtSize, D3D12_RESOURCE_FLAG_NONE,

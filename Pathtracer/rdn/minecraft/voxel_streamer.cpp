@@ -332,14 +332,12 @@ bool VoxelStreamer::allocate_gpu(GpuChunk& g, uint32_t vtxCount, uint32_t idxCou
     g.triCount = triCount;
     g.light = LightData{};
     if (lightRecs && lightNodes && m_lightsBound) {
-        lightNodes += m_lights.compactNodes ? 1u : 0u;
         uint64_t r = 0, n = 0;
         if (m_lightRecAlloc.allocate(lightRecs, r)) {
             if (m_lightNodeAlloc.allocate(lightNodes, n)) {
                 g.light.recOff = r; g.light.recCount = lightRecs;
                 g.light.nodeOff = n; g.light.nodeCount = lightNodes;
                 g.light.gen = m_lightGen;
-                g.light.compactNodes = m_lights.compactNodes;
             } else {
                 m_lightRecAlloc.free(r, lightRecs);
             }
@@ -554,7 +552,7 @@ void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
     job->recBytes = job->nodeBytes = job->leafBytes = job->trailBytes = 0;
     if (g.light.valid()) {
         job->recBytes   = (uint32_t)(records.size() * sizeof(LightTriangle));
-        job->nodeBytes  = (uint32_t)(g.light.nodeCount * lt::LightBLASNodeStride(g.light.compactNodes));
+        job->nodeBytes  = (uint32_t)(g.light.nodeCount * sizeof(lt::LightBLASNodeGpu));
         job->leafBytes  = (uint32_t)(blas.leafTriLocal.size() * sizeof(uint32_t));
         job->trailBytes = (uint32_t)(blas.trails.size() * sizeof(lt::LightTreeTrail));
     }
@@ -601,8 +599,8 @@ void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
     if (g.light.valid()) {
         const uint32_t recBase = lb.recordBase + (uint32_t)g.light.recOff;
         std::memcpy(dst + offRec, records.data(), job->recBytes);
-        const auto packedNodes = lt::EncodeLightBLAS(blas.nodes, g.light.compactNodes, recBase);
-        std::memcpy(dst + offNode, packedNodes.data(), job->nodeBytes);
+        const auto nodeWords = lt::EncodeLightBLAS(blas.nodes, recBase);
+        std::memcpy(dst + offNode, nodeWords.data(), job->nodeBytes);
         uint32_t* leaf = reinterpret_cast<uint32_t*>(dst + offLeaf);
         for (size_t i = 0; i < blas.leafTriLocal.size(); ++i) leaf[i] = recBase + blas.leafTriLocal[i];
         std::memcpy(dst + offTrail, blas.trails.data(), job->trailBytes);
@@ -1316,7 +1314,7 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
             if (m_lightsBound && job.gpu.light.gen == m_lightGen) {
                 const LightData& l = job.gpu.light;
                 copyList->CopyBufferRegion(m_lights.records,   ((uint64_t)m_lights.recordBase + l.recOff) * sizeof(LightTriangle),          job.srcBuffer, job.srcRecOff,   job.recBytes);
-                copyList->CopyBufferRegion(m_lights.nodes,     ((uint64_t)m_lights.nodeBase + l.nodeOff) * lt::LightBLASNodeStride(l.compactNodes), job.srcBuffer, job.srcNodeOff, job.nodeBytes);
+                copyList->CopyBufferRegion(m_lights.nodes,     ((uint64_t)m_lights.nodeBase + l.nodeOff) * sizeof(lt::LightBLASNodeGpu), job.srcBuffer, job.srcNodeOff, job.nodeBytes);
                 copyList->CopyBufferRegion(m_lights.leafIndex, ((uint64_t)m_lights.recordBase + l.recOff) * sizeof(uint32_t),               job.srcBuffer, job.srcLeafOff,  job.leafBytes);
                 copyList->CopyBufferRegion(m_lights.trails,    ((uint64_t)m_lights.recordBase + l.recOff) * sizeof(lt::LightTreeTrail),      job.srcBuffer, job.srcTrailOff, job.trailBytes);
                 m_stats.copiesThisFrame += 4;

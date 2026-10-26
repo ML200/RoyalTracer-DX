@@ -218,6 +218,54 @@ static const float DV_LITE_L_SCALE = 64.0f;
 void   DvStoreLiteL(uint px, float3 L) { g_pathStateBuffer.Store(dv_lite(px), PackRGB9E5(max(L, 0.0f) / DV_LITE_L_SCALE)); }
 float3 DvLoadLiteL(uint px) { return UnpackRGB9E5(g_pathStateBuffer.Load(dv_lite(px))) * DV_LITE_L_SCALE; }
 
+// Contributions as they happen, so the trace raygen carries no accumulators through its reorder. The
+// trace pass owns its pixel (plain read-modify-write); the deferred light samples of one pixel may run
+// together in Pass_pt_nee_v8, so they add with compare-exchange.
+void DvAddPathRelL(uint px, float3 L)
+{
+    if (!any(L != 0.0f)) return;
+    const uint a = dv_path(px) + 16u;
+    g_pathStateBuffer.Store3(a, asuint(asfloat(g_pathStateBuffer.Load3(a)) + L));
+}
+void DvAddLiteL(uint px, float3 L)
+{
+    if (!any(L != 0.0f)) return;
+    DvStoreLiteL(px, DvLoadLiteL(px) + L);
+}
+void PsAtomicAddFloat(uint a, float v)
+{
+    if (v == 0.0f) return;
+    uint expected = g_pathStateBuffer.Load(a);
+    [loop] for (uint attempt = 0u; attempt < 64u; ++attempt)
+    {
+        uint seen;
+        g_pathStateBuffer.InterlockedCompareExchange(a, expected, asuint(asfloat(expected) + v), seen);
+        if (seen == expected) return;
+        expected = seen;
+    }
+}
+void DvAtomicAddPathRelL(uint px, float3 L)
+{
+    const uint a = dv_path(px) + 16u;
+    PsAtomicAddFloat(a,      L.x);
+    PsAtomicAddFloat(a + 4u, L.y);
+    PsAtomicAddFloat(a + 8u, L.z);
+}
+void DvAtomicAddLiteL(uint px, float3 L)
+{
+    if (!any(L != 0.0f)) return;
+    const uint a = dv_lite(px);
+    uint expected = g_pathStateBuffer.Load(a);
+    [loop] for (uint attempt = 0u; attempt < 64u; ++attempt)
+    {
+        const uint next = PackRGB9E5(max(UnpackRGB9E5(expected) * DV_LITE_L_SCALE + L, 0.0f) / DV_LITE_L_SCALE);
+        uint seen;
+        g_pathStateBuffer.InterlockedCompareExchange(a, expected, next, seen);
+        if (seen == expected) return;
+        expected = seen;
+    }
+}
+
 // Terminal event (24 bytes): pending emitter hit or escape.
 struct DvEmitter { uint lightID; uint inst; float3 pos; float3 n; };
 void DvStoreEmitter(uint px, DvEmitter e)
@@ -239,9 +287,10 @@ DvEmitter DvLoadEmitter(uint px)
     return e;
 }
 struct DvMiss { float3 dir; float3 skySun; float candMis; };
-void DvStoreMiss(uint px, DvMiss m)
+// dirPk: PackNormal of the escaped direction (PtShadeMiss).
+void DvStoreMiss(uint px, uint dirPk, float3 skySun, float candMis)
 {
-    g_pathStateBuffer.Store3(dv_end(px), uint3(PackNormal(m.dir), PackRGB9E5(m.skySun), asuint(m.candMis)));
+    g_pathStateBuffer.Store3(dv_end(px), uint3(dirPk, PackRGB9E5(skySun), asuint(candMis)));
 }
 DvMiss DvLoadMiss(uint px)
 {
@@ -312,4 +361,19 @@ void PtAddRadiance(uint2 pixel, float3 L)
     L /= (float)PtSampleCount();
     if (!any(L != 0.0f) || any(isnan(L)) || any(isinf(L))) return;
     gScratchPing[uint3(pixel, 2)] += float4(L, 0.0f);
+}
+
+// Deferred light-sample queue (PS_NEE_PLANE, 64-byte slots; PtNee_v8.hlsli): slot 0 holds the count.
+// Pass_pt_nee_v8 drains it, Pass_pt_shade_v8 empties it for the next sample.
+static const uint PT_NEE_NO_SLOT = 0xFFFFFFFFu;
+uint PtNeeQueueBase()            { return ps_numPx() * PS_NEE_PLANE; }
+uint PtNeeQueueCapacity()        { return IMG_W * IMG_H - 1u; }
+uint PtNeeQueueCount()           { return min(g_pathStateBuffer.Load(PtNeeQueueBase()), PtNeeQueueCapacity()); }
+uint PtNeeRequestAddress(uint i) { return PtNeeQueueBase() + (i + 1u) * PS_NEE_BYTES; }
+
+// A trace-pass contribution: into the pixel before the deferred vertex, into its relL after.
+void PtGather(uint2 pixel, uint px, bool pending, float3 L)
+{
+    if (pending) DvAddPathRelL(px, L);
+    else         PtAddRadiance(pixel, L);
 }

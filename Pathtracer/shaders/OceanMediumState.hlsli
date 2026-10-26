@@ -19,7 +19,7 @@ float OceanHeight(float2 xz) {
     // Newton on the horizontal map: q + D(q) = xz.
     float2 q = xz;
     OceanSample s = OceanSampleSurface(q, 0.0f);
-    [unroll] for (uint i=0u; i<3u; ++i) {
+    [loop] for (uint i=0u; i<3u; ++i) {
         const float3 A = s.stretch;
         const float2 residual = q + s.displacement.xz - xz;
         q -= clamp(float2(A.y*residual.x-A.z*residual.y, A.x*residual.y-A.z*residual.x) /

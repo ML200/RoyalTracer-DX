@@ -17,6 +17,11 @@ static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
 #define SHARC_SER_REORDER 1
 #endif
 
+// Hit-group table: the lean path-tracer record first, then the geometry records, which every
+// trace reaches through RayContributionToHitGroupIndex (Renderer::CreateShaderBindingTable).
+static const uint PT_HIT_LEAN_RECORD   = 0u;
+static const uint PT_HIT_RECORD_OFFSET = 1u;
+
 // Material context of a path vertex.
 struct HitContext {
     float3 hitPos;
@@ -96,7 +101,8 @@ inline bool IsRayDescValid(RayDesc r)
 }
 
 // An invalid ray becomes an empty-mask ray, i.e. a plain miss. No reorder here.
-inline dx::HitObject TraceRayChecked(RaytracingAccelerationStructure bvh, uint rayFlags, uint instanceMask, RayDesc ray)
+inline dx::HitObject TraceRayChecked(RaytracingAccelerationStructure bvh, uint rayFlags, uint instanceMask, RayDesc ray,
+    uint missIndex = 0u)
 {
     if (!IsRayDescValid(ray))
     {
@@ -107,7 +113,7 @@ inline dx::HitObject TraceRayChecked(RaytracingAccelerationStructure bvh, uint r
         instanceMask  = 0u;
     }
     TracePayload payload = (TracePayload)0;
-    return dx::HitObject::TraceRay(bvh, rayFlags, instanceMask, 0, 1, 0, ray, payload);
+    return dx::HitObject::TraceRay(bvh, rayFlags, instanceMask, PT_HIT_RECORD_OFFSET, 1, missIndex, ray, payload);
 }
 
 inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
@@ -149,14 +155,6 @@ inline float3 CandidateGeoNormalW(uint instID, uint primID)
     const float3x3 N = (float3x3)instanceProps[instID].objectToWorldNormal;
     float3 nW = mul(N, cross(p1 - p0, p2 - p0));
     return nW * rsqrt(max(dot(nW, nW), 1e-20f));
-}
-
-inline float3 ThinGlassShadowTr(uint matID, uint instID, uint primID, float3 dir)
-{
-    const float3 nW = CandidateGeoNormalW(instID, primID);
-    const float  Ni = LoadNi(matID);
-    const float  F  = FresnelDielectric(-dir, nW, 1.0f, Ni).x;
-    return (1.0f - F) * LoadTf(matID);
 }
 
 // Previous minus current displacement at a stitched vertex.
@@ -218,45 +216,51 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
 
     float3 tr = explicitWater || !waterAttenuation ? 1.0f.xxx : OceanShadowTransmittance(oA, oB);
+    // Candidates are rare but their handling set the callers' register peak: one candidate normal
+    // serves both glass kinds, and real branches keep glass and alpha work from being merged.
     [loop]
     for (uint i = 0u; q.Proceed() && i < 128u; ++i)
     {
-        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+        const uint cInstID = q.CandidateInstanceID();
+        const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+        const uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
+
+        if (explicitWater && LoadIsOceanMaterial(cMatID)) continue;
+
+        const bool thinGlass = LoadIsThinGlass(cMatID);
+        [branch]
+        if (thinGlass || LoadKd_w(cMatID) < 1.0f - EPSILON)
         {
-            const uint cInstID = q.CandidateInstanceID();
-            const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-            const uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
-
-            if (explicitWater && LoadIsOceanMaterial(cMatID)) continue;
-
-            if (LoadIsThinGlass(cMatID))
+            const float3 nW = CandidateGeoNormalW(cInstID, cPrimID);
+            const float  Ni = LoadNi(cMatID);
+            if (thinGlass)
+                tr *= (1.0f - FresnelDielectric(-direction, nW, 1.0f, Ni).x) * LoadTf(cMatID);
+            else
             {
-
-                tr *= ThinGlassShadowTr(cMatID, cInstID, cPrimID, direction);
-            }
-            else if (LoadKd_w(cMatID) < 1.0f - EPSILON)
-            {
-                const float3 nW = CandidateGeoNormalW(cInstID, cPrimID);
                 // Crossing direction sets the IOR ratio; past the critical angle, TIR blocks it.
-                const float ior = max(LoadNi(cMatID), 1.0f);
+                const float ior = max(Ni, 1.0f);
                 const bool leaving = dot(direction, nW) > 0.0f;
                 tr *= 1.0f - FresnelDielectricTIR(-direction, nW, leaving ? ior : 1.0f,
                                                   leaving ? 1.0f : ior).x;
             }
-            else if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
-            {
+        }
+        else
+        {
+            [branch]
+            if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
                 q.CommitNonOpaqueTriangleHit();
-            }
         }
     }
     return (q.CommittedStatus() == COMMITTED_NOTHING) ? tr : 0.0.xxx;
 }
 
+// V and Ng unit (EvalSurfaceStateImpl normalizes both); N may come from the sea and is normalized here.
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
 {
-    float3 Vn  = normalize(V);
-    float3 Nn  = normalize(N);
-    float3 NGn = normalize(Ng);
+    const float3 Vn  = V;
+    float3       Nn  = normalize(N);
+    const float3 NGn = Ng;
 
     float a = dot(Nn, Vn);
     if (a < epsView)
@@ -526,9 +530,10 @@ HitInfo EvalSurfaceStateImpl(
     float3 posW;
     float3 normW;
     float3 geoNormW;
-    float3 tangentW_geom;
-    float3 bitangentW_geom;
+    float3 tangentW_geom   = 0.0f;
+    float3 bitangentW_geom = 0.0f;
     float  uvPerWorld;   // UV per world unit
+    const int normalTexID = LoadNormalTexID(materialID);
 
     {
         const float3x4 M = instanceProps[instID].objectToWorld;
@@ -551,12 +556,17 @@ HitInfo EvalSurfaceStateImpl(
         const float3 e2w = mul(R, e2_local);
         uvPerWorld = sqrt(abs(det) / max(length(cross(e1w, e2w)), 1e-20f));
 
-        const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
-        const float3 bitanO = (e2_local * dUV1.x - e1_local * dUV2.x) * invDet;
+        // Only a normal map uses the geometric tangent frame.
+        [branch]
+        if (normalTexID != -1)
+        {
+            const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
+            const float3 bitanO = (e2_local * dUV1.x - e1_local * dUV2.x) * invDet;
 
-        tangentW_geom = mul(R, tanO);
-        tangentW_geom *= rsqrt(max(dot(tangentW_geom, tangentW_geom), 1e-20f));
-        bitangentW_geom = mul(R, bitanO);
+            tangentW_geom = mul(R, tanO);
+            tangentW_geom *= rsqrt(max(dot(tangentW_geom, tangentW_geom), 1e-20f));
+            bitangentW_geom = mul(R, bitanO);
+        }
     }
 
     HitInfo hit = (HitInfo)0.0f;
@@ -594,7 +604,6 @@ HitInfo EvalSurfaceStateImpl(
         hit.oceanBubbles = sea.bubbles;
     }
 
-    const int normalTexID = LoadNormalTexID(materialID);
     [branch]
     if (normalTexID != -1)
     {

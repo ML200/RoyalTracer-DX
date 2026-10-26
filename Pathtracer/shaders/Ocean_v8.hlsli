@@ -166,17 +166,19 @@ uint OceanHash(uint x) {
 }
 
 // Gradient noise, about -0.7..0.7.
+// The foam loops here stay rolled: unrolled, they made thousands of instructions in every raygen.
 float OceanFoamGrad(float2 p, uint seed) {
     const float2 i = floor(p), f = p - i;
     const float2 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
-    float n[4];
-    [unroll] for (uint k = 0u; k < 4u; ++k) {
+    float n = 0.0f;
+    [loop] for (uint k = 0u; k < 4u; ++k) {
         const float2 c = float2(k & 1u, k >> 1u);
         const uint h = OceanHash((uint)(int)(i.x + c.x) * 0x8DA6B343u ^ OceanHash((uint)(int)(i.y + c.y) * 0xD8163841u + seed));
         const float2 g = float2(h & 0xFFFFu, h >> 16) / 32768.0f - 1.0f;
-        n[k] = dot(g, f - c);
+        const float2 w = select(c > 0.0f, u, 1.0f - u); // bilinear corner weights
+        n += w.x * w.y * dot(g, f - c);
     }
-    return lerp(lerp(n[0], n[1], u.x), lerp(n[2], n[3], u.x), u.y);
+    return n;
 }
 
 // x along the wind, z across it.
@@ -234,7 +236,7 @@ float OceanFoamMean(float amount, float feather) {
 // Inverts OceanFoamMean (monotonic) by bisection.
 float OceanFoamAmount(float cover, float feather) {
     float lo = 0.0f, hi = 1.0f;
-    [unroll] for (uint i = 0u; i < 12u; ++i) {
+    [loop] for (uint i = 0u; i < 12u; ++i) {
         const float mid = 0.5f * (lo + hi);
         if (OceanFoamMean(mid, feather) < cover) lo = mid;
         else hi = mid;
@@ -247,7 +249,7 @@ static const float OCEAN_FOAM_HEADSTART = 0.8f;
 float OceanFoamWalls(float2 p, uint seed) {
     const float2 i = floor(p);
     float f1 = 9.0f, f2 = 9.0f;
-    [unroll] for (uint k = 0u; k < 9u; ++k) {
+    [loop] for (uint k = 0u; k < 9u; ++k) {
         const float2 c = i + float2(float(k % 3u) - 1.0f, float(k / 3u) - 1.0f);
         const uint h = OceanHash((uint)(int)c.x * 0x8DA6B343u ^ OceanHash((uint)(int)c.y * 0xD8163841u + seed));
         const float d = length(c + float2(h & 0xFFFFu, h >> 16) / 65536.0f - p) +
@@ -295,7 +297,7 @@ static const float OCEAN_DOME_STD = 0.5578f;  // and its standard deviation
 float OceanFoamHollow(int2 cell, float2 f, uint seed, out float2 dome) {
     float hollow = -1e30f;
     float2 best = 0.0f;
-    [unroll] for (uint k = 0u; k < 9u; ++k) {
+    [loop] for (uint k = 0u; k < 9u; ++k) {
         const int2 o = int2(int(k % 3u) - 1, int(k / 3u) - 1);
         const int2 c = cell + o;
         const uint h = OceanHash((uint)c.x * 0x8DA6B343u ^ OceanHash((uint)c.y * 0xD8163841u + seed));
@@ -320,7 +322,7 @@ static const float OCEAN_BUBBLE_DOME = 0.45f; // height gradient at a bubble's r
 static const float OCEAN_CLUMP_DOME = 0.35f;  // and at a clump's
 float OceanFoamDetail(float2 q, float2 w, float2 wind, float widthM, OceanParamsGPU P, inout float2 slope, out float detailed) {
     float sum = 0.0f, drawn = 0.0f;
-    [unroll] for (uint l = 0u; l < 3u; ++l) {
+    [loop] for (uint l = 0u; l < 3u; ++l) {
         const float keep = saturate(2.0f - 2.0f * widthM * kBubblesPerTexel[l] / OCEAN_FOAM_TEXEL0);
         if (keep > 0.0f) {
             const float2 t = (q - P.foamLevel[0].xy) * (float(kBubblesPerTexel[l]) / OCEAN_FOAM_TEXEL0);
@@ -333,7 +335,7 @@ float OceanFoamDetail(float2 q, float2 w, float2 wind, float widthM, OceanParams
             slope += keep * OCEAN_BUBBLE_DOME * dome;
         }
     }
-    [unroll] for (uint c = 0u; c < 5u; ++c) {
+    [loop] for (uint c = 0u; c < 5u; ++c) {
         const float keep = saturate(2.0f - 2.0f * widthM / kClumpCell[c]);
         if (keep > 0.0f) {
             const float2 p = float2(w.x / OCEAN_CLUMP_STRETCH, w.y) / kClumpCell[c];

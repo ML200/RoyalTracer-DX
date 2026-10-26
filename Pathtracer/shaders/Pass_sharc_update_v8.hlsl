@@ -362,10 +362,15 @@ void Pass_sharc_update_v8()
             {
                 uint sKey = RcBounceSeed(pathSeed, (uint)depth, 0x4b455953u);
                 const GuideKey guideKey = GuideKeyOf(ctx.hitPos, geometricNormal, sKey);
-                guideEntry = GuideFindOrInsert(guideKey);
+                const GuideKey parentKey = GuideParentKey(guideKey);
+                // The cell, then its parent, through one inlined GuideFindOrInsert.
+                GuideKey key = guideKey;
+                [loop] for (uint level = 0u; level < (GuideKeyMatches(parentKey, guideKey) ? 1u : 2u); ++level)
                 {
-                    const GuideKey parentKey = GuideParentKey(guideKey);
-                    guideParent = GuideKeyMatches(parentKey, guideKey) ? GUIDE_INVALID : GuideFindOrInsert(parentKey);
+                    const uint e = GuideFindOrInsert(key);
+                    if (level == 0u) guideEntry = e;
+                    else guideParent = e;
+                    key = parentKey;
                 }
                 if (GUIDE_TRAIN)
                 {
