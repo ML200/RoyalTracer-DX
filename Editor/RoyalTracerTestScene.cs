@@ -88,6 +88,14 @@ namespace RoyalTracer.Editor
             // Additive unlit embers: they light the scene through the tracer's light tree; HDRP draws them.
             Embers(new Vector3(-0.9f, 0.05f, -2.2f));
 
+            // Unlit neon: a line zigzagging over the ground lights it along its length.
+            var neon = new GameObject("Neon Line").AddComponent<LineRenderer>();
+            neon.positionCount = 5;
+            neon.SetPositions(new[] { new Vector3(-3.4f, 0.04f, -2.6f), new Vector3(-2.6f, 0.04f, -3.4f), new Vector3(-1.8f, 0.04f, -2.6f),
+                                      new Vector3(-1.0f, 0.04f, -3.4f), new Vector3(-0.2f, 0.04f, -2.6f) });
+            neon.widthMultiplier = 0.05f;
+            neon.sharedMaterial = UnlitGlow(new Color(0.2f, 0.9f, 1f) * 4f);
+
             // VFX Graph particles with RoyalTracer's light export (simulated in play mode).
             var sparks = AssetDatabase.LoadAssetAtPath<VisualEffectAsset>(SparksPath);
             if (sparks)
@@ -99,6 +107,15 @@ namespace RoyalTracer.Editor
         }
 
         const string SparksPath = "Packages/com.ml200.royaltracer/TestContent/LightExportSparks.vfx";
+
+        // HDRP/Unlit with a colour above 1: a screen value, as bright at any exposure.
+        static Material UnlitGlow(Color color)
+        {
+            var material = new Material(Shader.Find("HDRP/Unlit"));
+            material.SetColor("_UnlitColor", color);
+            HDMaterial.ValidateMaterial(material);
+            return material;
+        }
 
         static void Embers(Vector3 position)
         {

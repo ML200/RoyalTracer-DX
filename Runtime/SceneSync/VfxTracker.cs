@@ -24,13 +24,15 @@ namespace RoyalTracer
         {
             public VisualEffect effect;
             public GraphicsBuffer buffer;
-            public readonly EmitterSet set = new();
+            public readonly Native.Emitter[] latest = new Native.Emitter[EmitterSet.MaxEmitters]; // the last readback's
             public bool reading, released;
             public int emitters, particles;
         }
 
         readonly Dictionary<EntityId, Tracked> effects = new();
-        readonly Native.Emitter[] emitters = new Native.Emitter[EmitterSet.MaxEmitters];
+        const int Budget = 2048; // emitters a frame over all effects
+        readonly Native.Emitter[] emitters = new Native.Emitter[Budget];
+        readonly EmitterSet set = new(Budget);
         int recordedFrame = -1;
         float exposure;
 
@@ -43,6 +45,7 @@ namespace RoyalTracer
             foreach (var t in effects.Values)
                 Release(t);
             effects.Clear();
+            set.Release();
         }
 
         // Tracks the loaded scenes' effects that export light; releases those that went away.
@@ -77,8 +80,8 @@ namespace RoyalTracer
         }
 
         // In the composite pass, after HDRP's VFX update: reads this frame's particles and clears the buffers for the
-        // next update. Once per frame, whatever the number of cameras. exposure: HDRP's exposure multiplier, 0 while
-        // unknown.
+        // next update, and hands the emitters of the readbacks that arrived to the tracer. Once per frame, whatever the
+        // number of cameras. exposure: HDRP's exposure multiplier, 0 while unknown.
         public void Record(CommandBuffer cmd, float exposure)
         {
             this.exposure = exposure;
@@ -97,12 +100,20 @@ namespace RoyalTracer
                 }
                 cmd.SetBufferData(t.buffer, Zero, 0, 0, 1);
             }
+            int n = 0;
+            foreach (var t in effects.Values)
+            {
+                int take = Mathf.Min(t.emitters, Budget - n);
+                System.Array.Copy(t.latest, 0, emitters, n, take);
+                n += take;
+            }
+            set.Submit(emitters, n, "VFX particles");
+            Emitters = n;
         }
 
         void Receive(Tracked t, AsyncGPUReadbackRequest r)
         {
             t.reading = false;
-            Emitters -= t.emitters;
             Particles -= t.particles;
             t.emitters = t.particles = 0;
             if (r.hasError || t.released || !t.effect)
@@ -120,7 +131,7 @@ namespace RoyalTracer
             var scale = t.effect.transform.lossyScale;
             float radiusScale = Mathf.Max(Mathf.Abs(scale.x), Mathf.Max(Mathf.Abs(scale.y), Mathf.Abs(scale.z)));
             int n = 0;
-            for (int i = 0; i < stored && n < emitters.Length; i += step)
+            for (int i = 0; i < stored && n < t.latest.Length; i += step)
             {
                 int at = HeaderWords + i * RecordWords;
                 var position = new Vector3(floats[at], floats[at + 1], floats[at + 2]);
@@ -141,21 +152,19 @@ namespace RoyalTracer
                     radius *= radiusScale;
                 }
                 position = Space.Point(position);
-                emitters[n++] = new Native.Emitter
+                t.latest[n++] = new Native.Emitter
                 {
                     x = position.x, y = position.y, z = position.z, radius = Mathf.Max(radius, 0.01f),
                     r = floats[at + 4] * toNits * carry, g = floats[at + 5] * toNits * carry, b = floats[at + 6] * toNits * carry,
                 };
             }
-            t.set.Submit(emitters, n, t.effect);
             t.emitters = n;
-            Emitters += n;
         }
 
         static void Release(Tracked t)
         {
             t.released = true;
-            t.set.Release();
+            t.emitters = 0;
             if (t.effect && t.effect.HasGraphicsBuffer(BufferId))
                 t.effect.SetGraphicsBuffer(BufferId, null);
             t.buffer?.Release();
