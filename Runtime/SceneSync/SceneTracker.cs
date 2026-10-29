@@ -304,8 +304,10 @@ namespace RoyalTracer
                     fixedPlacement = root.localToWorldMatrix;
             }
 
-            // Per used submesh: its material ids (one, or a palette's rows), keyed into the stream mesh identity.
+            // Per used submesh: its material ids (one, a palette's rows or a layered material's layers), keyed into the
+            // stream mesh identity.
             var submeshMaterials = new int[shared.Length][];
+            var blending = new LayerBlend[shared.Length];
             string materialKey = "";
             bool glass = false, all = true;
             for (int i = 0; i < shared.Length; ++i)
@@ -316,6 +318,11 @@ namespace RoyalTracer
                 var m = shared[i];
                 if (MaterialConverter.IsPalette(m))
                     submeshMaterials[i] = materials.ConvertPalette(m);
+                else if (MaterialConverter.VertexBlendedLayers(m) > 0 && data.colors != null)
+                {
+                    submeshMaterials[i] = materials.ConvertLayers(m);
+                    blending[i] = MaterialConverter.VertexColorAdds(m) ? LayerBlend.Add : LayerBlend.Multiply;
+                }
                 else if (MaterialConverter.IsGlass(m))
                 {
                     submeshMaterials[i] = new[] { materials.ConvertGlass(m) };
@@ -360,7 +367,7 @@ namespace RoyalTracer
                 // A deforming mesh belongs to its renderer: the vertices are that renderer's pose.
                 var key = meshId + materialKey + (batched ? "/sm" + firstSubmesh : "") + "/b" + bone +
                           (deforming ? "/r" + r.GetEntityId() : "");
-                var entry = StreamMesh(key, data, triangles, submeshMaterials, firstSubmesh, deforming, out var vertices);
+                var entry = StreamMesh(key, data, triangles, submeshMaterials, blending, firstSubmesh, deforming, out var vertices);
                 if (entry == null)
                     continue;
                 var piece = new Piece
@@ -401,7 +408,7 @@ namespace RoyalTracer
         static int Single(BoneWeight w) => w.weight0 >= 0.999f ? w.boneIndex0 : -1;
 
         MeshEntry StreamMesh(string key, MeshData data, List<(int submesh, int tri)> triangles, int[][] submeshMaterials,
-                             int firstSubmesh, bool deforming, out int[] vertices)
+                             LayerBlend[] blending, int firstSubmesh, bool deforming, out int[] vertices)
         {
             vertices = null;
             if (meshes.TryGetValue(key, out var entry))
@@ -409,7 +416,7 @@ namespace RoyalTracer
                 ++entry.users;
                 return entry;
             }
-            int id = Upload(data, triangles, submeshMaterials, firstSubmesh, deforming, out vertices);
+            int id = Upload(data, triangles, submeshMaterials, blending, firstSubmesh, deforming, out vertices);
             if (id < 0)
                 return null;
             meshes[key] = entry = new MeshEntry { id = id, users = 1 };
@@ -473,8 +480,30 @@ namespace RoyalTracer
             }
         }
 
+        enum LayerBlend { None, Multiply, Add }
+
+        // The layer HDRP/LayeredLit weighs most over a triangle, from its vertex colours (layer 1 R, 2 G, 3 B, main A;
+        // a white layer mask): upper layers take what they cover, lower ones the rest.
+        static int HeaviestLayer(Color[] colors, int[] idx, int tri, int layers, LayerBlend blend)
+        {
+            var c = (colors[idx[tri]] + colors[idx[tri + 1]] + colors[idx[tri + 2]]) / 3f;
+            float scale = blend == LayerBlend.Add ? 2f : 1f; // add: white mask + 2 colour - 1
+            float[] masks = { Mathf.Clamp01(scale * c.a), Mathf.Clamp01(scale * c.r), Mathf.Clamp01(scale * c.g), Mathf.Clamp01(scale * c.b) };
+            int heaviest = 0;
+            float best = -1f, sum = 0f;
+            for (int l = layers - 1; l >= 0; --l)
+            {
+                float weight = Mathf.Min(masks[l], 1f - sum);
+                sum = Mathf.Clamp01(sum + masks[l]);
+                if (weight > best)
+                    (best, heaviest) = (weight, l);
+            }
+            return heaviest;
+        }
+
         // The listed triangles as a stream mesh in tracer space: referenced vertices only, winding mirrored.
-        static int Upload(MeshData data, List<(int submesh, int tri)> triangles, int[][] submeshMaterials, int firstSubmesh,
+        static int Upload(MeshData data, List<(int submesh, int tri)> triangles, int[][] submeshMaterials,
+                          LayerBlend[] blending, int firstSubmesh,
                           bool deforming, out int[] vertices)
         {
             var order = new List<int>();
@@ -490,7 +519,9 @@ namespace RoyalTracer
                 var (submesh, tri) = triangles[t];
                 var idx = data.submeshes[firstSubmesh + submesh];
                 var rows = submeshMaterials[submesh];
-                int row = rows.Length > 1 && data.colors != null ? Mathf.Clamp(Mathf.RoundToInt(data.colors[idx[tri]].r), 0, rows.Length - 1) : 0;
+                int row = rows.Length <= 1 || data.colors == null ? 0
+                    : blending[submesh] != LayerBlend.None ? HeaviestLayer(data.colors, idx, tri, rows.Length, blending[submesh])
+                    : Mathf.Clamp(Mathf.RoundToInt(data.colors[idx[tri]].r), 0, rows.Length - 1);
                 triangleMaterials[t] = rows[row];
                 for (int k = 0; k < 3; ++k)
                 {

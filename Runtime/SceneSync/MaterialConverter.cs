@@ -7,10 +7,10 @@ using UnityEngine.Rendering;
 
 namespace RoyalTracer
 {
-    // HDRP/Lit and HDRP/LayeredLit (layer 0) to the tracer's material, and Armored Horizon's Ship Palette shader to one
-    // tracer material per palette row. The tracer's albedo, RMA and normal textures replace the constants they stand
-    // for, so tint, remaps and normal strength are baked into them on the GPU, which also reads textures that are
-    // compressed or not marked readable.
+    // HDRP/Lit and HDRP/LayeredLit (layer 0, or one material per layer when vertex colours blend them) to the tracer's
+    // material, and Armored Horizon's Ship Palette shader to one tracer material per palette row. The tracer's albedo,
+    // RMA and normal textures replace the constants they stand for, so tint, remaps and normal strength are baked into
+    // them on the GPU, which also reads textures that are compressed or not marked readable.
     sealed class MaterialConverter
     {
         const int MaxTextureSize = 2048;
@@ -19,6 +19,7 @@ namespace RoyalTracer
 
         readonly Dictionary<EntityId, int> materials = new();
         readonly Dictionary<EntityId, int[]> palettes = new();
+        readonly Dictionary<EntityId, int[]> layered = new(); // per vertex-blended LayeredLit: one material per layer
         readonly Dictionary<(EntityId, int, int, Vector4, Vector4), int> textures = new();
         readonly Material bake;
         bool warnedOffset;
@@ -29,6 +30,7 @@ namespace RoyalTracer
         {
             materials.Clear();
             palettes.Clear();
+            layered.Clear();
             textures.Clear();
         }
 
@@ -122,11 +124,41 @@ namespace RoyalTracer
             return id;
         }
 
+        // HDRP/LayeredLit blending its layers by vertex colour (multiply or add): its layer count, else 0. Its layers are
+        // traced per triangle (SceneTracker picks the one HDRP weighs most at the triangle's vertices); a layer mask
+        // texture alone would need per-pixel blending, so such materials keep their main layer.
+        public static int VertexBlendedLayers(Material m)
+        {
+            if (Layer(m) != "0" || !m.HasProperty("_VertexColorMode"))
+                return 0;
+            int mode = Mathf.RoundToInt(m.GetFloat("_VertexColorMode")), count = Mathf.RoundToInt(Get(m, "_LayerCount", 1f));
+            return mode is 1 or 2 && count > 1 ? Mathf.Min(count, 4) : 0;
+        }
+
+        public static bool VertexColorAdds(Material m) => Mathf.RoundToInt(Get(m, "_VertexColorMode", 0f)) == 2;
+
+        public int[] ConvertLayers(Material m)
+        {
+            if (layered.TryGetValue(m.GetEntityId(), out var ids))
+                return ids;
+            ids = new int[VertexBlendedLayers(m)];
+            for (int i = 0; i < ids.Length; ++i)
+                ids[i] = ConvertLayer(m, i.ToString());
+            layered[m.GetEntityId()] = ids;
+            return ids;
+        }
+
         public int Convert(Material m)
         {
             if (materials.TryGetValue(m.GetEntityId(), out int id))
                 return id;
-            string l = Layer(m);
+            id = ConvertLayer(m, Layer(m));
+            materials[m.GetEntityId()] = id;
+            return id;
+        }
+
+        int ConvertLayer(Material m, string l)
+        {
             Color baseColor = Get(m, "_BaseColor" + l, Color.white).linear;
             var albedoMap = Tex(m, "_BaseColorMap" + l);
             var maskMap = Tex(m, "_MaskMap" + l);
@@ -175,10 +207,7 @@ namespace RoyalTracer
             if (normalMap)
                 desc.normalTexture = Bake(normalMap, -1, 2, Native.TextureNormal,
                     new Vector4(Get(m, "_NormalScale" + l, 1f), 0f, 0f, 0f), Vector4.zero, false);
-
-            id = Native.RT_CreateMaterial(ref desc);
-            materials[m.GetEntityId()] = id;
-            return id;
+            return Native.RT_CreateMaterial(ref desc);
         }
 
         // Mean linear colour of a texture, from a 32x32 downsample.
