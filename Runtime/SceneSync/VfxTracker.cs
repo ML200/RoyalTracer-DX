@@ -8,13 +8,15 @@ namespace RoyalTracer
     // VFX Graph particles as emitters. A graph opts in with RoyalTracer's light export block (Assets > RoyalTracer >
     // Add Light Export), which appends its live particles to the exposed GraphicsBuffer "RoyalTracerEmitters" during
     // the particle update. This binds a buffer to every such effect, reads it back once per frame (the data arrives a
-    // frame or two later) and feeds the effect's emitter set. Colours are radiance in nits, as HDRP's VFX outputs
-    // treat them.
+    // frame or two later) and feeds the effect's emitter set. Colours come as their outputs draw them: unlit outputs
+    // write screen values (exposure bypassed) unless they use an exposure weight; HDRP's exposure turns them into
+    // radiance.
     sealed class VfxTracker
     {
         public const string BufferName = "RoyalTracerEmitters";
         const int Capacity = 2048; // records per effect; further particles are counted, the stored ones carry their light
-        const int HeaderWords = 4, RecordWords = 8; // header: particles written; record: position, radius, radiance, local
+        const int HeaderWords = 4, RecordWords = 8; // header: particles written; record: position, radius, colour, flags
+        const float MinScreenValue = 0.02f; // particles darker than this on screen do not light the scene noticeably
         static readonly int BufferId = Shader.PropertyToID(BufferName);
         static readonly uint[] Zero = { 0u };
 
@@ -24,15 +26,17 @@ namespace RoyalTracer
             public GraphicsBuffer buffer;
             public readonly EmitterSet set = new();
             public bool reading, released;
-            public int emitters;
+            public int emitters, particles;
         }
 
         readonly Dictionary<EntityId, Tracked> effects = new();
         readonly Native.Emitter[] emitters = new Native.Emitter[EmitterSet.MaxEmitters];
         int recordedFrame = -1;
+        float exposure;
 
         public int Count => effects.Count;
-        public int Emitters { get; private set; } // in the last readbacks
+        public int Emitters { get; private set; }  // in the last readbacks
+        public int Particles { get; private set; } // exported in the last readbacks, before thinning and dropping dark ones
 
         public void Dispose()
         {
@@ -73,9 +77,11 @@ namespace RoyalTracer
         }
 
         // In the composite pass, after HDRP's VFX update: reads this frame's particles and clears the buffers for the
-        // next update. Once per frame, whatever the number of cameras.
-        public void Record(CommandBuffer cmd)
+        // next update. Once per frame, whatever the number of cameras. exposure: HDRP's exposure multiplier, 0 while
+        // unknown.
+        public void Record(CommandBuffer cmd, float exposure)
         {
+            this.exposure = exposure;
             if (Time.frameCount == recordedFrame)
                 return;
             recordedFrame = Time.frameCount;
@@ -97,12 +103,15 @@ namespace RoyalTracer
         {
             t.reading = false;
             Emitters -= t.emitters;
-            t.emitters = 0;
+            Particles -= t.particles;
+            t.emitters = t.particles = 0;
             if (r.hasError || t.released || !t.effect)
                 return;
             var words = r.GetData<uint>();
             var floats = words.Reinterpret<float>(sizeof(uint));
             uint written = words[0];
+            t.particles = (int)written;
+            Particles += t.particles;
             int stored = (int)Mathf.Min(written, Capacity);
             int step = Mathf.Max(1, (stored + EmitterSet.MaxEmitters - 1) / EmitterSet.MaxEmitters);
             // A kept particle carries the light of the skipped ones and of those past the buffer's capacity.
@@ -116,7 +125,17 @@ namespace RoyalTracer
                 int at = HeaderWords + i * RecordWords;
                 var position = new Vector3(floats[at], floats[at + 1], floats[at + 2]);
                 float radius = floats[at + 3];
-                if (floats[at + 7] > 0.5f) // simulated in the effect's local space
+                // flags: 1 = local space, + 2 * exposure weight in 1/255 (0: the colour is a screen value, 1: nits)
+                int flags = (int)floats[at + 7];
+                float weight = (flags >> 1) / 255f;
+                if (exposure <= 0f && weight < 1f)
+                    continue; // screen values wait for HDRP's exposure
+                // screen = colour * lerp(1, exposure, weight); radiance = screen / exposure
+                float screenScale = Mathf.Lerp(1f, exposure, weight);
+                if (exposure > 0f && Mathf.Max(floats[at + 4], Mathf.Max(floats[at + 5], floats[at + 6])) * screenScale < MinScreenValue)
+                    continue;
+                float toNits = weight >= 1f ? 1f : screenScale / exposure;
+                if ((flags & 1) != 0) // simulated in the effect's local space
                 {
                     position = toWorld.MultiplyPoint3x4(position);
                     radius *= radiusScale;
@@ -125,7 +144,7 @@ namespace RoyalTracer
                 emitters[n++] = new Native.Emitter
                 {
                     x = position.x, y = position.y, z = position.z, radius = Mathf.Max(radius, 0.01f),
-                    r = floats[at + 4] * carry, g = floats[at + 5] * carry, b = floats[at + 6] * carry,
+                    r = floats[at + 4] * toNits * carry, g = floats[at + 5] * toNits * carry, b = floats[at + 6] * toNits * carry,
                 };
             }
             t.set.Submit(emitters, n, t.effect);

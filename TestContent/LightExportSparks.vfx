@@ -2643,8 +2643,8 @@ MonoBehaviour:
   m_Disabled: 0
   m_ActivationSlot: {fileID: 8926484042661614855}
   m_BlockName: Glow
-  m_HLSLCode: "\nvoid Glow(inout VFXAttributes attributes, float Radiance)\n{\n   
-    attributes.color = float3(1.0, 0.4, 0.12) * Radiance;\n}"
+  m_HLSLCode: "\nvoid Glow(inout VFXAttributes attributes, float Brightness)\n{\n   
+    attributes.color = float3(1.0, 0.4, 0.12) * Brightness;\n}"
   m_ShaderFile: {fileID: 0}
   m_AvailableFunction:
     selection: Glow
@@ -2674,10 +2674,10 @@ MonoBehaviour:
       m_Type:
         m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral,
           PublicKeyToken=b77a5c561934e089
-      m_SerializableObject: 200
+      m_SerializableObject: 6
     m_Space: -1
   m_Property:
-    name: _Radiance
+    name: _Brightness
     m_serializedType:
       m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral,
         PublicKeyToken=b77a5c561934e089
@@ -2811,24 +2811,28 @@ MonoBehaviour:
   m_InputSlots:
   - {fileID: 8926484042661614865}
   - {fileID: 8926484042661614866}
+  - {fileID: 8926484042661614867}
   m_OutputSlots: []
   m_Disabled: 0
   m_ActivationSlot: {fileID: 8926484042661614864}
   m_BlockName: RoyalTracer Light Export
   m_HLSLCode: "\n// Appends this particle to RoyalTracer's light export: a sphere
-    of the particle's size whose radiance (nits) is\n// colour * alpha * Intensity.
-    Record: position, radius, radiance, 1 when simulated in local space.\nvoid RoyalTracerLightExport(inout
-    VFXAttributes attributes, RWByteAddressBuffer RoyalTracerEmitters, float Intensity)\n{\n   
-    float3 radiance = attributes.color * (attributes.alpha * Intensity);\n    if
-    (!attributes.alive || max(radiance.r, max(radiance.g, radiance.b)) <= 0.0)\n       
-    return;\n    uint bytes;\n    RoyalTracerEmitters.GetDimensions(bytes);\n   
-    uint index;\n    RoyalTracerEmitters.InterlockedAdd(0, 1u, index);\n    if (16u
-    + (index + 1u) * 32u > bytes)\n        return;\n    float3 size = attributes.size
-    * abs(float3(attributes.scaleX, attributes.scaleY, attributes.scaleZ));\n#if
-    VFX_LOCAL_SPACE\n    float local = 1.0;\n#else\n    float local = 0.0;\n#endif\n   
-    uint at = 16u + index * 32u;\n    RoyalTracerEmitters.Store4(at, asuint(float4(attributes.position,
-    0.5 * max(size.x, max(size.y, size.z)))));\n    RoyalTracerEmitters.Store4(at
-    + 16u, asuint(float4(radiance, local)));\n}"
+    of the particle's size showing colour * alpha *\n// Intensity, as its output
+    draws it (ExposureWeight 0: a screen value, 1: radiance in nits). Record: position,
+    radius,\n// colour, flags (1: simulated in local space, + 2 * ExposureWeight
+    in 1/255).\nvoid RoyalTracerLightExport(inout VFXAttributes attributes, RWByteAddressBuffer
+    RoyalTracerEmitters, float Intensity,\n    float ExposureWeight)\n{\n    float3
+    radiance = attributes.color * (attributes.alpha * Intensity);\n    if (!attributes.alive
+    || max(radiance.r, max(radiance.g, radiance.b)) <= 0.0)\n        return;\n   
+    uint bytes;\n    RoyalTracerEmitters.GetDimensions(bytes);\n    uint index;\n   
+    RoyalTracerEmitters.InterlockedAdd(0, 1u, index);\n    if (16u + (index + 1u)
+    * 32u > bytes)\n        return;\n    float3 size = attributes.size * abs(float3(attributes.scaleX,
+    attributes.scaleY, attributes.scaleZ));\n#if VFX_LOCAL_SPACE\n    float local
+    = 1.0;\n#else\n    float local = 0.0;\n#endif\n    float flags = local + 2.0
+    * round(saturate(ExposureWeight) * 255.0);\n    uint at = 16u + index * 32u;\n   
+    RoyalTracerEmitters.Store4(at, asuint(float4(attributes.position, 0.5 * max(size.x,
+    max(size.y, size.z)))));\n    RoyalTracerEmitters.Store4(at + 16u, asuint(float4(radiance,
+    flags)));\n}"
   m_ShaderFile: {fileID: 0}
   m_AvailableFunction:
     selection: RoyalTracerLightExport
@@ -2927,10 +2931,44 @@ MonoBehaviour:
       m_Type:
         m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral,
           PublicKeyToken=b77a5c561934e089
-      m_SerializableObject: 1
+      m_SerializableObject: 1.07862
     m_Space: -1
   m_Property:
     name: _Intensity
+    m_serializedType:
+      m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral,
+        PublicKeyToken=b77a5c561934e089
+  m_Direction: 0
+  m_LinkedSlots: []
+--- !u!114 &8926484042661614867
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f780aa281814f9842a7c076d436932e7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.VisualEffectGraph.Editor::UnityEditor.VFX.VFXSlotFloat
+  m_UIIgnoredErrors: []
+  m_Parent: {fileID: 0}
+  m_Children: []
+  m_UIPosition: {x: 0, y: 0}
+  m_UICollapsed: 1
+  m_UISuperCollapsed: 0
+  m_MasterSlot: {fileID: 8926484042661614867}
+  m_MasterData:
+    m_Owner: {fileID: 8926484042661614858}
+    m_Value:
+      m_Type:
+        m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral,
+          PublicKeyToken=b77a5c561934e089
+      m_SerializableObject: 0
+    m_Space: -1
+  m_Property:
+    name: _ExposureWeight
     m_serializedType:
       m_SerializableType: System.Single, mscorlib, Version=4.0.0.0, Culture=neutral,
         PublicKeyToken=b77a5c561934e089

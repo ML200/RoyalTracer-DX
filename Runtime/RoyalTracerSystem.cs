@@ -42,7 +42,7 @@ namespace RoyalTracer
         public static Texture LastColor { get; private set; } // the last composited tracer output, for captures
 
         // What the tracer's scene holds, for logs and tools.
-        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems ({particles.Emitters} emitters), {effects.Count} exporting VFX ({effects.Emitters} emitters)" : "") : "not running";
+        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems ({particles.Emitters} emitters), {effects.Count} exporting VFX ({effects.Particles} particles, {effects.Emitters} emitters)" : "") : "not running";
         static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
 
         static bool Wanted => sessionChoice ?? PathTracing.UserEnabled;
@@ -310,7 +310,7 @@ namespace RoyalTracer
             CoreUtils.SetRenderTarget(cmd, ctx.cameraColorBuffer, ClearFlag.None);
             CoreUtils.DrawFullScreen(cmd, composite, ctx.propertyBlock, shaderPassId: 0);
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRelease, (IntPtr)(long)ticket.index);
-            effects.Record(cmd); // VFX particles of this frame's update, for the next frames
+            effects.Record(cmd, exposure); // VFX particles of this frame's update, for the next frames
 
             if (!exposureTarget)
                 exposureTarget = new RenderTexture(1, 1, 0, RenderTextureFormat.RFloat) { name = "RoyalTracer exposure" };
