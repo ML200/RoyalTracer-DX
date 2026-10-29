@@ -50,7 +50,8 @@ namespace RoyalTracer
 
         // What the tracer's scene holds, for logs and tools.
         public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems, trails and lines ({particles.Emitters} emitters), {effects.Count} exporting VFX ({effects.Particles} particles, {effects.Emitters} emitters), {water.Overlays} water overlays" : "") : "not running";
-        static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
+        // Cameras whose anti-aliasing and upscaling are off while path tracing: their own settings.
+        static readonly Dictionary<HDAdditionalCameraData, (HDAdditionalCameraData.AntialiasingMode antialiasing, bool dynamicResolution, bool dlss)> savedCameras = new();
         // Cameras whose HDRP water is off while the tracer draws the ocean: their own frame-settings state.
         static readonly Dictionary<HDAdditionalCameraData, (bool custom, bool overridden, bool enabled)> savedWater = new();
 
@@ -167,10 +168,14 @@ namespace RoyalTracer
             if (!Enabled)
                 return;
             CustomPassVolume.UnregisterGlobalCustomPass(pass);
-            foreach (var (data, mode) in savedAntialiasing)
+            foreach (var (data, state) in savedCameras)
                 if (data)
-                    data.antialiasing = mode;
-            savedAntialiasing.Clear();
+                {
+                    data.antialiasing = state.antialiasing;
+                    data.allowDynamicResolution = state.dynamicResolution;
+                    data.allowDeepLearningSuperSampling = state.dlss;
+                }
+            savedCameras.Clear();
             foreach (var (data, state) in savedWater)
                 if (data)
                     SetWaterRendering(data, state.custom, state.overridden, state.enabled);
@@ -410,12 +415,15 @@ namespace RoyalTracer
             bool traced = Application.isPlaying ? camera.cameraType == CameraType.Game : camera == tracedCamera;
             if (!Enabled || disableRequested || !traced || camera.orthographic)
                 return;
-            // TAA jitters HDRP's depth; SMAA keeps it aligned with the tracer's unjittered depth.
+            // DLSS Ray Reconstruction anti-aliases and upscales the traced image: HDRP's anti-aliasing and upscaling on
+            // top would only soften it, and TAA's jitter or a lower render size would part HDRP's depth from the tracer's.
             camera.TryGetComponent(out HDAdditionalCameraData data);
-            if (data && data.antialiasing == HDAdditionalCameraData.AntialiasingMode.TemporalAntialiasing)
+            if (data && !savedCameras.ContainsKey(data))
             {
-                savedAntialiasing[data] = data.antialiasing;
-                data.antialiasing = HDAdditionalCameraData.AntialiasingMode.SubpixelMorphologicalAntiAliasing;
+                savedCameras[data] = (data.antialiasing, data.allowDynamicResolution, data.allowDeepLearningSuperSampling);
+                data.antialiasing = HDAdditionalCameraData.AntialiasingMode.None;
+                data.allowDynamicResolution = false;
+                data.allowDeepLearningSuperSampling = false;
             }
             // While the tracer draws the ocean, this camera draws no HDRP water (from its next frame).
             if (data)
