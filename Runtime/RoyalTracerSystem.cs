@@ -463,7 +463,7 @@ namespace RoyalTracer
             ctx.propertyBlock.SetFloat(MaskId, ShowRawTracer ? 2f : ShowCompositeMask ? 1f : 0f);
             CoreUtils.SetRenderTarget(cmd, ctx.cameraColorBuffer, ctx.cameraDepthBuffer, ClearFlag.None); // the ocean writes depth
             CoreUtils.DrawFullScreen(cmd, composite, ctx.propertyBlock, shaderPassId: 0);
-            cmd.IssuePluginEventAndData(renderEvent, Native.EventRelease, (IntPtr)(long)ticket.index);
+            // No release event: the next frame's render event releases this ticket, saving Unity a command buffer flush.
             effects.Record(cmd, exposure); // VFX particles of this frame's update, for the next frames
 
             if (!exposureTarget)

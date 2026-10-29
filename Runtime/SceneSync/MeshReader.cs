@@ -17,75 +17,117 @@ namespace RoyalTracer
 
     // Reads a mesh, readable or not: unreadable meshes (Read/Write off, static batches) are read back from their GPU
     // buffers, which completes a few frames later. Done is true once Data is set; Data stays null on failure.
+    //
+    // The readbacks are taken in their callbacks: Unity discards a completed readback's data within a frame or two, and
+    // reports it as an error after that, so polling only when the scene syncs lost them whenever completions outpaced
+    // the syncs (many large meshes, or frames without a traced camera while a scene loads). The layout is captured at
+    // the start, so a mesh destroyed while its read is under way only ends the read.
     sealed class MeshRead
     {
         public readonly Mesh mesh;
         public MeshData Data { get; private set; }
         public bool Done { get; private set; }
 
-        readonly List<GraphicsBuffer> buffers = new();
-        readonly List<AsyncGPUReadbackRequest> requests = new(); // vertex streams, then the index buffer
+        readonly string name;
+        readonly int vertexCount;
+        readonly int[] strides;
+        readonly (VertexAttributeDescriptor descriptor, int offset)[] attributes;
+        readonly SubMeshDescriptor[] subMeshes;
+        readonly bool wideIndices;
+        // Per buffer (vertex streams, then the index buffer): the GPU buffer until its data arrives, then a copy.
+        readonly GraphicsBuffer[] buffers;
+        readonly AsyncGPUReadbackRequest[] requests;
+        readonly NativeArray<byte>[] arrived;
+        readonly bool[] taken;
+        int outstanding;
+        bool failed;
 
-        MeshRead(Mesh mesh) => this.mesh = mesh;
+        MeshRead(Mesh mesh)
+        {
+            this.mesh = mesh;
+            name = mesh.name;
+            vertexCount = mesh.vertexCount;
+            strides = new int[mesh.vertexBufferCount];
+            for (int s = 0; s < strides.Length; ++s)
+                strides[s] = mesh.GetVertexBufferStride(s);
+            var descriptors = mesh.GetVertexAttributes();
+            attributes = new (VertexAttributeDescriptor, int)[descriptors.Length];
+            for (int a = 0; a < descriptors.Length; ++a)
+                attributes[a] = (descriptors[a], mesh.GetVertexAttributeOffset(descriptors[a].attribute));
+            subMeshes = new SubMeshDescriptor[mesh.subMeshCount];
+            for (int s = 0; s < subMeshes.Length; ++s)
+                subMeshes[s] = mesh.GetSubMesh(s);
+            wideIndices = mesh.indexFormat == IndexFormat.UInt32;
+            int count = strides.Length + 1;
+            buffers = new GraphicsBuffer[count];
+            requests = new AsyncGPUReadbackRequest[count];
+            arrived = new NativeArray<byte>[count];
+            taken = new bool[count];
+        }
 
         public static MeshRead Start(Mesh mesh)
         {
-            var read = new MeshRead(mesh);
             if (mesh.isReadable)
+                return new MeshRead(mesh) { Data = ReadCpu(mesh), Done = true };
+            var read = new MeshRead(mesh);
+            int last = read.buffers.Length - 1;
+            for (int s = 0; s < last; ++s)
+                read.buffers[s] = mesh.GetVertexBuffer(s);
+            read.buffers[last] = mesh.GetIndexBuffer();
+            read.outstanding = read.buffers.Length;
+            for (int i = 0; i < read.buffers.Length; ++i)
             {
-                read.Data = ReadCpu(mesh);
-                read.Done = true;
-                return read;
+                int slot = i;
+                read.requests[i] = AsyncGPUReadback.Request(read.buffers[i], r => read.Take(slot, r));
             }
-            for (int s = 0; s < mesh.vertexBufferCount; ++s)
-            {
-                var buffer = mesh.GetVertexBuffer(s);
-                read.buffers.Add(buffer);
-                read.requests.Add(AsyncGPUReadback.Request(buffer));
-            }
-            var indices = mesh.GetIndexBuffer();
-            read.buffers.Add(indices);
-            read.requests.Add(AsyncGPUReadback.Request(indices));
             return read;
         }
 
-        // Finishes the read if the GPU has delivered; true when done.
-        public bool Poll()
-        {
-            if (Done)
-                return true;
-            foreach (var r in requests)
-                if (!r.done)
-                    return false;
-            Finish();
-            return true;
-        }
+        // True when done; the readback callbacks finish the read.
+        public bool Poll() => Done;
 
         public void Wait()
         {
-            if (Done)
+            for (int i = 0; i < requests.Length && !Done; ++i)
+                if (!taken[i])
+                {
+                    requests[i].WaitForCompletion();
+                    Take(i, requests[i]); // in case the callback comes later; it is then ignored
+                }
+        }
+
+        void Take(int slot, AsyncGPUReadbackRequest request)
+        {
+            if (taken[slot] || !request.done)
                 return;
-            foreach (var r in requests)
-                r.WaitForCompletion();
-            Finish();
+            taken[slot] = true;
+            if (request.hasError)
+                failed = true;
+            else
+                arrived[slot] = new NativeArray<byte>(request.GetData<byte>(), Allocator.Persistent);
+            buffers[slot].Dispose();
+            buffers[slot] = null;
+            if (--outstanding == 0)
+                Finish();
         }
 
         void Finish()
         {
             try
             {
-                bool failed = false;
-                foreach (var r in requests)
-                    failed |= r.hasError;
                 Data = failed ? null : ReadGpu();
                 if (failed)
-                    Debug.LogWarning("[RoyalTracer] Could not read back mesh " + mesh.name);
+                    Debug.LogWarning("[RoyalTracer] Could not read back mesh " + name);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[RoyalTracer] Could not read mesh {name}: {e.Message}");
             }
             finally
             {
-                foreach (var b in buffers)
-                    b.Dispose();
-                buffers.Clear();
+                foreach (var a in arrived)
+                    if (a.IsCreated)
+                        a.Dispose();
                 Done = true;
             }
         }
@@ -114,11 +156,11 @@ namespace RoyalTracer
 
         MeshData ReadGpu()
         {
-            int count = mesh.vertexCount;
+            int count = vertexCount;
             var positions = Attribute(VertexAttribute.Position, count, 3, out _);
             if (positions == null)
                 return null;
-            var d = new MeshData { positions = ToVector3(positions), submeshes = new int[mesh.subMeshCount][] };
+            var d = new MeshData { positions = ToVector3(positions), submeshes = new int[subMeshes.Length][] };
             if (Attribute(VertexAttribute.Normal, count, 3, out _) is { } n)
                 d.normals = ToVector3(n);
             if (Attribute(VertexAttribute.TexCoord0, count, 2, out _) is { } uv)
@@ -134,18 +176,18 @@ namespace RoyalTracer
                     d.colors[v] = new Color(c[v * 4], c[v * 4 + 1], c[v * 4 + 2], c[v * 4 + 3]);
             }
 
-            var indexRequest = requests[requests.Count - 1];
-            bool wide = mesh.indexFormat == IndexFormat.UInt32;
-            var wideIndices = wide ? indexRequest.GetData<int>() : default;
-            var narrowIndices = wide ? default : indexRequest.GetData<ushort>();
-            for (int s = 0; s < mesh.subMeshCount; ++s)
+            var indexData = arrived[arrived.Length - 1];
+            bool wide = wideIndices;
+            var wideIndexData = wide ? indexData.Reinterpret<int>(1) : default;
+            var narrowIndexData = wide ? default : indexData.Reinterpret<ushort>(1);
+            for (int s = 0; s < subMeshes.Length; ++s)
             {
-                var sm = mesh.GetSubMesh(s);
+                var sm = subMeshes[s];
                 if (sm.topology != MeshTopology.Triangles)
                     continue;
                 var list = new int[sm.indexCount];
                 for (int i = 0; i < sm.indexCount; ++i)
-                    list[i] = (wide ? wideIndices[sm.indexStart + i] : narrowIndices[sm.indexStart + i]) + sm.baseVertex;
+                    list[i] = (wide ? wideIndexData[sm.indexStart + i] : narrowIndexData[sm.indexStart + i]) + sm.baseVertex;
                 d.submeshes[s] = list;
             }
             return d;
@@ -154,15 +196,16 @@ namespace RoyalTracer
         // The attribute as `want` floats per vertex (missing components 0, colour alpha 1), or null when absent.
         float[] Attribute(VertexAttribute attribute, int count, int want, out bool present)
         {
-            present = mesh.HasVertexAttribute(attribute);
+            int a = System.Array.FindIndex(attributes, x => x.descriptor.attribute == attribute);
+            present = a >= 0;
             if (!present)
                 return null;
-            int stream = mesh.GetVertexAttributeStream(attribute);
-            int offset = mesh.GetVertexAttributeOffset(attribute);
-            int stride = mesh.GetVertexBufferStride(stream);
-            var format = mesh.GetVertexAttributeFormat(attribute);
-            int dims = Mathf.Min(mesh.GetVertexAttributeDimension(attribute), want);
-            var request = requests[stream];
+            var (descriptor, offset) = attributes[a];
+            int stream = descriptor.stream;
+            int stride = strides[stream];
+            var format = descriptor.format;
+            int dims = Mathf.Min(descriptor.dimension, want);
+            var data = arrived[stream];
             var output = new float[count * want];
             if (want == 4)
                 for (int v = 0; v < count; ++v)
@@ -171,7 +214,7 @@ namespace RoyalTracer
             {
                 case VertexAttributeFormat.Float32:
                 {
-                    var f = request.GetData<float>();
+                    var f = data.Reinterpret<float>(1);
                     for (int v = 0; v < count; ++v)
                         for (int k = 0; k < dims; ++k)
                             output[v * want + k] = f[(v * stride + offset) / 4 + k];
@@ -181,7 +224,7 @@ namespace RoyalTracer
                 case VertexAttributeFormat.UNorm16:
                 case VertexAttributeFormat.SNorm16:
                 {
-                    var h = request.GetData<ushort>();
+                    var h = data.Reinterpret<ushort>(1);
                     for (int v = 0; v < count; ++v)
                         for (int k = 0; k < dims; ++k)
                         {
@@ -195,7 +238,7 @@ namespace RoyalTracer
                 case VertexAttributeFormat.UNorm8:
                 case VertexAttributeFormat.SNorm8:
                 {
-                    var b = request.GetData<byte>();
+                    var b = data;
                     for (int v = 0; v < count; ++v)
                         for (int k = 0; k < dims; ++k)
                         {
@@ -205,7 +248,7 @@ namespace RoyalTracer
                     break;
                 }
                 default:
-                    Debug.LogWarning($"[RoyalTracer] {mesh.name}: vertex format {format} of {attribute} is not supported");
+                    Debug.LogWarning($"[RoyalTracer] {name}: vertex format {format} of {attribute} is not supported");
                     present = attribute != VertexAttribute.Position;
                     return null;
             }
