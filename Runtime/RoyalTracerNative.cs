@@ -143,6 +143,10 @@ namespace RoyalTracer
             public uint bandCount, resolution;
             public float seaLevel, maxWaveHeight;
             public WaterBand band0, band1, band2, band3;
+            public float absorptionR, absorptionG, absorptionB; // 1/m
+            public float scatteringR, scatteringG, scatteringB;
+            public float windSpeed;    // m/s
+            public float foamCoverage; // whitecap cover gain, 0 = none
 
             public void Set(int index, WaterBand band)
             {
@@ -154,6 +158,17 @@ namespace RoyalTracer
         }
 
         [DllImport(Dll)] public static extern int RT_SetWater(ref WaterDesc desc);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WaterOverlay
+        {
+            public float originX, originZ, sizeX, sizeZ;     // host world, m
+            public float heightX, heightY, heightW, heightH; // texel region in the height atlas
+            public float foamX, foamY, foamW, foamH;
+            public float heightScale, foamScale, maxHeight, foamMax;
+        }
+
+        [DllImport(Dll)] public static extern int RT_SetWaterOverlays(ulong ticket, int heightAtlas, int foamAtlas, uint count, WaterOverlay[] overlays);
 
         [DllImport(Dll)] public static extern int RT_CreateEmitterSet(uint capacity);
         [DllImport(Dll)] public static extern int RT_UpdateEmitterSet(int set, Emitter[] emitters, uint count);

@@ -11,8 +11,9 @@ namespace RoyalTracer.Editor
     // by itself:
     //   Unity.exe -batchmode -force-d3d12 -projectPath <project> -executeMethod RoyalTracer.Editor.RoyalTracerPlayCapture.Run
     //             -rtCaptureOut <folder> (-rtScene <scene asset path> | -rtTestScene <new scene asset path> [-rtNight])
-    //             [-rtCamera <object name>] [-rtSeconds 10] [-rtBroadcast <method>,<method>...]
-    // -rtTestScene builds the package's test scene and saves it at that path first. -rtBroadcast sends those messages to
+    //             [-rtAddScene <scene asset path>] [-rtCamera <object name>] [-rtSeconds 10] [-rtBroadcast <method>,<method>...]
+    // -rtTestScene builds the package's test scene and saves it at that path first. -rtAddScene opens another scene
+    // beside it (a test ship on the scene's ocean, for example), without saving either. -rtBroadcast sends those messages to
     // the scene's objects once path tracing runs (to start effects, for example).
     // Enters play mode, waits for path tracing and then -rtSeconds for the scene to settle and stream in, writes
     // pathtraced.png, tracer_full.png and mask.png, turns path tracing off, writes raster.png and exits.
@@ -48,6 +49,9 @@ namespace RoyalTracer.Editor
                 EditorApplication.Exit(1);
                 return;
             }
+            var addScene = Arg("-rtAddScene");
+            if (addScene != null)
+                EditorSceneManager.OpenScene(addScene, OpenSceneMode.Additive);
             var outDir = Arg("-rtCaptureOut") ?? Path.GetFullPath("RoyalTracerCapture");
             Directory.CreateDirectory(outDir);
             SessionState.SetString(StateKey, string.Join("|", outDir, Arg("-rtCamera") ?? "", Arg("-rtSeconds") ?? "10",

@@ -43,7 +43,7 @@ namespace RoyalTracer
         public static Texture LastColor { get; private set; } // the last composited tracer output, for captures
 
         // What the tracer's scene holds, for logs and tools.
-        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems, trails and lines ({particles.Emitters} emitters), {effects.Count} exporting VFX ({effects.Particles} particles, {effects.Emitters} emitters)" : "") : "not running";
+        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems, trails and lines ({particles.Emitters} emitters), {effects.Count} exporting VFX ({effects.Particles} particles, {effects.Emitters} emitters), {water.Overlays} water overlays" : "") : "not running";
         static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
         // Cameras whose HDRP water is off while the tracer draws the ocean: their own frame-settings state.
         static readonly Dictionary<HDAdditionalCameraData, (bool custom, bool overridden, bool enabled)> savedWater = new();
@@ -320,7 +320,7 @@ namespace RoyalTracer
             LastColor = outputs.Color(ticket.slot);
 
             var cmd = ctx.cmd;
-            water.Record(cmd); // HDRP's bands of this frame, copied before the render event orders the tracer after them
+            water.Record(cmd, ticket.index); // HDRP's bands and the overlays of this frame, copied before the render event orders the tracer after them
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRender, (IntPtr)(long)ticket.index);
             ctx.propertyBlock.SetTexture(ColorId, outputs.Color(ticket.slot));
             ctx.propertyBlock.SetTexture(DepthId, outputs.Depth(ticket.slot));

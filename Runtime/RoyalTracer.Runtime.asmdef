@@ -3,7 +3,8 @@
     "rootNamespace": "RoyalTracer",
     "references": [
         "Unity.RenderPipelines.HighDefinition.Runtime",
-        "Unity.RenderPipelines.Core.Runtime"
+        "Unity.RenderPipelines.Core.Runtime",
+        "Unity.Mathematics"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

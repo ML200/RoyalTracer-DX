@@ -160,23 +160,25 @@ void OceanFftV(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
 }
 
-// A host band's height at its texture coordinates: bilinear, wrapping, texel centres at (i + 0.5) / res.
-float HostHeight(uint band, float2 uv, uint res) {
+// A host band at its texture coordinates (HDRP: x height, then minus the horizontal displacement along u and v):
+// bilinear, wrapping, texel centres at (i + 0.5) / res.
+float3 HostBand(uint band, float2 uv, uint res) {
     Texture2D<float4> t = ResourceDescriptorHeap[OCEAN_SRV_EXTERNAL + band];
     const float2 p = uv * res - 0.5f;
     const float2 f = frac(p);
     const int2 i = (int2)floor(p);
     const int r = (int)res;
-    float v[4];
+    float3 v[4];
     [unroll] for (uint k = 0; k < 4u; ++k) {
         const int2 at = ((i + int2(k & 1u, k >> 1u)) % r + r) % r;
-        v[k] = t.Load(int3(at, 0)).x;
+        v[k] = t.Load(int3(at, 0)).xyz;
     }
     return lerp(lerp(v[0], v[1], f.x), lerp(v[2], v[3], f.x), f.y);
 }
 
 // A host's simulation in place of the FFT (OceanParamsGPU.external bands, one per cascade, the cascade as long as the
-// band's patch): height only, as the host draws it, slopes by central differences, no horizontal displacement.
+// band's patch): heights as the host draws them, without horizontal displacement; slopes and the horizontal
+// displacement's Jacobian by central differences, so normals and whitecaps follow the choppy waves as the host's do.
 // Node (i, j) sits at x = i L / N, z = j L / N (mod L); the host's z is -z. gU0: displacement parity.
 [numthreads(8, 8, 1)]
 void OceanImport(uint3 tid : SV_DispatchThreadID) {
@@ -193,12 +195,15 @@ void OceanImport(uint3 tid : SV_DispatchThreadID) {
         const uint res = P.externalResolution;
         const float step = 1.0f / OCEAN_FFT_SIZE;
         const float2 uv = float2(tid.x, -(float)tid.y) * step - band.yz;
-        const float twoDx = 2.0f * step / band.x;
-        const float h = HostHeight(c, uv, res);
-        const float dx = HostHeight(c, uv + float2(step, 0.0f), res) - HostHeight(c, uv - float2(step, 0.0f), res);
-        const float dz = HostHeight(c, uv - float2(0.0f, step), res) - HostHeight(c, uv + float2(0.0f, step), res);
-        d0 = float4(0.0f, band.w * h, 0.0f, 0.0f);
-        d1 = float4(band.w * dx / twoDx, band.w * dz / twoDx, 0.0f, 0.0f);
+        const float k = band.w / (2.0f * step / band.x); // amplitude over twice the node spacing
+        // Host samples as (height, Dx, Dz) in this frame: Dx = -y, Dz = +z (the host's -z flipped).
+        const float3 flip = float3(1.0f, -1.0f, 1.0f);
+        const float3 c0 = HostBand(c, uv, res) * flip;
+        const float3 xp = HostBand(c, uv + float2(step, 0.0f), res) * flip, xm = HostBand(c, uv - float2(step, 0.0f), res) * flip;
+        const float3 zp = HostBand(c, uv - float2(0.0f, step), res) * flip, zm = HostBand(c, uv + float2(0.0f, step), res) * flip;
+        const float3 ddx = (xp - xm) * k, ddz = (zp - zm) * k; // per tracer x and z: (height, Dx, Dz)
+        d0 = float4(0.0f, band.w * c0.x, 0.0f, ddz.y);
+        d1 = float4(ddx.x, ddz.x, ddx.y, ddz.z);
     }
     disp[tid] = d0;
     deriv[tid] = d1;

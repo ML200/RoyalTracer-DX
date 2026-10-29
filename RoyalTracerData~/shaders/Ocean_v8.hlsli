@@ -85,6 +85,31 @@ float3 OceanTurbulence(float2 q, OceanParamsGPU P) {
     return field.SampleLevel(g_sampler, absoluteQ / P.turbulencePeriod, 0.0f).xyz;
 }
 
+// A host overlay's (u, v) at q; outside [0, 1] is off it.
+float2 OceanOverlayUV(float2 q, float4 rect) {
+    return float2(q.x - rect.x, -q.y - rect.y) * rect.zw;
+}
+// Bilinear inside the overlay's texel region of an atlas, never reading its neighbours.
+float4 OceanOverlayTap(Texture2D<float4> atlas, float2 uv, float4 region, float2 invAtlas) {
+    const float2 t = clamp(uv * region.zw, 0.5f, region.zw - 0.5f) + region.xy;
+    return atlas.SampleLevel(g_sampler, t * invAtlas, 0.0f);
+}
+// The overlays' whitecap (x) and bubble (y) cover at q, 0..1.
+float2 OceanOverlayFoam(float2 q, OceanParamsGPU P) {
+    float2 clear = 1.0f;
+    [loop] for (uint o = 0u; o < P.overlays; ++o) {
+        const float4 region = P.overlayFoam[o];
+        const float2 uv = OceanOverlayUV(q, P.overlayRect[o]);
+        if (region.z <= 0.0f || any(uv < 0.0f) || any(uv > 1.0f))
+            continue;
+        Texture2D<float4> atlas = ResourceDescriptorHeap[OCEAN_SRV_OVERLAY_FOAM];
+        const float2 thickness = max(OceanOverlayTap(atlas, uv, region, P.overlayAtlas.zw).xy, 0.0f) * P.overlayScale[o].y;
+        const float2 cover = 1.0f - exp(-thickness);
+        clear *= 1.0f - float2(min(cover.x, P.overlayScale[o].z), cover.y);
+    }
+    return 1.0f - clear;
+}
+
 struct OceanSample {
     float3 displacement;
     float2 gradient;
@@ -129,6 +154,26 @@ OceanSample OceanSampleSurfaceFrom(float2 q, float widthM, uint dispSlot, bool d
             const float slope = OceanSkewSlope(h.y * gain, skew);
             s.gradient += slope * gain * d.xy + (slope * h.y - 2.0f * skew * gain * P.cascadeVariance[c]) * dGain;
             s.stretch += float3(gain * d.z + h.x * dGain.x, gain * d.w + h.z * dGain.y, gain * h.w + h.x * dGain.y);
+        }
+    }
+    // A host's overlays add height; slopes from one texel either side (v runs along -q.y).
+    [loop] for (uint o = 0u; o < P.overlays; ++o) {
+        const float4 region = P.overlayHeight[o];
+        const float4 rect = P.overlayRect[o];
+        const float2 uv = OceanOverlayUV(q, rect);
+        if (region.z <= 0.0f || any(uv < 0.0f) || any(uv > 1.0f))
+            continue;
+        Texture2D<float4> atlas = ResourceDescriptorHeap[OCEAN_SRV_OVERLAY_HEIGHT];
+        const float scale = P.overlayScale[o].x;
+        const float2 inv = P.overlayAtlas.xy;
+        s.displacement.y += OceanOverlayTap(atlas, uv, region, inv).x * scale;
+        if (derivatives) {
+            const float2 e = 1.0f / region.zw;
+            const float hx = OceanOverlayTap(atlas, uv + float2(e.x, 0.0f), region, inv).x -
+                             OceanOverlayTap(atlas, uv - float2(e.x, 0.0f), region, inv).x;
+            const float hz = OceanOverlayTap(atlas, uv + float2(0.0f, e.y), region, inv).x -
+                             OceanOverlayTap(atlas, uv - float2(0.0f, e.y), region, inv).x;
+            s.gradient += scale * 0.5f * float2(hx * region.z * rect.z, -hz * region.w * rect.w);
         }
     }
     return s;
@@ -413,11 +458,12 @@ OceanFoam OceanFoamAt(float2 q, float widthM, float gain, OceanParamsGPU P) {
     f.coverage = 0.0f;
     f.bubbles = 0.0f;
     f.slope = 0.0f;
-    if (P.foamStrength <= 0.0f)
+    const float2 overlay = OceanOverlayFoam(q, P);
+    if (P.foamStrength <= 0.0f && !any(overlay > 0.0f))
         return f;
     // Finest level holding q, blended into coarser; mean past the last.
     Texture2DArray<float> foam = ResourceDescriptorHeap[(P.foamParity & 1u) == 0u ? OCEAN_SRV_FOAM0 : OCEAN_SRV_FOAM1];
-    float cover = 0.0f, cloud = 0.0f, rest = 1.0f;
+    float cover = 0.0f, cloud = 0.0f, rest = P.foamStrength > 0.0f ? 1.0f : 0.0f;
     uint finest = OCEAN_FOAM_LEVELS;
     [loop] for (uint level = 0u; level < OCEAN_FOAM_LEVELS && rest > 1e-3f; ++level) {
         const float texel = OceanFoamTexel(level);
@@ -441,6 +487,9 @@ OceanFoam OceanFoamAt(float2 q, float widthM, float gain, OceanParamsGPU P) {
         cover += rest * mean;
         cloud += rest * mean;
     }
+    // The overlays' foam on top, broken up by the same rafts.
+    cover = 1.0f - (1.0f - saturate(cover)) * (1.0f - overlay.x);
+    cloud = 1.0f - (1.0f - saturate(cloud)) * (1.0f - overlay.y);
     // Cover ~ U^3.41, height ~ U^2: gain^1.7 (Monahan & O'Muircheartaigh 1980).
     const float rough = pow(max(gain, 0.0f), 1.7f);
     f.coverage = min(saturate(cover) * rough, OCEAN_FOAM_DENSEST);
