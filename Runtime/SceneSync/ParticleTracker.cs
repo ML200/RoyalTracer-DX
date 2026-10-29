@@ -11,15 +11,14 @@ namespace RoyalTracer
     // the skipped particles' light.
     sealed class ParticleTracker
     {
-        const int MaxPerSystem = 512;
+        const int MaxPerSystem = EmitterSet.MaxEmitters;
         const float MinRadius = 0.01f;
 
         sealed class Tracked
         {
             public ParticleSystem system;
             public ParticleSystemRenderer renderer;
-            public int set = -1, capacity;
-            public bool empty = true;
+            public readonly EmitterSet set = new();
         }
 
         // What a particle of colour white emits with a material, per unit of its texture's coverage.
@@ -44,8 +43,7 @@ namespace RoyalTracer
         public void Dispose()
         {
             foreach (var t in systems.Values)
-                if (t.set >= 0)
-                    Native.RT_ReleaseEmitterSet(t.set);
+                t.set.Release();
             systems.Clear();
             converter.Dispose();
         }
@@ -67,8 +65,7 @@ namespace RoyalTracer
             foreach (var (id, t) in systems)
                 if (!seen.Contains(id))
                 {
-                    if (t.set >= 0)
-                        Native.RT_ReleaseEmitterSet(t.set);
+                    t.set.Release();
                     (gone ??= new List<EntityId>()).Add(id);
                 }
             if (gone != null)
@@ -90,20 +87,7 @@ namespace RoyalTracer
                     if (perColour.maxColorComponent > 0f)
                         count = Collect(t.system, perColour * RoyalTracerSystem.UnitScale);
                 }
-                if (count == 0 && t.empty)
-                    continue;
-                if (count > t.capacity)
-                {
-                    if (t.set >= 0)
-                        Native.RT_ReleaseEmitterSet(t.set);
-                    t.capacity = Mathf.Min(Mathf.NextPowerOfTwo(count), MaxPerSystem);
-                    t.set = Native.RT_CreateEmitterSet((uint)t.capacity);
-                    if (t.set < 0)
-                        Debug.LogWarning($"[RoyalTracer] Particles of '{t.system.name}' do not light the scene: {Native.LastError}");
-                }
-                if (t.set >= 0)
-                    Native.RT_UpdateEmitterSet(t.set, emitters, (uint)count);
-                t.empty = count == 0;
+                t.set.Submit(emitters, count, t.system);
                 total += count;
             }
             Emitters = total;

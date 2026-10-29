@@ -4,6 +4,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.HighDefinition;
+using UnityEngine.VFX;
 
 namespace RoyalTracer.Editor
 {
@@ -86,7 +87,18 @@ namespace RoyalTracer.Editor
 
             // Additive unlit embers: they light the scene through the tracer's light tree; HDRP draws them.
             Embers(new Vector3(-0.9f, 0.05f, -2.2f));
+
+            // VFX Graph particles with RoyalTracer's light export (simulated in play mode).
+            var sparks = AssetDatabase.LoadAssetAtPath<VisualEffectAsset>(SparksPath);
+            if (sparks)
+            {
+                var go = new GameObject("VFX Sparks");
+                go.transform.position = new Vector3(2.4f, 0.05f, -2.0f);
+                go.AddComponent<VisualEffect>().visualEffectAsset = sparks;
+            }
         }
+
+        const string SparksPath = "Packages/com.ml200.royaltracer/TestContent/LightExportSparks.vfx";
 
         static void Embers(Vector3 position)
         {

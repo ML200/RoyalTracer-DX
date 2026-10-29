@@ -32,6 +32,7 @@ namespace RoyalTracer
         static SceneTracker tracker;
         static LightTracker lights;
         static ParticleTracker particles;
+        static VfxTracker effects;
         static Pass pass;
         static Material composite;
         static RenderTexture exposureTarget;
@@ -41,7 +42,7 @@ namespace RoyalTracer
         public static Texture LastColor { get; private set; } // the last composited tracer output, for captures
 
         // What the tracer's scene holds, for logs and tools.
-        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems ({particles.Emitters} emitters)" : "") : "not running";
+        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems ({particles.Emitters} emitters), {effects.Count} exporting VFX ({effects.Emitters} emitters)" : "") : "not running";
         static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
 
         static bool Wanted => sessionChoice ?? PathTracing.UserEnabled;
@@ -111,6 +112,7 @@ namespace RoyalTracer
             tracker.Scan(camera, wait: true);
             lights.Scan();
             particles.Scan();
+            effects.Scan();
             CustomPassVolume.RegisterGlobalCustomPass(CustomPassInjectionPoint.AfterOpaqueColor, pass);
             ApplyQuality();
             Enabled = true;
@@ -178,6 +180,7 @@ namespace RoyalTracer
             tracker.Scan(camera); // new meshes arrive over the next frames
             lights.Scan();
             particles.Scan();
+            effects.Scan();
         }
 
         // Creates the native device once per process. Returns null, or why path tracing cannot run.
@@ -212,6 +215,7 @@ namespace RoyalTracer
                 tracker = new SceneTracker();
                 lights = new LightTracker();
                 particles = new ParticleTracker();
+                effects = new VfxTracker();
                 pass = new Pass { name = "RoyalTracer composite" };
                 initialized = true;
 #if UNITY_EDITOR
@@ -238,6 +242,8 @@ namespace RoyalTracer
             lights = null;
             particles.Dispose();
             particles = null;
+            effects.Dispose();
+            effects = null;
             CoreUtils.Destroy(composite);
             CoreUtils.Destroy(exposureTarget);
             exposure = 0f;
@@ -304,6 +310,7 @@ namespace RoyalTracer
             CoreUtils.SetRenderTarget(cmd, ctx.cameraColorBuffer, ClearFlag.None);
             CoreUtils.DrawFullScreen(cmd, composite, ctx.propertyBlock, shaderPassId: 0);
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRelease, (IntPtr)(long)ticket.index);
+            effects.Record(cmd); // VFX particles of this frame's update, for the next frames
 
             if (!exposureTarget)
                 exposureTarget = new RenderTexture(1, 1, 0, RenderTextureFormat.RFloat) { name = "RoyalTracer exposure" };

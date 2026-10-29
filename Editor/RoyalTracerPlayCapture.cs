@@ -10,7 +10,9 @@ namespace RoyalTracer.Editor
     // Unattended check in play mode, where the game's own systems run, static batching applies and path tracing starts
     // by itself:
     //   Unity.exe -batchmode -force-d3d12 -projectPath <project> -executeMethod RoyalTracer.Editor.RoyalTracerPlayCapture.Run
-    //             -rtCaptureOut <folder> -rtScene <scene asset path> [-rtCamera <object name>] [-rtSeconds 10]
+    //             -rtCaptureOut <folder> (-rtScene <scene asset path> | -rtTestScene <new scene asset path> [-rtNight])
+    //             [-rtCamera <object name>] [-rtSeconds 10]
+    // -rtTestScene builds the package's test scene and saves it at that path first.
     // Enters play mode, waits for path tracing and then -rtSeconds for the scene to settle and stream in, writes
     // pathtraced.png, tracer_full.png and mask.png, turns path tracing off, writes raster.png and exits.
     [InitializeOnLoad]
@@ -31,13 +33,20 @@ namespace RoyalTracer.Editor
         public static void Run()
         {
             var scene = Arg("-rtScene");
-            if (scene == null)
+            var testScene = Arg("-rtTestScene");
+            if (testScene != null) // play mode reloads scenes from disk: the test scene is saved there first
             {
-                Debug.LogError("[RoyalTracerPlayCapture] -rtScene is required");
+                RoyalTracerTestScene.Build(Environment.GetCommandLineArgs().Contains("-rtNight"));
+                EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), testScene);
+            }
+            else if (scene != null)
+                EditorSceneManager.OpenScene(scene);
+            else
+            {
+                Debug.LogError("[RoyalTracerPlayCapture] -rtScene or -rtTestScene is required");
                 EditorApplication.Exit(1);
                 return;
             }
-            EditorSceneManager.OpenScene(scene);
             var outDir = Arg("-rtCaptureOut") ?? Path.GetFullPath("RoyalTracerCapture");
             Directory.CreateDirectory(outDir);
             SessionState.SetString(StateKey, string.Join("|", outDir, Arg("-rtCamera") ?? "", Arg("-rtSeconds") ?? "10"));
@@ -71,6 +80,9 @@ namespace RoyalTracer.Editor
                     }
                     else if (now - stageStart > 120)
                         throw new Exception("Path tracing did not start: " + (PathTracing.Available ? "available, not enabled" : PathTracing.UnavailableReason));
+                    else if (now - stageStart > 3 && !RoyalTracerSystem.Enable()) // this session only; logs why not
+                        throw new Exception($"Path tracing did not start (camera: {(Camera.main ? Camera.main.name : "none")}, " +
+                                            $"{UnityEngine.SceneManagement.SceneManager.GetActiveScene().rootCount} root objects)");
                 }
                 else if (stage == 2 && now - stageStart > settle)
                 {
@@ -104,6 +116,8 @@ namespace RoyalTracer.Editor
                         Save(rt, Path.Combine(outDir, "mask.png"));
                         RoyalTracerSystem.ShowCompositeMask = false;
                         Debug.Log("[RoyalTracerPlayCapture] Stream: " + RoyalTracerSystem.Stats);
+                        foreach (var effect in UnityEngine.Object.FindObjectsByType<UnityEngine.VFX.VisualEffect>())
+                            Debug.Log($"[RoyalTracerPlayCapture] VFX '{effect.name}': {effect.aliveParticleCount} particles, culled {effect.culled}");
                         RoyalTracerSystem.Disable();
                         (stage, frame) = (5, 0);
                     }
