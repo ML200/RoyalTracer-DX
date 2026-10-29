@@ -803,6 +803,7 @@ float3 EvaluateSkyBackground(float3 rayDir)
     }
 
     if (SkyObserverIsUnderground()) return float3(0.0f, 0.0f, 0.0f);
+    if (hostSkyScale > 0.0f) return HostSkyRadiance(SafeNormalize(rayDir));
 
     SunState S = ComputeSunState();
 
@@ -836,7 +837,7 @@ float3 EvaluateSkyBackground(float3 rayDir)
 float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
                                    bool hitPlanet, float3 unifiedInscatter)
 {
-    if (ATM_DEBUG_RING == 3u) {
+    if (ATM_DEBUG_RING == 3u || hostSkyScale > 0.0f) {
     return float3(0.0f, 0.0f, 0.0f);
     }
     float3 v = SafeNormalize(rayDir);
@@ -872,6 +873,7 @@ float3 EvaluateSky(float3 rayDir)
 float3 EvaluateSkyIrradiance()
 {
     if (SkyObserverIsUnderground()) return float3(0.0f, 0.0f, 0.0f);
+    if (hostSkyScale > 0.0f) return SkyBakeLoadIrradiance(); // baked from the host's sky as it is
     const SunState S = ComputeSunState();
     const float tw = Smooth01(saturate((S.elevRad * RAD2DEG + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
     return lerp(SKY_NIGHT_BASE * skyNightBaseIntensity * PI, SkyBakeLoadIrradiance() * SKY_INTENSITY, tw);

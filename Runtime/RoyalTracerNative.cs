@@ -158,6 +158,7 @@ namespace RoyalTracer
         }
 
         [DllImport(Dll)] public static extern int RT_SetWater(ref WaterDesc desc);
+        [DllImport(Dll)] public static extern int RT_SetSky(int texture, float scale);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct WaterOverlay

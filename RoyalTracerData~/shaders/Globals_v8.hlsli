@@ -140,6 +140,7 @@ cbuffer CameraParams : register(b0)
     float dlssResponsivityRough;  // at roughness 1
     float dlssResponsivityMirror; // at roughness 0
     float dlssWaterResponsivity;
+    float hostSkyScale; // > 0: the host's sky (HostSkyRadiance) in place of the atmosphere model
 }
 
 // HitLean_v8.hlsl: Pass_pt_trace sends it no ocean hit and no in-water path, so the sea compiles out.

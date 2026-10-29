@@ -30,6 +30,9 @@ namespace RoyalTracer
         [Tooltip("Development builds and the editor: this key turns path tracing on and off for the session. None disables it.")]
         public KeyCode toggleKey = KeyCode.F9;
 
+        [Tooltip("Light the path traced scene with HDRP's sky (its sky reflection, with clouds). Off: RoyalTracer's own physical atmosphere, driven by HDRP's sun.")]
+        public bool useHdrpSky = true;
+
         [Tooltip("Forward the renderer's informational log lines to the Unity console.")]
         public bool verboseLog;
 

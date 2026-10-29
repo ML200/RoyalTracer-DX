@@ -11,7 +11,9 @@ namespace RoyalTracer
     // Path traced opaque surfaces and ocean for HDRP game cameras. Enabling hands the loaded scenes' supported renderers
     // to RoyalTracer (its own D3D12 device), and a custom pass before transparents writes its image, fogged as HDRP
     // fogs, into the camera colour. HDRP still draws the sky, transparents, VFX, post-processing and UI.
-    // In play mode a driver keeps it running while PathTracing.Available && PathTracing.UserEnabled.
+    // In play mode a driver keeps it running while PathTracing.Available && PathTracing.UserEnabled, for the game
+    // cameras. Outside play mode the editor can path trace the Scene view instead (SceneViewTracing). The tracer keeps
+    // one temporal history, so it follows one of them at a time.
     public static class RoyalTracerSystem
     {
         // HDRP light values in the tracer's tuned range: a 100000 lux sun becomes 5.
@@ -34,6 +36,8 @@ namespace RoyalTracer
         static ParticleTracker particles;
         static VfxTracker effects;
         static WaterTracker water;
+        static SkyTracker sky;
+        static Camera tracedCamera; // outside play mode the only camera traced; in play mode the one scanned for
         static Pass pass;
         static Material composite;
         static RenderTexture exposureTarget;
@@ -115,6 +119,7 @@ namespace RoyalTracer
                     Debug.LogWarning("[RoyalTracer] No camera to path trace");
                 return false;
             }
+            tracedCamera = camera;
             tracker.Scan(camera, wait: true);
             lights.Scan();
             particles.Scan();
@@ -144,6 +149,7 @@ namespace RoyalTracer
                     SetWaterRendering(data, state.custom, state.overridden, state.enabled);
             savedWater.Clear();
             outputs.Clear();
+            tracedCamera = null;
             Enabled = false;
             Debug.Log("[RoyalTracer] Path tracing off");
             PathTracing.RaiseActiveChanged(false);
@@ -177,7 +183,10 @@ namespace RoyalTracer
 
         // Once per frame (Driver.Update): toggle key, deferred stop, following the player's choice, and keeping the
         // tracer's scene in step with Unity's.
-        public static void Tick()
+        public static void Tick() => Tick(null, Camera.main);
+
+        // wanted: null follows the player's choice.
+        static void Tick(bool? wanted, Camera camera)
         {
             outputs.Tick();
             if (disableRequested)
@@ -187,7 +196,7 @@ namespace RoyalTracer
             }
             var key = RoyalTracerSettings.Instance.toggleKey;
             bool toggle = false;
-            if (key != KeyCode.None && (Application.isEditor || Debug.isDebugBuild))
+            if (key != KeyCode.None && Application.isPlaying && (Application.isEditor || Debug.isDebugBuild))
                 toggle = KeyDown(key);
             if (toggle)
             {
@@ -199,14 +208,15 @@ namespace RoyalTracer
             if (Time.realtimeSinceStartup < nextScan)
                 return;
             nextScan = Time.realtimeSinceStartup + RescanInterval;
-            if (!Wanted)
+            if (!(wanted ?? Wanted))
             {
                 Stop();
                 return;
             }
             if (!PathTracing.Available)
                 return;
-            var camera = Camera.main;
+            if (Enabled && camera)
+                tracedCamera = camera; // the same scene from another view
             if (!Enabled)
             {
                 if (camera)
@@ -219,6 +229,50 @@ namespace RoyalTracer
             effects.Scan();
             water.Scan();
         }
+
+#if UNITY_EDITOR
+        const string SceneViewKey = "RoyalTracer.SceneView";
+
+        // Outside play mode, the last active Scene view is path traced while this is on (an editor preference).
+        public static bool SceneViewTracing
+        {
+            get => UnityEditor.EditorPrefs.GetBool(SceneViewKey, false);
+            set
+            {
+                UnityEditor.EditorPrefs.SetBool(SceneViewKey, value);
+                nextScan = 0f;
+                if (!value && !Application.isPlaying && sessionChoice != true)
+                    Stop();
+                UnityEditor.SceneView.RepaintAll();
+            }
+        }
+
+        [UnityEditor.InitializeOnLoadMethod]
+        static void InstallEditorDriver()
+        {
+            UnityEditor.EditorApplication.update += EditorTick;
+            UnityEditor.EditorApplication.playModeStateChanged += state =>
+            {
+                // Back in edit mode the game's choice no longer applies; only the Scene view keeps it running.
+                if (state != UnityEditor.PlayModeStateChange.EnteredEditMode)
+                    return;
+                sessionChoice = null;
+                if (!SceneViewTracing)
+                    Stop();
+            };
+        }
+
+        static void EditorTick()
+        {
+            // Play mode has its driver; a tool that enabled path tracing for a camera of its own keeps it.
+            if (Application.isPlaying || !SceneViewTracing || sessionChoice == true)
+                return;
+            var view = UnityEditor.SceneView.lastActiveSceneView;
+            Tick(true, view && !view.camera.orthographic ? view.camera : null);
+            if (Enabled && view)
+                view.Repaint(); // the tracer converges over frames
+        }
+#endif
 
         // Creates the native device once per process. Returns null, or why path tracing cannot run.
         internal static string Initialize(out string adapter)
@@ -254,6 +308,7 @@ namespace RoyalTracer
                 particles = new ParticleTracker();
                 effects = new VfxTracker();
                 water = new WaterTracker();
+                sky = new SkyTracker();
                 pass = new Pass { name = "RoyalTracer composite" };
                 initialized = true;
 #if UNITY_EDITOR
@@ -276,6 +331,8 @@ namespace RoyalTracer
                 return;
             water.Dispose(); // its shared textures, before the device's scene goes
             water = null;
+            sky.Dispose();
+            sky = null;
             Native.RT_Shutdown(); // releases the native scene with it
             tracker.Dispose();
             tracker = null;
@@ -316,7 +373,9 @@ namespace RoyalTracer
         internal static void RenderCamera(CustomPassContext ctx)
         {
             var camera = ctx.hdCamera.camera;
-            if (!Enabled || disableRequested || camera.cameraType != CameraType.Game)
+            // In play mode the game cameras; otherwise the one camera followed (the Scene view, or a tool's).
+            bool traced = Application.isPlaying ? camera.cameraType == CameraType.Game : camera == tracedCamera;
+            if (!Enabled || disableRequested || !traced || camera.orthographic)
                 return;
             // TAA jitters HDRP's depth; SMAA keeps it aligned with the tracer's unjittered depth.
             camera.TryGetComponent(out HDAdditionalCameraData data);
@@ -353,6 +412,7 @@ namespace RoyalTracer
             LastColor = outputs.Color(ticket.slot);
 
             var cmd = ctx.cmd;
+            sky.Record(cmd, RoyalTracerSettings.Instance.useHdrpSky);
             water.Record(cmd, ticket.index); // HDRP's bands and the overlays of this frame, copied before the render event orders the tracer after them
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRender, (IntPtr)(long)ticket.index);
             ctx.propertyBlock.SetTexture(ColorId, outputs.Color(ticket.slot));

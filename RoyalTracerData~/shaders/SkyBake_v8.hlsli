@@ -1,5 +1,17 @@
 #pragma once
 #include "SkyBakeLayout.h"
+#include "HostOutputLayout.h"
+
+// A host's sky as it is (hostSkyScale > 0): no atmosphere of the renderer's own, stars or night glow.
+float3 HostSkyRadiance(float3 v)
+{
+    Texture2D<float4> sky = ResourceDescriptorHeap[HOST_SKY_SRV_SLOT];
+    uint w, h;
+    sky.GetDimensions(w, h);
+    const float2 uv = float2(atan2(v.z, v.x) * (0.5f / PI) + 0.5f,
+                             clamp(acos(clamp(v.y, -1.0f, 1.0f)) * (1.0f / PI), 0.5f / h, 1.0f - 0.5f / h));
+    return sky.SampleLevel(g_sampler, uv, 0.0f).rgb * hostSkyScale;
+}
 
 // Hillaire 2020 sky mapping.
 
