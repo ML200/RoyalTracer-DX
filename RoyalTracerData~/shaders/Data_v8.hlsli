@@ -30,7 +30,9 @@ struct LightTriangle {
     float3 emission;
     uint triCount;
     float total_weight;
-    float3 pad0;
+    float coneScale;  // > 0: a spot's cone, attenuation saturate(cos * coneScale + coneOffset)^2; 0 = Lambertian
+    float coneOffset;
+    float pad0;
 };
 
 struct MatPacked {

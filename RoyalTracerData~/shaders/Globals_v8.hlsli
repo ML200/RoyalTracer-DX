@@ -224,6 +224,18 @@ StructuredBuffer<uint>               materialIDs         : register(t4);
 StructuredBuffer<MatPacked>          g_mat               : register(t5);
 
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
+
+// Radiance a light record emits at cosine cosOut from its front normal. A spot record fades over its cone with HDRP's
+// angular attenuation and keeps its intensity across it (radiance / cos), as a spot light does.
+float3 LightRecordRadiance(uint lightID, float cosOut)
+{
+    const float3 emission = g_EmissiveTriangles[lightID].emission * GLOBAL_EMISSION_STRENGTH;
+    const float coneScale = g_EmissiveTriangles[lightID].coneScale;
+    if (!(coneScale > 0.0f))
+        return emission;
+    const float a = saturate(cosOut * coneScale + g_EmissiveTriangles[lightID].coneOffset);
+    return emission * (a * a / max(cosOut, 1e-3f));
+}
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
 StructuredBuffer<uint4> gLT_TLAS                  : register(t9);

@@ -30,14 +30,18 @@ namespace RoyalTracer
         static Native.LogFn logFn;
         static IntPtr renderEvent;
         static SceneTracker tracker;
+        static LightTracker lights;
+        static ParticleTracker particles;
         static Pass pass;
         static Material composite;
+        static RenderTexture exposureTarget;
+        static float exposure; // HDRP's exposure multiplier, a frame or two old; 0 until read back
         static float nextScan;
         static readonly OutputTextures outputs = new();
         public static Texture LastColor { get; private set; } // the last composited tracer output, for captures
 
         // What the tracer's scene holds, for logs and tools.
-        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data" : "") : "not running";
+        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems ({particles.Emitters} emitters)" : "") : "not running";
         static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
 
         static bool Wanted => sessionChoice ?? PathTracing.UserEnabled;
@@ -105,6 +109,8 @@ namespace RoyalTracer
                 return false;
             }
             tracker.Scan(camera, wait: true);
+            lights.Scan();
+            particles.Scan();
             CustomPassVolume.RegisterGlobalCustomPass(CustomPassInjectionPoint.AfterOpaqueColor, pass);
             ApplyQuality();
             Enabled = true;
@@ -170,6 +176,8 @@ namespace RoyalTracer
                 return;
             }
             tracker.Scan(camera); // new meshes arrive over the next frames
+            lights.Scan();
+            particles.Scan();
         }
 
         // Creates the native device once per process. Returns null, or why path tracing cannot run.
@@ -202,6 +210,8 @@ namespace RoyalTracer
                 renderEvent = Native.RT_GetRenderEventFunc();
                 composite = CoreUtils.CreateEngineMaterial(Resources.Load<Shader>("RoyalTracer/Composite"));
                 tracker = new SceneTracker();
+                lights = new LightTracker();
+                particles = new ParticleTracker();
                 pass = new Pass { name = "RoyalTracer composite" };
                 initialized = true;
 #if UNITY_EDITOR
@@ -222,10 +232,15 @@ namespace RoyalTracer
             Stop();
             if (!initialized)
                 return;
-            Native.RT_Shutdown();
+            Native.RT_Shutdown(); // releases the native scene with it
             tracker.Dispose();
             tracker = null;
+            lights = null;
+            particles.Dispose();
+            particles = null;
             CoreUtils.Destroy(composite);
+            CoreUtils.Destroy(exposureTarget);
+            exposure = 0f;
             initialized = false;
 #if UNITY_EDITOR
             UnityEditor.AssemblyReloadEvents.beforeAssemblyReload -= Shutdown;
@@ -267,6 +282,8 @@ namespace RoyalTracer
 
             tracker.PushTransforms();
             tracker.UpdateDeforming();
+            lights.Update();
+            particles.Update(exposure);
             var frame = Frame(camera, ctx.hdCamera.actualWidth, ctx.hdCamera.actualHeight);
             if (Native.RT_SubmitFrame(ref frame, out var ticket) != 1)
             {
@@ -287,6 +304,16 @@ namespace RoyalTracer
             CoreUtils.SetRenderTarget(cmd, ctx.cameraColorBuffer, ClearFlag.None);
             CoreUtils.DrawFullScreen(cmd, composite, ctx.propertyBlock, shaderPassId: 0);
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRelease, (IntPtr)(long)ticket.index);
+
+            if (!exposureTarget)
+                exposureTarget = new RenderTexture(1, 1, 0, RenderTextureFormat.RFloat) { name = "RoyalTracer exposure" };
+            CoreUtils.SetRenderTarget(cmd, exposureTarget, ClearFlag.None);
+            CoreUtils.DrawFullScreen(cmd, composite, ctx.propertyBlock, shaderPassId: 1);
+            cmd.RequestAsyncReadback(exposureTarget, r =>
+            {
+                if (!r.hasError && float.IsFinite(r.GetData<float>()[0]))
+                    exposure = r.GetData<float>()[0];
+            });
         }
 
         static Native.FrameDesc Frame(Camera camera, int width, int height)
@@ -310,6 +337,8 @@ namespace RoyalTracer
                 frame.sunX = toSun.x; frame.sunY = toSun.y; frame.sunZ = toSun.z;
                 var tint = sun.color.linear * (sun.useColorTemperature ? Mathf.CorrelatedColorTemperatureToRGB(sun.colorTemperature) : Color.white);
                 frame.sunIntensity = sun.intensity * tint.grayscale * UnitScale;
+                // The tracer's sky is lit by its sun: scaled with it, a dark night sky stays dark.
+                frame.skyIntensity = Mathf.Clamp01(sun.intensity / 100000f);
             }
             float water = SceneTracker.WaterLevel();
             frame.skyGroundY = float.IsInfinity(water) ? -1f : water - 2f;

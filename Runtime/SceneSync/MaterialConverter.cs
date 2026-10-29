@@ -182,7 +182,12 @@ namespace RoyalTracer
         }
 
         // Mean linear colour of a texture, from a 32x32 downsample.
-        Color AverageColor(Texture source)
+        Color AverageColor(Texture source) => Average(source, premultiply: false);
+
+        // Colour times alpha, averaged: the light a blended particle texture adds over its quad.
+        public Color AveragePremultiplied(Texture source) => Average(source, premultiply: true);
+
+        Color Average(Texture source, bool premultiply)
         {
             var rt = RenderTexture.GetTemporary(32, 32, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
             bake.SetVector("_ParamsA", Vector4.one);
@@ -196,7 +201,7 @@ namespace RoyalTracer
             var texels = request.GetData<Vector4>();
             var sum = Vector4.zero;
             foreach (var t in texels)
-                sum += t;
+                sum += premultiply ? new Vector4(t.x * t.w, t.y * t.w, t.z * t.w, t.w) : t;
             sum /= texels.Length;
             return new Color(sum.x, sum.y, sum.z, 1f);
         }

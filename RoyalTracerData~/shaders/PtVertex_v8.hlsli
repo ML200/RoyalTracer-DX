@@ -543,7 +543,7 @@ bool PtHitContext(inout PtVertexIO io, uint instID, uint geometryIndex, uint pri
     const HitInfo hinfo = EvalSurfaceStateDir(instID, primID, barycentrics, rayDir, footprint);
     const uint matID = ResolveSurfaceMaterial(GetMatIDFast(instID, primID), hinfo);
     const float3  emission = (hinfo.lightID != 0xFFFFFFFFu)
-        ? g_EmissiveTriangles[hinfo.lightID].emission * GLOBAL_EMISSION_STRENGTH
+        ? LightRecordRadiance(hinfo.lightID, abs(dot(hinfo.geometricNormal, rayDir)))
         : float3(0, 0, 0);
     if (any(emission > 0.0f))
     {

@@ -154,7 +154,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
         e.Kd = kd; e.Pr = pr; e.Pm = pm;
 
         const float3 emission = (h.lightID != 0xFFFFFFFFu)
-            ? g_EmissiveTriangles[h.lightID].emission * GLOBAL_EMISSION_STRENGTH : 0.0f;
+            ? LightRecordRadiance(h.lightID, abs(dot(h.geometricNormal, dir))) : 0.0f;
         if (any(emission > 0.0f))
         {
             e.Kd = saturate(emission); e.Pr = 1.0f; e.Pm = 0.0f;

@@ -62,9 +62,11 @@ namespace RoyalTracer
             public int albedoTexture, normalTexture, rmaTexture;
             public float uvScaleX, uvScaleY;
             public uint flags;
+            public float spotCosInner, spotCosOuter;
         }
 
         public const uint MaterialThinGlass = 1;
+        public const uint MaterialSpotEmission = 2;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct MeshDesc
@@ -78,6 +80,7 @@ namespace RoyalTracer
         }
 
         public const uint MeshDeforming = 1;
+        public const uint InstanceEmitter = 1;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct FrameDesc
@@ -115,6 +118,18 @@ namespace RoyalTracer
         [DllImport(Dll)] public static extern int RT_CreateInstance(int mesh, float[] rowMajor3x4);
         [DllImport(Dll)] public static extern void RT_ReleaseInstance(int instance);
         [DllImport(Dll)] public static extern void RT_SetInstanceVisible(int instance, int visible);
+        [DllImport(Dll)] public static extern void RT_SetInstanceFlags(int instance, uint flags);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Emitter
+        {
+            public float x, y, z, radius; // tracer space, m
+            public float r, g, b, pad;    // radiance
+        }
+
+        [DllImport(Dll)] public static extern int RT_CreateEmitterSet(uint capacity);
+        [DllImport(Dll)] public static extern int RT_UpdateEmitterSet(int set, Emitter[] emitters, uint count);
+        [DllImport(Dll)] public static extern void RT_ReleaseEmitterSet(int set);
         [DllImport(Dll)] public static extern void RT_SetInstanceTransforms(int count, int[] instances, float[] rowMajor3x4s);
         [DllImport(Dll)] public static extern IntPtr RT_GetStats();
         [DllImport(Dll)] public static extern void RT_SetQuality(int quality);

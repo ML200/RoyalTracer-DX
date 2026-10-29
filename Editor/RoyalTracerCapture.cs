@@ -11,7 +11,7 @@ namespace RoyalTracer.Editor
     //   Unity.exe -batchmode -force-d3d12 -projectPath <project> -executeMethod RoyalTracer.Editor.RoyalTracerCapture.Run
     //             -rtCaptureOut <folder> [-rtScene <scene asset path>] [-rtCamera <object name>] [-rtPrefab <prefab asset path>]
     //             [-rtWidth 1920 -rtHeight 1080] [-rtExpectUnavailable]
-    // Without -rtScene it builds RoyalTracerTestScene's scene. -rtPrefab places that prefab in front of the camera.
+    // Without -rtScene it builds RoyalTracerTestScene's scene (-rtNight: lamps only). -rtPrefab places that prefab in front of the camera.
     // Writes raster.png, pathtraced.png, tracer_full.png (the tracer's own image), mask.png (green = pixels the tracer
     // replaced) and tracer.png (the tracer wherever it hit geometry). If path tracing is unavailable it writes only
     // raster.png and logs the reason; -rtExpectUnavailable makes that the passing outcome.
@@ -24,11 +24,13 @@ namespace RoyalTracer.Editor
             {
                 string outDir = Arg("-rtCaptureOut") ?? Path.GetFullPath("RoyalTracerCapture");
                 Directory.CreateDirectory(outDir);
+                if (Environment.GetCommandLineArgs().Contains("-rtVerbose"))
+                    RoyalTracerSettings.Instance.verboseLog = true;
                 var scene = Arg("-rtScene");
                 if (scene != null)
                     EditorSceneManager.OpenScene(scene);
                 else
-                    RoyalTracerTestScene.Build();
+                    RoyalTracerTestScene.Build(Environment.GetCommandLineArgs().Contains("-rtNight"));
                 var cameraName = Arg("-rtCamera");
                 var camera = cameraName != null ? GameObject.Find(cameraName)?.GetComponent<Camera>() : Camera.main;
                 if (!camera)
@@ -112,7 +114,10 @@ namespace RoyalTracer.Editor
         static void Render(Camera camera, int frames)
         {
             for (int i = 0; i < frames; ++i)
+            {
                 camera.Render();
+                UnityEngine.Rendering.AsyncGPUReadback.WaitAllRequests(); // delivers readbacks (HDRP's exposure) between frames
+            }
         }
 
         // The tracer's own image, everything it saw, before the composite.

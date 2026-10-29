@@ -521,7 +521,7 @@ namespace RoyalTracer
             return n;
         }
 
-        static int AddMesh(float[] positions, float[] normals, float[] uvs, uint[] indices, int[] triangleMaterials,
+        internal static int AddMesh(float[] positions, float[] normals, float[] uvs, uint[] indices, int[] triangleMaterials,
                            uint flags = 0)
         {
             if (indices.Length == 0)

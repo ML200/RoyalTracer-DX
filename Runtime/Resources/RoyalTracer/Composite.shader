@@ -47,6 +47,12 @@ Shader "Hidden/RoyalTracer/Composite"
         return float4(exposed, 1);
     }
 
+    // HDRP's exposure multiplier, read back for emitters given as screen values (unlit particles).
+    float4 ExposurePass(Varyings varyings) : SV_Target
+    {
+        return GetCurrentExposureMultiplier();
+    }
+
     ENDHLSL
 
     SubShader
@@ -62,6 +68,18 @@ Shader "Hidden/RoyalTracer/Composite"
 
             HLSLPROGRAM
                 #pragma fragment FullScreenPass
+            ENDHLSL
+        }
+        Pass
+        {
+            Name "Exposure"
+            ZWrite Off
+            ZTest Always
+            Blend Off
+            Cull Off
+
+            HLSLPROGRAM
+                #pragma fragment ExposurePass
             ENDHLSL
         }
     }

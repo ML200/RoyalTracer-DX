@@ -213,7 +213,7 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
 
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
        | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, INSTANCE_MASK_SURFACE, ray);
 
     float3 tr = explicitWater || !waterAttenuation ? 1.0f.xxx : OceanShadowTransmittance(oA, oB);
     // Candidates are rare but their handling set the callers' register peak: one candidate normal
@@ -655,11 +655,11 @@ HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir,
     return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, footprint);
 }
 
-inline float3 GetEmissionFast(in uint instID, in uint primID)
+inline float3 GetEmissionFast(in uint instID, in uint primID, float cosOut)
 {
     const uint lightID = LightRecordOf(instID, primID);
     if (lightID == 0xFFFFFFFF) return float3(0.0f, 0.0f, 0.0f);
-    return g_EmissiveTriangles[lightID].emission * GLOBAL_EMISSION_STRENGTH;
+    return LightRecordRadiance(lightID, cosOut);
 }
 
 inline uint GetMatIDFast(in uint instID, in uint primID){

@@ -29,7 +29,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     ray.TMax      = 1.0e7f;
 
     RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, INSTANCE_MASK_SURFACE, ray);
     [loop]
     for (uint i = 0u; q.Proceed() && i < 128u; ++i)
     {

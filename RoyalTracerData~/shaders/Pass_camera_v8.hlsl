@@ -10,7 +10,7 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     ray.TMax      = RAY_TMAX_PLANET;
     if (!IsRayDescValid(ray))
         return false;
-    dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
+    dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, INSTANCE_MASK_SURFACE);
 
     if (!hitObj.IsHit())
     {
@@ -29,7 +29,7 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     const HitInfo hinfo    = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, PixelConeAngle() * hitT);
     const uint matID = ResolveSurfaceMaterial(GetMatIDFast(instID, primID), hinfo);
     const float3  hitPos   = hinfo.hitPos;
-    const float3  emission = GetEmissionFast(instID, primID);
+    const float3  emission = GetEmissionFast(instID, primID, abs(dot(hinfo.geometricNormal, rayDir)));
     const bool    isEmitter = any(emission > 0.0f);
 
     // Correspondence only; the motion pass evaluates the previous geometry.

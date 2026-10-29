@@ -144,9 +144,9 @@ void main(uint3 tid : SV_DispatchThreadID)
         {
             const DvEmitter e = DvLoadEmitter(pixelIdx);
             const float  emitterPdfArea = DvLoadEmitterPdfArea(pixelIdx);
-            const float3 emission  = g_EmissiveTriangles[e.lightID].emission * GLOBAL_EMISSION_STRENGTH;
-            const bool   noPartner = (info & DV_MIS_NONE) != 0u;
             const float  cosLight  = max(dot(e.n, -sc.dirOut), 0.0f);
+            const float3 emission  = LightRecordRadiance(e.lightID, cosLight);
+            const bool   noPartner = (info & DV_MIS_NONE) != 0u;
             const float3 span      = e.pos - v.pos;
             const float  dist2     = max(dot(span, span), EPSILON);
             const float  lightPdfSA = (cosLight > EPSILON) ? (emitterPdfArea * dist2 / cosLight) : 0.0f;

@@ -574,7 +574,7 @@ void Pass_sharc_update_v8()
             matID_n = ResolveSurfaceMaterial(matID_n, hinfo_n);
 
             const float3 emission_n = (hinfo_n.lightID != 0xFFFFFFFFu)
-                ? g_EmissiveTriangles[hinfo_n.lightID].emission * GLOBAL_EMISSION_STRENGTH
+                ? LightRecordRadiance(hinfo_n.lightID, abs(dot(hinfo_n.geometricNormal, rayDir)))
                 : float3(0, 0, 0);
             if (any(emission_n > 0.0f))
             {
