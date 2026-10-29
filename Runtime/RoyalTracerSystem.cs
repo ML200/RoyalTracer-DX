@@ -150,6 +150,31 @@ namespace RoyalTracer
             Shutdown(); // frees the renderer and its scene; the next start builds both again
         }
 
+        // The toggle key, read through the Input System where it runs, else through the Input Manager.
+        static bool KeyDown(KeyCode key)
+        {
+#if ROYALTRACER_INPUT_SYSTEM
+            var keyboard = UnityEngine.InputSystem.Keyboard.current;
+            if (keyboard != null)
+            {
+                var k = InputSystemKey(key);
+                return k != UnityEngine.InputSystem.Key.None && keyboard[k].wasPressedThisFrame;
+            }
+#endif
+            try { return Input.GetKeyDown(key); }
+            catch (InvalidOperationException) { return false; } // the Input System only, and no keyboard
+        }
+
+#if ROYALTRACER_INPUT_SYSTEM
+        // The Input System names its keys as KeyCode does, but for the digits.
+        static UnityEngine.InputSystem.Key InputSystemKey(KeyCode key)
+        {
+            if (key >= KeyCode.Alpha0 && key <= KeyCode.Alpha9)
+                return UnityEngine.InputSystem.Key.Digit0 + (key - KeyCode.Alpha0);
+            return Enum.TryParse(key.ToString(), out UnityEngine.InputSystem.Key k) ? k : UnityEngine.InputSystem.Key.None;
+        }
+#endif
+
         // Once per frame (Driver.Update): toggle key, deferred stop, following the player's choice, and keeping the
         // tracer's scene in step with Unity's.
         public static void Tick()
@@ -163,7 +188,7 @@ namespace RoyalTracer
             var key = RoyalTracerSettings.Instance.toggleKey;
             bool toggle = false;
             if (key != KeyCode.None && (Application.isEditor || Debug.isDebugBuild))
-                try { toggle = Input.GetKeyDown(key); } catch (InvalidOperationException) { } // new Input System only
+                toggle = KeyDown(key);
             if (toggle)
             {
                 sessionChoice = !Enabled;
