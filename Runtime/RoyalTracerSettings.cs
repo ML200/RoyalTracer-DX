@@ -12,6 +12,15 @@ namespace RoyalTracer
         UltraPerformance = 4,
     }
 
+    // DLSS frame generation while path tracing: frames shown per rendered frame (values: frames generated).
+    public enum FrameGenerationMode
+    {
+        Off = 0,
+        X2 = 1,
+        X3 = 2,
+        X4 = 3,
+    }
+
     // Project-wide defaults, edited under Project Settings > RoyalTracer. The asset lives at
     // Assets/Resources/RoyalTracerSettings.asset; without it the defaults below apply.
     public sealed class RoyalTracerSettings : ScriptableObject
@@ -32,6 +41,9 @@ namespace RoyalTracer
 
         [Tooltip("Light the path traced scene with HDRP's sky (its sky reflection, with clouds). Off: RoyalTracer's own physical atmosphere, driven by HDRP's sun.")]
         public bool useHdrpSky = true;
+
+        [Tooltip("While path tracing, HDRP draws LOD groups at their full-detail level, the one RoyalTracer traces, so both agree on every outline. Off: HDRP keeps switching levels, and its own pixels can show along the edges of objects at a lower level.")]
+        public bool fullDetailLods = true;
 
         [Tooltip("Forward the renderer's informational log lines to the Unity console.")]
         public bool verboseLog;

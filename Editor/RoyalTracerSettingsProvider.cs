@@ -41,7 +41,7 @@ namespace RoyalTracer.Editor
                 if (serialized == null || serialized.targetObject != asset)
                     serialized = new SerializedObject(asset);
                 serialized.Update();
-                foreach (var name in new[] { "enabledByDefault", "quality", "minVideoMemoryMB", "toggleKey", "useHdrpSky", "verboseLog" })
+                foreach (var name in new[] { "enabledByDefault", "quality", "minVideoMemoryMB", "toggleKey", "useHdrpSky", "fullDetailLods", "verboseLog" })
                     EditorGUILayout.PropertyField(serialized.FindProperty(name));
                 if (serialized.ApplyModifiedProperties())
                     RoyalTracerSettings.Reload();

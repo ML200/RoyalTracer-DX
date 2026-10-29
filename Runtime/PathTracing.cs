@@ -10,7 +10,8 @@ namespace RoyalTracer
     // otherwise HDRP renders as usual.
     public static class PathTracing
     {
-        const string EnabledKey = "RoyalTracer.Enabled", QualityKey = "RoyalTracer.Quality";
+        const string EnabledKey = "RoyalTracer.Enabled", QualityKey = "RoyalTracer.Quality",
+            FrameGenerationKey = "RoyalTracer.FrameGeneration";
 
         // Any non-empty value makes this machine report unsupported, to test a game's fallback.
         public const string ForceUnsupportedVariable = "ROYALTRACER_UNSUPPORTED";
@@ -50,6 +51,32 @@ namespace RoyalTracer
         }
 
         public static bool Active => RoyalTracerSystem.Enabled;
+
+        // DLSS frame generation while path tracing, in player builds on GPUs that support it (FrameGenerationMax).
+        // Saved in PlayerPrefs; off until the player chooses. Above FrameGenerationMax it runs at the most there is.
+        public static FrameGenerationMode FrameGeneration
+        {
+            get => (FrameGenerationMode)Mathf.Clamp(PlayerPrefs.GetInt(FrameGenerationKey, 0), 0, (int)FrameGenerationMode.X4);
+            set
+            {
+                PlayerPrefs.SetInt(FrameGenerationKey, (int)value);
+                PlayerPrefs.Save();
+            }
+        }
+
+        // The most this machine can show: Off where frame generation cannot run (the editor, path tracing
+        // unavailable, a GPU without it).
+        public static FrameGenerationMode FrameGenerationMax => RoyalTracerSystem.FrameGenerationMax;
+
+        // Frame generation runs now.
+        public static bool FrameGenerationActive => RoyalTracerSystem.FrameGenerationActive;
+
+        // Why frame generation does not run although wanted (the editor, an unsupported GPU, HDR output); empty
+        // otherwise.
+        public static string FrameGenerationIssue => RoyalTracerSystem.FrameGenerationIssue;
+
+        // One line for logs: presents and frame generation's state.
+        public static string FrameGenerationStats => Native.PresenterStats;
 
         // Raised on the main thread when path tracing starts or stops.
         public static event Action<bool> ActiveChanged;

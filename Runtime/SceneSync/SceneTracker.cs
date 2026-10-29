@@ -66,6 +66,7 @@ namespace RoyalTracer
         readonly List<float> dirtyMatrices = new();
         readonly float[] matrix = new float[12];
         readonly HashSet<Renderer> hidden = new(); // fully traced renderers with glass, which HDRP must not draw too
+        readonly HashSet<LODGroup> held = new(); // drawn by HDRP at their full-detail level, the one traced
         readonly List<Vector3> bakedPositions = new(), bakedNormals = new();
         Mesh baked;
         int deformFrame = -1;
@@ -80,6 +81,10 @@ namespace RoyalTracer
                 if (r)
                     r.forceRenderingOff = false;
             hidden.Clear();
+            foreach (var group in held)
+                if (group)
+                    group.ForceLOD(-1);
+            held.Clear();
             if (baked)
                 Object.DestroyImmediate(baked);
             materials.Dispose();
@@ -434,8 +439,13 @@ namespace RoyalTracer
         IEnumerable<Renderer> Eligible(Camera camera)
         {
             var lowerLods = new HashSet<Renderer>();
+            bool hold = RoyalTracerSettings.Instance.fullDetailLods;
             foreach (var group in Object.FindObjectsByType<LODGroup>())
             {
+                // The tracer traces each group's first level; HDRP drawing another (or cross-fading) would disagree
+                // with it along the outline, where HDRP's own pixels then show.
+                if (hold && held.Add(group))
+                    group.ForceLOD(0);
                 var lods = group.GetLODs();
                 var first = lods.Length > 0 ? new HashSet<Renderer>(lods[0].renderers) : new HashSet<Renderer>();
                 for (int l = 1; l < lods.Length; ++l)

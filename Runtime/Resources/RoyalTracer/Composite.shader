@@ -74,6 +74,15 @@ Shader "Hidden/RoyalTracer/Composite"
         return GetCurrentExposureMultiplier();
     }
 
+    // The post-processed image before the UI, for frame generation (FramePresenter): top row first, as the presenter
+    // and its swap chain keep their textures.
+    TEXTURE2D_X(_RtHudSource);
+    float4 HudlessPass(Varyings varyings) : SV_Target
+    {
+        const uint2 px = uint2(varyings.positionCS.xy);
+        return float4(saturate(LOAD_TEXTURE2D_X(_RtHudSource, uint2(px.x, (uint)_ScreenSize.y - 1 - px.y)).rgb), 1);
+    }
+
     ENDHLSL
 
     SubShader
@@ -101,6 +110,18 @@ Shader "Hidden/RoyalTracer/Composite"
 
             HLSLPROGRAM
                 #pragma fragment ExposurePass
+            ENDHLSL
+        }
+        Pass
+        {
+            Name "Hudless"
+            ZWrite Off
+            ZTest Always
+            Blend Off
+            Cull Off
+
+            HLSLPROGRAM
+                #pragma fragment HudlessPass
             ENDHLSL
         }
     }

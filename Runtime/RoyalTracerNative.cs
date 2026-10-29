@@ -9,7 +9,7 @@ namespace RoyalTracer
     {
         const string Dll = "RoyalTracerUnity";
 
-        public const int EventRender = 1, EventRelease = 2;
+        public const int EventRender = 1, EventRelease = 2, EventPresent = 3;
         public const uint TextureAlbedo = 0, TextureNormal = 1, TextureRma = 2;
         public const int LogInfo = 0, LogWarning = 1, LogError = 2;
 
@@ -159,6 +159,13 @@ namespace RoyalTracer
 
         [DllImport(Dll)] public static extern int RT_SetWater(ref WaterDesc desc);
         [DllImport(Dll)] public static extern int RT_SetSky(int texture, float scale);
+        [DllImport(Dll)] public static extern int RT_PresenterEnable(int enable);
+        [DllImport(Dll)] public static extern void RT_PresenterUpdate();
+        [DllImport(Dll)] public static extern int RT_PresenterSource(int finished, int hudless);
+        [DllImport(Dll)] public static extern void RT_PresenterOptions(int framesToGenerate, int vsync);
+        [DllImport(Dll)] public static extern int RT_FrameGenerationMax();
+        [DllImport(Dll)] static extern IntPtr RT_PresenterStats();
+        public static string PresenterStats => Marshal.PtrToStringUTF8(RT_PresenterStats()) ?? "";
 
         [StructLayout(LayoutKind.Sequential)]
         public struct WaterOverlay

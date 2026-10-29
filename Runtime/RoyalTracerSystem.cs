@@ -37,6 +37,8 @@ namespace RoyalTracer
         static VfxTracker effects;
         static WaterTracker water;
         static SkyTracker sky;
+        static FramePresenter presenter;
+        static ulong presentTicket; // this frame's ticket for the presenter, 0 when none
         static Camera tracedCamera; // outside play mode the only camera traced; in play mode the one scanned for
         static Pass pass;
         static Material composite;
@@ -51,6 +53,31 @@ namespace RoyalTracer
         static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
         // Cameras whose HDRP water is off while the tracer draws the ocean: their own frame-settings state.
         static readonly Dictionary<HDAdditionalCameraData, (bool custom, bool overridden, bool enabled)> savedWater = new();
+
+        internal static bool FrameGenerationActive => presenter != null && presenter.Active;
+        internal static string FrameGenerationIssue =>
+            Application.isEditor ? "Frame generation runs in player builds only." :
+            FrameGenerationMax == FrameGenerationMode.Off ? "This GPU has no DLSS frame generation." : presenter?.Failure ?? "";
+
+        // The GPU's most, once frame generation has run on it (remembered for later sessions); until then up to 4x.
+        const string FrameGenerationMaxKey = "RoyalTracer.FrameGenerationMax";
+        internal static FrameGenerationMode FrameGenerationMax
+        {
+            get
+            {
+                if (Application.isEditor || !PathTracing.Available)
+                    return FrameGenerationMode.Off;
+                int max = Native.RT_FrameGenerationMax();
+                if (max > 0 && PlayerPrefs.GetInt(FrameGenerationMaxKey, 0) != max)
+                {
+                    PlayerPrefs.SetInt(FrameGenerationMaxKey, max);
+                    PlayerPrefs.Save();
+                }
+                else if (max < 0)
+                    max = PlayerPrefs.GetInt(FrameGenerationMaxKey, (int)FrameGenerationMode.X4);
+                return (FrameGenerationMode)Mathf.Clamp(max, 0, (int)FrameGenerationMode.X4);
+            }
+        }
 
         // The tracer draws HDRP's ocean: the water stand-in plane goes.
         internal static bool WaterTraced => water != null && water.Active;
@@ -189,6 +216,9 @@ namespace RoyalTracer
         static void Tick(bool? wanted, Camera camera)
         {
             outputs.Tick();
+            presenter?.Follow(Enabled && !disableRequested
+                ? (FrameGenerationMode)Mathf.Min((int)PathTracing.FrameGeneration, (int)FrameGenerationMax)
+                : FrameGenerationMode.Off);
             if (disableRequested)
             {
                 disableRequested = false;
@@ -309,6 +339,7 @@ namespace RoyalTracer
                 effects = new VfxTracker();
                 water = new WaterTracker();
                 sky = new SkyTracker();
+                presenter = new FramePresenter(composite);
                 pass = new Pass { name = "RoyalTracer composite" };
                 initialized = true;
 #if UNITY_EDITOR
@@ -329,6 +360,8 @@ namespace RoyalTracer
             Stop();
             if (!initialized)
                 return;
+            presenter.Dispose(); // its window and shared texture, before the renderer goes
+            presenter = null;
             water.Dispose(); // its shared textures, before the device's scene goes
             water = null;
             sky.Dispose();
@@ -415,6 +448,7 @@ namespace RoyalTracer
             sky.Record(cmd, RoyalTracerSettings.Instance.useHdrpSky);
             water.Record(cmd, ticket.index); // HDRP's bands and the overlays of this frame, copied before the render event orders the tracer after them
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRender, (IntPtr)(long)ticket.index);
+            presentTicket = ticket.index;
             ctx.propertyBlock.SetTexture(ColorId, outputs.Color(ticket.slot));
             ctx.propertyBlock.SetTexture(DepthId, outputs.Depth(ticket.slot));
             ctx.propertyBlock.SetFloat(InvUnitScaleId, 1f / UnitScale);
@@ -495,9 +529,27 @@ namespace RoyalTracer
             protected override void Execute(CustomPassContext ctx) => RenderCamera(ctx);
         }
 
+        // End of frame, after the UI: the frame's finished image to the presenter.
+        static void EndOfFrame()
+        {
+            if (presentTicket != 0 && presenter != null && Enabled)
+                presenter.Present(presentTicket, renderEvent);
+            presentTicket = 0;
+        }
+
         sealed class Driver : MonoBehaviour
         {
             void Update() => Tick();
+
+            System.Collections.IEnumerator Start()
+            {
+                var endOfFrame = new WaitForEndOfFrame();
+                while (true)
+                {
+                    yield return endOfFrame;
+                    EndOfFrame();
+                }
+            }
         }
 
         // Unity textures over the plugin's shared outputs. Replaced ones live a few more frames, since queued GPU
