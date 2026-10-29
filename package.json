@@ -1,6 +1,6 @@
 {
   "name": "com.ml200.royaltracer",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "displayName": "RoyalTracer HDRP",
   "description": "Real-time path tracing for HDRP game cameras through the RoyalTracer native renderer (RoyalTracer-DX).",
   "unity": "6000.4",

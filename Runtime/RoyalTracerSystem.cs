@@ -341,6 +341,14 @@ namespace RoyalTracer
                 disableRequested = true; // not while HDRP iterates its custom passes
                 return;
             }
+            if (ticket.color0 == IntPtr.Zero)
+            {
+                // The plugin never got Unity's device: in the editor, a plugin updated while it runs loads without it.
+                Debug.LogError("[RoyalTracer] The plugin has no access to Unity's D3D12 device. If the package was updated while the editor was open, restart the editor.");
+                PathTracing.MarkUnavailable("Restart the editor: the path tracer's plugin was loaded without Unity's graphics device.");
+                disableRequested = true;
+                return;
+            }
             outputs.Update(ticket);
             LastColor = outputs.Color(ticket.slot);
 
