@@ -108,16 +108,24 @@ OceanSample OceanSampleSurfaceFrom(float2 q, float widthM, uint dispSlot, bool d
     s.stretch = float3(1.0f, 1.0f, 0.0f);
     s.gain = gain;
     [loop] for (uint c = 0; c < OCEAN_CASCADES; ++c) {
+        // A host's bands fade with distance to the camera, as the host draws them.
+        float fade = 1.0f;
+        if (P.external != 0u) {
+            if (c >= P.external)
+                break;
+            const float f = saturate(length(float3(q.x, P.surfaceY, q.y) - P.lodCamera) * P.externalFadeA[c] + P.externalFadeB[c]);
+            fade = smoothstep(0.0f, 1.0f, f * f);
+        }
         const float3 uv = float3(OceanCascadeUV(q, P, c), c);
         const float mip = OceanCascadeMip(widthM, P.cascadeLength[c]);
-        const float4 h = disp.SampleLevel(g_sampler, uv, mip);
+        const float4 h = disp.SampleLevel(g_sampler, uv, mip) * fade;
         // Each band sharpened on its own elevation, after the gain.
         const float skew = P.crestSkew[c];
         const float variance = P.cascadeVariance[c] * gain * gain;
         s.displacement.xz += h.xz * gain;
         s.displacement.y += OceanSkewHeight(h.y * gain, skew, variance);
         if (derivatives) {
-            const float4 d = deriv.SampleLevel(g_sampler, uv, mip);
+            const float4 d = deriv.SampleLevel(g_sampler, uv, mip) * fade;
             const float slope = OceanSkewSlope(h.y * gain, skew);
             s.gradient += slope * gain * d.xy + (slope * h.y - 2.0f * skew * gain * P.cascadeVariance[c]) * dGain;
             s.stretch += float3(gain * d.z + h.x * dGain.x, gain * d.w + h.z * dGain.y, gain * h.w + h.x * dGain.y);

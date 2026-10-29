@@ -36,11 +36,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
         if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
         const uint cInstID = q.CandidateInstanceID();
         const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+        if (IS_OCEAN_INSTANCE(cInstID)) // water is transmissive, but the host takes its surface from the tracer
+        {
+            q.CommitNonOpaqueTriangleHit();
+            continue;
+        }
         const uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
         // Glass stays see-through, as the host draws its transparents itself.
         if (LoadIsThinGlass(cMatID) || LoadKd_w(cMatID) < 1.0f - EPSILON) continue;
         if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
             q.CommitNonOpaqueTriangleHit();
     }
-    hostDepth[DTid.xy] = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? q.CommittedRayT() * dot(dir, fwd) : 0.0f;
+    // Ocean hits come negative: the host draws no water there and takes the tracer's surface and depth.
+    float depth = 0.0f;
+    if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+        depth = q.CommittedRayT() * dot(dir, fwd) * (IS_OCEAN_INSTANCE(q.CommittedInstanceID()) ? -1.0f : 1.0f);
+    hostDepth[DTid.xy] = depth;
 }

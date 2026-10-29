@@ -8,9 +8,9 @@ using UnityEngine.Rendering.HighDefinition;
 
 namespace RoyalTracer
 {
-    // Path traced opaque surfaces for HDRP game cameras. Enabling hands the loaded scenes' supported renderers to
-    // RoyalTracer (its own D3D12 device), and a custom pass after opaque lighting writes its image into the camera
-    // colour. HDRP still draws sky, water, fog, transparents, VFX, post-processing and UI over it.
+    // Path traced opaque surfaces and ocean for HDRP game cameras. Enabling hands the loaded scenes' supported renderers
+    // to RoyalTracer (its own D3D12 device), and a custom pass before transparents writes its image, fogged as HDRP
+    // fogs, into the camera colour. HDRP still draws the sky, transparents, VFX, post-processing and UI.
     // In play mode a driver keeps it running while PathTracing.Available && PathTracing.UserEnabled.
     public static class RoyalTracerSystem
     {
@@ -33,6 +33,7 @@ namespace RoyalTracer
         static LightTracker lights;
         static ParticleTracker particles;
         static VfxTracker effects;
+        static WaterTracker water;
         static Pass pass;
         static Material composite;
         static RenderTexture exposureTarget;
@@ -44,6 +45,11 @@ namespace RoyalTracer
         // What the tracer's scene holds, for logs and tools.
         public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data, {lights.Count} lights, {particles.Count} particle systems, trails and lines ({particles.Emitters} emitters), {effects.Count} exporting VFX ({effects.Particles} particles, {effects.Emitters} emitters)" : "") : "not running";
         static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
+        // Cameras whose HDRP water is off while the tracer draws the ocean: their own frame-settings state.
+        static readonly Dictionary<HDAdditionalCameraData, (bool custom, bool overridden, bool enabled)> savedWater = new();
+
+        // The tracer draws HDRP's ocean: the water stand-in plane goes.
+        internal static bool WaterTraced => water != null && water.Active;
 
         static bool Wanted => sessionChoice ?? PathTracing.UserEnabled;
 
@@ -113,7 +119,8 @@ namespace RoyalTracer
             lights.Scan();
             particles.Scan();
             effects.Scan();
-            CustomPassVolume.RegisterGlobalCustomPass(CustomPassInjectionPoint.AfterOpaqueColor, pass);
+            water.Scan();
+            CustomPassVolume.RegisterGlobalCustomPass(CustomPassInjectionPoint.BeforeTransparent, pass);
             ApplyQuality();
             Enabled = true;
             disableRequested = false;
@@ -132,6 +139,10 @@ namespace RoyalTracer
                 if (data)
                     data.antialiasing = mode;
             savedAntialiasing.Clear();
+            foreach (var (data, state) in savedWater)
+                if (data)
+                    SetWaterRendering(data, state.custom, state.overridden, state.enabled);
+            savedWater.Clear();
             outputs.Clear();
             Enabled = false;
             Debug.Log("[RoyalTracer] Path tracing off");
@@ -181,6 +192,7 @@ namespace RoyalTracer
             lights.Scan();
             particles.Scan();
             effects.Scan();
+            water.Scan();
         }
 
         // Creates the native device once per process. Returns null, or why path tracing cannot run.
@@ -216,6 +228,7 @@ namespace RoyalTracer
                 lights = new LightTracker();
                 particles = new ParticleTracker();
                 effects = new VfxTracker();
+                water = new WaterTracker();
                 pass = new Pass { name = "RoyalTracer composite" };
                 initialized = true;
 #if UNITY_EDITOR
@@ -236,6 +249,8 @@ namespace RoyalTracer
             Stop();
             if (!initialized)
                 return;
+            water.Dispose(); // its shared textures, before the device's scene goes
+            water = null;
             Native.RT_Shutdown(); // releases the native scene with it
             tracker.Dispose();
             tracker = null;
@@ -279,12 +294,15 @@ namespace RoyalTracer
             if (!Enabled || disableRequested || camera.cameraType != CameraType.Game)
                 return;
             // TAA jitters HDRP's depth; SMAA keeps it aligned with the tracer's unjittered depth.
-            if (camera.TryGetComponent(out HDAdditionalCameraData data) &&
-                data.antialiasing == HDAdditionalCameraData.AntialiasingMode.TemporalAntialiasing)
+            camera.TryGetComponent(out HDAdditionalCameraData data);
+            if (data && data.antialiasing == HDAdditionalCameraData.AntialiasingMode.TemporalAntialiasing)
             {
                 savedAntialiasing[data] = data.antialiasing;
                 data.antialiasing = HDAdditionalCameraData.AntialiasingMode.SubpixelMorphologicalAntiAliasing;
             }
+            // While the tracer draws the ocean, this camera draws no HDRP water (from its next frame).
+            if (data)
+                HideWater(data, water.Active);
 
             tracker.PushTransforms();
             tracker.UpdateDeforming();
@@ -302,12 +320,13 @@ namespace RoyalTracer
             LastColor = outputs.Color(ticket.slot);
 
             var cmd = ctx.cmd;
+            water.Record(cmd); // HDRP's bands of this frame, copied before the render event orders the tracer after them
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRender, (IntPtr)(long)ticket.index);
             ctx.propertyBlock.SetTexture(ColorId, outputs.Color(ticket.slot));
             ctx.propertyBlock.SetTexture(DepthId, outputs.Depth(ticket.slot));
             ctx.propertyBlock.SetFloat(InvUnitScaleId, 1f / UnitScale);
             ctx.propertyBlock.SetFloat(MaskId, ShowRawTracer ? 2f : ShowCompositeMask ? 1f : 0f);
-            CoreUtils.SetRenderTarget(cmd, ctx.cameraColorBuffer, ClearFlag.None);
+            CoreUtils.SetRenderTarget(cmd, ctx.cameraColorBuffer, ctx.cameraDepthBuffer, ClearFlag.None); // the ocean writes depth
             CoreUtils.DrawFullScreen(cmd, composite, ctx.propertyBlock, shaderPassId: 0);
             cmd.IssuePluginEventAndData(renderEvent, Native.EventRelease, (IntPtr)(long)ticket.index);
             effects.Record(cmd, exposure); // VFX particles of this frame's update, for the next frames
@@ -321,6 +340,32 @@ namespace RoyalTracer
                 if (!r.hasError && float.IsFinite(r.GetData<float>()[0]))
                     exposure = r.GetData<float>()[0];
             });
+        }
+
+        static void HideWater(HDAdditionalCameraData data, bool hide)
+        {
+            if (hide && !savedWater.ContainsKey(data))
+            {
+                savedWater[data] = (data.customRenderingSettings,
+                    data.renderingPathCustomFrameSettingsOverrideMask.mask[(uint)FrameSettingsField.Water],
+                    data.renderingPathCustomFrameSettings.IsEnabled(FrameSettingsField.Water));
+                SetWaterRendering(data, true, true, false);
+            }
+            else if (!hide && savedWater.Remove(data, out var state))
+                SetWaterRendering(data, state.custom, state.overridden, state.enabled);
+        }
+
+        static void SetWaterRendering(HDAdditionalCameraData data, bool custom, bool overridden, bool enabled)
+        {
+            data.customRenderingSettings = custom;
+            var mask = data.renderingPathCustomFrameSettingsOverrideMask;
+            var bits = mask.mask;
+            bits[(uint)FrameSettingsField.Water] = overridden;
+            mask.mask = bits;
+            data.renderingPathCustomFrameSettingsOverrideMask = mask;
+            var settings = data.renderingPathCustomFrameSettings;
+            settings.SetEnabled(FrameSettingsField.Water, enabled);
+            data.renderingPathCustomFrameSettings = settings;
         }
 
         static Native.FrameDesc Frame(Camera camera, int width, int height)

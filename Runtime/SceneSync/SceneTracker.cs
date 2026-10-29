@@ -555,12 +555,12 @@ namespace RoyalTracer
             }
         }
 
-        // HDRP's ocean is not path traced yet. A dark dielectric plane at its height gives hulls something to
-        // reflect and blocks the lower sky; it never shows, since HDRP draws the water over the composite.
+        // Where the tracer cannot draw HDRP's ocean (RoyalTracerSystem.WaterTraced), a dark dielectric plane at its height
+        // gives hulls something to reflect and blocks the lower sky; it never shows, since HDRP draws its water then.
         void UpdateWaterProxy()
         {
             var water = Object.FindAnyObjectByType<WaterSurface>();
-            if (!water)
+            if (!water || RoyalTracerSystem.WaterTraced)
             {
                 if (waterInstance >= 0)
                     Native.RT_ReleaseInstance(waterInstance);

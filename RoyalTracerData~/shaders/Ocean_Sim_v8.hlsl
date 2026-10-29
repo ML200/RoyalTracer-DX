@@ -160,6 +160,50 @@ void OceanFftV(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
 }
 
+// A host band's height at its texture coordinates: bilinear, wrapping, texel centres at (i + 0.5) / res.
+float HostHeight(uint band, float2 uv, uint res) {
+    Texture2D<float4> t = ResourceDescriptorHeap[OCEAN_SRV_EXTERNAL + band];
+    const float2 p = uv * res - 0.5f;
+    const float2 f = frac(p);
+    const int2 i = (int2)floor(p);
+    const int r = (int)res;
+    float v[4];
+    [unroll] for (uint k = 0; k < 4u; ++k) {
+        const int2 at = ((i + int2(k & 1u, k >> 1u)) % r + r) % r;
+        v[k] = t.Load(int3(at, 0)).x;
+    }
+    return lerp(lerp(v[0], v[1], f.x), lerp(v[2], v[3], f.x), f.y);
+}
+
+// A host's simulation in place of the FFT (OceanParamsGPU.external bands, one per cascade, the cascade as long as the
+// band's patch): height only, as the host draws it, slopes by central differences, no horizontal displacement.
+// Node (i, j) sits at x = i L / N, z = j L / N (mod L); the host's z is -z. gU0: displacement parity.
+[numthreads(8, 8, 1)]
+void OceanImport(uint3 tid : SV_DispatchThreadID) {
+    if (tid.x >= OCEAN_FFT_SIZE || tid.y >= OCEAN_FFT_SIZE)
+        return;
+    StructuredBuffer<OceanParamsGPU> params = ResourceDescriptorHeap[OCEAN_SRV_PARAMS];
+    const OceanParamsGPU P = params[0];
+    RWTexture2DArray<float4> disp = ResourceDescriptorHeap[(gU0 & 1u) == 0u ? OCEAN_UAV_DISP0_MIPS : OCEAN_UAV_DISP1_MIPS];
+    RWTexture2DArray<float4> deriv = ResourceDescriptorHeap[OCEAN_UAV_DERIV_MIPS];
+    const uint c = tid.z;
+    float4 d0 = 0.0f, d1 = 0.0f;
+    if (c < P.external) {
+        const float4 band = P.externalBand[c]; // (1 / patch, offset u, offset v, amplitude)
+        const uint res = P.externalResolution;
+        const float step = 1.0f / OCEAN_FFT_SIZE;
+        const float2 uv = float2(tid.x, -(float)tid.y) * step - band.yz;
+        const float twoDx = 2.0f * step / band.x;
+        const float h = HostHeight(c, uv, res);
+        const float dx = HostHeight(c, uv + float2(step, 0.0f), res) - HostHeight(c, uv - float2(step, 0.0f), res);
+        const float dz = HostHeight(c, uv - float2(0.0f, step), res) - HostHeight(c, uv + float2(0.0f, step), res);
+        d0 = float4(0.0f, band.w * h, 0.0f, 0.0f);
+        d1 = float4(band.w * dx / twoDx, band.w * dz / twoDx, 0.0f, 0.0f);
+    }
+    disp[tid] = d0;
+    deriv[tid] = d1;
+}
+
 // One mip of every pyramid. gU0: displacement parity; gU1: destination mip.
 [numthreads(8, 8, 1)]
 void OceanMip(uint3 tid : SV_DispatchThreadID) {

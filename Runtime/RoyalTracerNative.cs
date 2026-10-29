@@ -127,6 +127,34 @@ namespace RoyalTracer
             public float r, g, b, pad;    // radiance
         }
 
+        [DllImport(Dll)] public static extern int RT_CreateHostTexture(uint width, uint height, int dxgiFormat, out IntPtr hostTexture);
+        [DllImport(Dll)] public static extern void RT_ReleaseHostTexture(int texture);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WaterBand
+        {
+            public int texture;
+            public float invPatchSize, offsetU, offsetV, amplitude, fadeA, fadeB, pad;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WaterDesc
+        {
+            public uint bandCount, resolution;
+            public float seaLevel, maxWaveHeight;
+            public WaterBand band0, band1, band2, band3;
+
+            public void Set(int index, WaterBand band)
+            {
+                if (index == 0) band0 = band;
+                else if (index == 1) band1 = band;
+                else if (index == 2) band2 = band;
+                else band3 = band;
+            }
+        }
+
+        [DllImport(Dll)] public static extern int RT_SetWater(ref WaterDesc desc);
+
         [DllImport(Dll)] public static extern int RT_CreateEmitterSet(uint capacity);
         [DllImport(Dll)] public static extern int RT_UpdateEmitterSet(int set, Emitter[] emitters, uint count);
         [DllImport(Dll)] public static extern void RT_ReleaseEmitterSet(int set);

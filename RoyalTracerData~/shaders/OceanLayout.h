@@ -94,7 +94,9 @@
 #define OCEAN_FOAM_WHITE_SCALE 1024.0f
 #define OCEAN_FOAM_STATS_BYTES (OCEAN_FOAM_WHITE_OFFSET + 16)
 
-#define OCEAN_HEAP_COUNT ((OCEAN_UAV_FOAM_STATS + 1u) - OCEAN_HEAP_BASE)
+// A host's simulation (OceanParamsGPU.external): Texture2D<float4> per band, height in x.
+#define OCEAN_SRV_EXTERNAL (OCEAN_UAV_FOAM_STATS + 1u)
+#define OCEAN_HEAP_COUNT ((OCEAN_SRV_EXTERNAL + OCEAN_CASCADES) - OCEAN_HEAP_BASE)
 
 // Diagnostic views, OceanParamsGPU.debugMode.
 #define OCEAN_DEBUG_BEAUTY 0u
@@ -201,6 +203,16 @@ struct OceanParamsGPU {
 
     // Unresolved slope variance per footprint width (OCEAN_ROUGHNESS_ENTRIES).
     OCEAN_FLOAT4 residualSlope[OCEAN_ROUGHNESS_ENTRIES / 4];
+
+    // A host's simulation in place of the FFT, external = its band count (0: the FFT). Per band and cascade:
+    // (1 / patch, offset u, offset v, amplitude) mapping the host's world (x, -z) to its band texture, and the host's
+    // distance fade smoothstep(saturate(d * fadeA + fadeB)^2) for distance d to the camera.
+    OCEAN_FLOAT4 externalBand[OCEAN_CASCADES];
+    OCEAN_FLOAT4 externalFadeA;
+    OCEAN_FLOAT4 externalFadeB;
+    OCEAN_UINT external;
+    OCEAN_UINT externalResolution; // band texture size
+    OCEAN_FLOAT2 externalPad;
 };
 
 // At OCEAN_FOAM_STATE_OFFSET of OCEAN_UAV_FOAM_STATS; the host reads it back.
