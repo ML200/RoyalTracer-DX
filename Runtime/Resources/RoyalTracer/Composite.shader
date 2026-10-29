@@ -38,10 +38,13 @@ Shader "Hidden/RoyalTracer/Composite"
         if (!sameSurface)
             discard;
         const float4 rt = LOAD_TEXTURE2D(_RtColor, rtPx);
-        const float3 radiance = rt.rgb * exp2(-rt.a) * _RtInvUnitScale;
+        const float3 exposed = rt.rgb * exp2(-rt.a) * _RtInvUnitScale * GetCurrentExposureMultiplier();
+        // HDRP's auto exposure averages this image into its history: one non-finite pixel would ruin every frame after.
+        if (any(!isfinite(exposed)))
+            discard;
         if (_RtShowMask > 0.5)
-            return float4(radiance * GetCurrentExposureMultiplier() * float3(0.35, 1, 0.35), 1);
-        return float4(radiance * GetCurrentExposureMultiplier(), 1);
+            return float4(exposed * float3(0.35, 1, 0.35), 1);
+        return float4(exposed, 1);
     }
 
     ENDHLSL

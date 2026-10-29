@@ -26,16 +26,18 @@ namespace RoyalTracer
             InvUnitScaleId = Shader.PropertyToID("_RtInvUnitScale"), MaskId = Shader.PropertyToID("_RtShowMask");
 
         static bool initialized, disableRequested;
-        static bool? sessionChoice;  // Enable/Disable and the toggle key override the saved choice until it changes
-        static int skippedSignature; // a scene that had nothing to trace; retried once it changes
+        static bool? sessionChoice; // Enable/Disable and the toggle key override the saved choice until it changes
         static Native.LogFn logFn;
         static IntPtr renderEvent;
-        static SceneCollector collector;
+        static SceneTracker tracker;
         static Pass pass;
         static Material composite;
         static float nextScan;
         static readonly OutputTextures outputs = new();
         public static Texture LastColor { get; private set; } // the last composited tracer output, for captures
+
+        // What the tracer's scene holds, for logs and tools.
+        public static string Stats => initialized ? Native.Stats + (tracker != null ? $"; {tracker.Count} renderers, {tracker.Pending} waiting for mesh data" : "") : "not running";
         static readonly Dictionary<HDAdditionalCameraData, HDAdditionalCameraData.AntialiasingMode> savedAntialiasing = new();
 
         static bool Wanted => sessionChoice ?? PathTracing.UserEnabled;
@@ -47,7 +49,6 @@ namespace RoyalTracer
             if (Application.platform is not (RuntimePlatform.WindowsPlayer or RuntimePlatform.WindowsEditor))
                 return;
             sessionChoice = null;
-            skippedSignature = 0;
             var go = new GameObject("RoyalTracer") { hideFlags = HideFlags.HideAndDontSave };
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.AddComponent<Driver>();
@@ -70,7 +71,6 @@ namespace RoyalTracer
         internal static void FollowUserChoice()
         {
             sessionChoice = null;
-            skippedSignature = 0;
             nextScan = 0f;
             if (!Wanted)
                 Stop();
@@ -104,11 +104,7 @@ namespace RoyalTracer
                     Debug.LogWarning("[RoyalTracer] No camera to path trace");
                 return false;
             }
-            if (!collector.Commit(camera))
-            {
-                skippedSignature = collector.Signature;
-                return false;
-            }
+            tracker.Scan(camera, wait: true);
             CustomPassVolume.RegisterGlobalCustomPass(CustomPassInjectionPoint.AfterOpaqueColor, pass);
             ApplyQuality();
             Enabled = true;
@@ -132,10 +128,11 @@ namespace RoyalTracer
             Enabled = false;
             Debug.Log("[RoyalTracer] Path tracing off");
             PathTracing.RaiseActiveChanged(false);
+            Shutdown(); // frees the renderer and its scene; the next start builds both again
         }
 
-        // Once per frame (Driver.Update): toggle key, deferred stop, following the player's choice, and a rebuild
-        // when the renderer set changed.
+        // Once per frame (Driver.Update): toggle key, deferred stop, following the player's choice, and keeping the
+        // tracer's scene in step with Unity's.
         public static void Tick()
         {
             outputs.Tick();
@@ -151,7 +148,6 @@ namespace RoyalTracer
             if (toggle)
             {
                 sessionChoice = !Enabled;
-                skippedSignature = 0;
                 nextScan = 0f;
                 if (!Enabled && !PathTracing.Available)
                     Debug.LogWarning("[RoyalTracer] Path tracing unavailable: " + PathTracing.UnavailableReason);
@@ -169,15 +165,11 @@ namespace RoyalTracer
             var camera = Camera.main;
             if (!Enabled)
             {
-                if (camera && (skippedSignature == 0 || collector.ComputeSignature(camera) != skippedSignature))
+                if (camera)
                     Start(camera, quiet: true);
                 return;
             }
-            if (collector.ComputeSignature(camera) != collector.Signature && !collector.Commit(camera))
-            {
-                skippedSignature = collector.Signature;
-                Stop();
-            }
+            tracker.Scan(camera); // new meshes arrive over the next frames
         }
 
         // Creates the native device once per process. Returns null, or why path tracing cannot run.
@@ -209,7 +201,7 @@ namespace RoyalTracer
                     return caps.Reason.Length > 0 ? caps.Reason + "." : Native.LastError;
                 renderEvent = Native.RT_GetRenderEventFunc();
                 composite = CoreUtils.CreateEngineMaterial(Resources.Load<Shader>("RoyalTracer/Composite"));
-                collector = new SceneCollector();
+                tracker = new SceneTracker();
                 pass = new Pass { name = "RoyalTracer composite" };
                 initialized = true;
 #if UNITY_EDITOR
@@ -224,14 +216,15 @@ namespace RoyalTracer
             }
         }
 
-        // Releases the scene; the native device stays for the process, so a later Enable is quick.
+        // Releases the renderer and its scene; the native device stays for the process.
         public static void Shutdown()
         {
             Stop();
             if (!initialized)
                 return;
             Native.RT_Shutdown();
-            collector.Dispose();
+            tracker.Dispose();
+            tracker = null;
             CoreUtils.Destroy(composite);
             initialized = false;
 #if UNITY_EDITOR
@@ -272,7 +265,8 @@ namespace RoyalTracer
                 data.antialiasing = HDAdditionalCameraData.AntialiasingMode.SubpixelMorphologicalAntiAliasing;
             }
 
-            collector.PushTransforms();
+            tracker.PushTransforms();
+            tracker.UpdateDeforming();
             var frame = Frame(camera, ctx.hdCamera.actualWidth, ctx.hdCamera.actualHeight);
             if (Native.RT_SubmitFrame(ref frame, out var ticket) != 1)
             {
@@ -317,7 +311,7 @@ namespace RoyalTracer
                 var tint = sun.color.linear * (sun.useColorTemperature ? Mathf.CorrelatedColorTemperatureToRGB(sun.colorTemperature) : Color.white);
                 frame.sunIntensity = sun.intensity * tint.grayscale * UnitScale;
             }
-            float water = SceneCollector.WaterLevel();
+            float water = SceneTracker.WaterLevel();
             frame.skyGroundY = float.IsInfinity(water) ? -1f : water - 2f;
             return frame;
         }

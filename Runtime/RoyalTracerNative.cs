@@ -61,7 +61,10 @@ namespace RoyalTracer
             public float roughness, metallic, coat, coatRoughness, ior, alphaCutoff;
             public int albedoTexture, normalTexture, rmaTexture;
             public float uvScaleX, uvScaleY;
+            public uint flags;
         }
+
+        public const uint MaterialThinGlass = 1;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct MeshDesc
@@ -71,7 +74,10 @@ namespace RoyalTracer
             public IntPtr indices;
             public uint indexCount;
             public IntPtr triangleMaterials;
+            public uint flags;
         }
+
+        public const uint MeshDeforming = 1;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct FrameDesc
@@ -98,17 +104,24 @@ namespace RoyalTracer
         [DllImport(Dll)] public static extern int RT_GetCapabilities(out Capabilities caps);
         [DllImport(Dll)] public static extern void RT_Shutdown();
         [DllImport(Dll)] public static extern IntPtr RT_GetLastError();
-        [DllImport(Dll)] public static extern void RT_SceneBegin();
-        [DllImport(Dll)] public static extern int RT_AddTexture(ref TextureDesc desc);
-        [DllImport(Dll)] public static extern int RT_AddMaterial(ref MaterialDesc desc);
-        [DllImport(Dll)] public static extern int RT_AddMesh(ref MeshDesc desc);
-        [DllImport(Dll)] public static extern int RT_AddInstance(int mesh, float[] rowMajor3x4);
-        [DllImport(Dll)] public static extern int RT_SceneCommit();
-        [DllImport(Dll)] public static extern void RT_SetQuality(int quality);
+        [DllImport(Dll)] public static extern int RT_CreateTexture(ref TextureDesc desc);
+        [DllImport(Dll)] public static extern void RT_ReleaseTexture(int texture);
+        [DllImport(Dll)] public static extern int RT_CreateMaterial(ref MaterialDesc desc);
+        [DllImport(Dll)] public static extern int RT_UpdateMaterial(int material, ref MaterialDesc desc);
+        [DllImport(Dll)] public static extern void RT_ReleaseMaterial(int material);
+        [DllImport(Dll)] public static extern int RT_CreateMesh(ref MeshDesc desc);
+        [DllImport(Dll)] public static extern void RT_ReleaseMesh(int mesh);
+        [DllImport(Dll)] public static extern int RT_UpdateMeshVertices(int mesh, float[] positions, float[] normals);
+        [DllImport(Dll)] public static extern int RT_CreateInstance(int mesh, float[] rowMajor3x4);
+        [DllImport(Dll)] public static extern void RT_ReleaseInstance(int instance);
+        [DllImport(Dll)] public static extern void RT_SetInstanceVisible(int instance, int visible);
         [DllImport(Dll)] public static extern void RT_SetInstanceTransforms(int count, int[] instances, float[] rowMajor3x4s);
+        [DllImport(Dll)] public static extern IntPtr RT_GetStats();
+        [DllImport(Dll)] public static extern void RT_SetQuality(int quality);
         [DllImport(Dll)] public static extern int RT_SubmitFrame(ref FrameDesc desc, out FrameTicket ticket);
         [DllImport(Dll)] public static extern IntPtr RT_GetRenderEventFunc();
 
         public static string LastError => Marshal.PtrToStringUTF8(RT_GetLastError()) ?? "";
+        public static string Stats => Marshal.PtrToStringUTF8(RT_GetStats()) ?? "";
     }
 }

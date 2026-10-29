@@ -12,7 +12,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
     RWTexture2D<float>  hostDepth = ResourceDescriptorHeap[HOST_DEPTH_UAV_SLOT];
 
     const float log2Exposure = log2(0.18f) - asfloat(gAutoExpose.Load(AE_OFFS_SMOOTHED));
-    hostColor[DTid.xy] = float4(g_dlssOutput[DTid.xy].rgb, log2Exposure);
+    // A host blends this into its own image and exposure history, where one NaN spreads for good (DLSS resets can
+    // produce some).
+    const float3 color = g_dlssOutput[DTid.xy].rgb;
+    hostColor[DTid.xy] = float4(all(isfinite(color)) ? color : 0.0f, isfinite(log2Exposure) ? log2Exposure : 0.0f);
 
     const float2 ndc    = ((float2(DTid.xy) + 0.5f) / float2(IMG_W, IMG_H)) * 2.0f - 1.0f;
     const float4 target = mul(projectionI, float4(ndc.x, -ndc.y, 1, 1));
