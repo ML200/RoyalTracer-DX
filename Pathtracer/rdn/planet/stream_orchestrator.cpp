@@ -326,6 +326,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
                  slot * TS_PER_SLOT + 2);
 
     record_tlas(scene, scene_count, terrain_hit_group, external_hit_group, cl);
+    if (clustered && m_clusterClient) m_clusterClient->after_tlas(cl, m_tlas);
 
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  slot * TS_PER_SLOT + 3);

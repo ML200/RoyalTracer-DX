@@ -21,6 +21,7 @@
 #include "Lighting/LightTreeIncremental.h"
 #include "CameraRecorder.h"
 #include "CameraPathSimulator.h"
+#include <chrono>
 #include <random>
 #include <array>
 
@@ -36,6 +37,8 @@
 #include "minecraft/mc_world.h"
 #include "minecraft/voxel_streamer.h"
 #include "Clusters/ClusterLod.h"
+#include "Clusters/LodGpu.h"
+#include "Clusters/InstanceSets.h"
 
 // Byte strides shared with the shader SoA layouts.
 struct SampleData {
@@ -128,18 +131,47 @@ class Renderer {
 
 #if RDN_CLUSTER_API
     // Per-instance cuts of the scene meshes' cluster LOD hierarchies, chosen and built first in each frame's cluster
-    // window; an instance with a cut traces its cluster BLAS in place of its mesh's.
+    // window; an instance with a cut traces its cluster BLAS in place of its mesh's. Paged meshes' cuts are chosen on the
+    // GPU after the TLAS build when the TLAS is partitioned (RDN_LOD_GPU=0: on the CPU).
     struct LodClient final : planet::IClusterClient {
         Renderer* renderer = nullptr;
         void before_cluster_work() override {
             if (renderer->m_pager.active()) renderer->m_pager.before_begin();
+            if (renderer->m_lodGpuMode) {
+                renderer->m_lodFeedback = {};
+                renderer->m_lodGpu.collect(renderer->m_lodFeedback);
+            }
+            renderer->m_instanceSets.collect();
         }
         void queue_cluster_work(ID3D12GraphicsCommandList4*) override { renderer->UpdateSceneLod(); }
+        void after_tlas(ID3D12GraphicsCommandList4* cl, planet::TlasBuilder& tlas) override {
+            renderer->RecordSceneLodGpu(cl, tlas);
+            renderer->RecordInstanceSets(cl, tlas);
+        }
         void on_submitted(uint64_t computeFence) override {
             if (renderer->m_pager.active()) renderer->m_pager.on_submitted(computeFence);
+            if (renderer->m_lodGpuMode) renderer->m_lodGpu.on_submitted(computeFence);
+            renderer->m_instanceSets.on_submitted(computeFence);
         }
     };
+    // Mass instancing: sets of one mesh at many transforms, which the GPU writes into the TLAS. RDN_SCATTER builds a
+    // test forest from a scene object.
+    clusters::InstanceSets m_instanceSets;
+    std::vector<UINT> m_scatterSources;              // its scene instances
+    std::vector<std::pair<UINT, UINT>> m_setRecords; // set slot, mesh
+    const void* m_setRecordBuffer = nullptr;          // the instance-properties buffer the records are in
+    std::chrono::steady_clock::time_point m_setStart; // the wind's clock
+    void CreateScatterSets(uint32_t count);
+    void RecordInstanceSets(ID3D12GraphicsCommandList4* cl, planet::TlasBuilder& tlas);
     clusters::LodInstances m_lod;
+    clusters::LodGpu m_lodGpu;
+    bool m_lodGpuMode = false;
+    clusters::LodGpu::Feedback m_lodFeedback;
+    std::vector<UINT> m_lodGpuInstance;  // scene instance per GPU LOD instance
+    std::vector<UINT> m_lodGpuHitGroup;  // their hit groups as of the last reset
+    std::vector<float> m_lodGpuViews;    // per GPU LOD instance: camera in mesh space, near distance
+    float m_lodErrorScale = 1.0f;        // the adaptive error budget's factor
+    float m_lodPixelsPerUnit = 0.0f, m_lodThreshold = 1.0f;
     // Streams the paged meshes' hierarchy pages the cuts want.
     clusters::Pager m_pager;
     std::vector<UINT> m_pagedMeshes; // scene mesh per pager mesh
@@ -150,6 +182,7 @@ class Renderer {
     const MeshGPU* m_lodMeshes = nullptr; // the mesh array then
     std::vector<clusters::LodView> m_lodViews;
     void UpdateSceneLod();
+    void RecordSceneLodGpu(ID3D12GraphicsCommandList4* cl, planet::TlasBuilder& tlas);
 #endif
 
     planet::RockScatter m_rockScatter;

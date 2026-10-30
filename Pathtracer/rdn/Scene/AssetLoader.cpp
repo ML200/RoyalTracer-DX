@@ -1,5 +1,7 @@
 #include "../stdafx.h"
+#include <cfloat>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <algorithm>
 #include <iterator>
@@ -152,6 +154,199 @@ std::vector<LoadedMesh> AssetLoader::SplitMeshSpatial(LoadedMesh mesh, UINT maxT
     return leftPieces;
 }
 
+namespace {
+// A far-field stand-in for an object: three planes crossed at its bounds' centre, facing x, z and y, each textured with
+// the object as seen along its normal, orthographically: what covers a texel (alpha-tested) in alpha, their mean albedo
+// in colour. The texture holds the three side by side; empty texels take neighbours' colours, for filtering.
+struct StandIn {
+    std::vector<Vertex> vertices;
+    std::vector<UINT> indices;
+    TextureData texture;
+    UINT dominant = 0; // the material most of its coverage comes from
+};
+
+float SrgbToLinear(uint8_t c) {
+    const float v = c / 255.0f;
+    return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+}
+uint8_t LinearToSrgb(float v) {
+    v = std::clamp(v, 0.0f, 1.0f);
+    const float s = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+    return (uint8_t)std::lround(s * 255.0f);
+}
+
+bool BakeStandIn(const std::vector<Vertex>& verts, const std::vector<UINT>& indices, const std::vector<UINT>& mats,
+                 const MaterialSoA& materials, const std::vector<TextureData>& albedo, StandIn& out) {
+    constexpr int R = 256; // texels per tile side
+    if (verts.empty() || indices.empty())
+        return false;
+    float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (const Vertex& v : verts) {
+        const float p[3] = {v.position.x, v.position.y, v.position.z};
+        for (int a = 0; a < 3; ++a) {
+            lo[a] = std::min(lo[a], p[a]);
+            hi[a] = std::max(hi[a], p[a]);
+        }
+    }
+    float ext[3], mid[3];
+    for (int a = 0; a < 3; ++a) {
+        ext[a] = std::max(hi[a] - lo[a], 1e-4f);
+        mid[a] = 0.5f * (lo[a] + hi[a]);
+    }
+    // Tile k: its plane's normal axis, and the axes of its texture's u and v (v down from the top for upright tiles).
+    const int normalAxis[3] = {0, 2, 1}, uAxis[3] = {2, 0, 0}, vAxis[3] = {1, 1, 2};
+    const bool upright[3] = {true, true, false};
+    std::vector<float> sum((size_t)3 * R * R * 3, 0.0f);
+    std::vector<uint32_t> count((size_t)3 * R * R, 0);
+    std::vector<uint64_t> byMaterial(materials.size(), 0);
+
+    auto sample = [&](UINT m, float u, float v, float rgb[3]) -> bool {
+        const DirectX::XMFLOAT4 kd = materials.Kd[m];
+        rgb[0] = kd.x, rgb[1] = kd.y, rgb[2] = kd.z;
+        const int tex = materials.albedoTexID[m];
+        const bool alphaTested = materials.alphaThreshold[m] < 1.0f;
+        if (tex < 0 || tex >= (int)albedo.size() || albedo[tex].image.GetImageCount() == 0)
+            return true;
+        const DirectX::Image* img = albedo[tex].image.GetImage(0, 0, 0);
+        if (!img || DirectX::BitsPerPixel(img->format) != 32)
+            return true;
+        const DirectX::XMFLOAT2 s = materials.albedoUVScale[m];
+        u *= s.x;
+        v *= s.y;
+        u -= std::floor(u);
+        v -= std::floor(v);
+        const size_t x = std::min(img->width - 1, (size_t)(u * img->width));
+        const size_t y = std::min(img->height - 1, (size_t)(v * img->height));
+        const uint8_t* t = img->pixels + y * img->rowPitch + x * 4;
+        uint8_t a = t[3];
+        if (materials.invertAlpha[m])
+            a = 255 - a;
+        if (alphaTested && a < materials.alphaThreshold[m] * 255.0f)
+            return false;
+        const bool srgb = DirectX::IsSRGB(img->format);
+        for (int c = 0; c < 3; ++c)
+            rgb[c] *= srgb ? SrgbToLinear(t[c]) : t[c] / 255.0f;
+        return true;
+    };
+
+    for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+        const Vertex* v[3] = {&verts[indices[t]], &verts[indices[t + 1]], &verts[indices[t + 2]]};
+        const UINT m = mats[t / 3];
+        for (int k = 0; k < 3; ++k) {
+            float px[3], py[3];
+            for (int i = 0; i < 3; ++i) {
+                const float p[3] = {v[i]->position.x, v[i]->position.y, v[i]->position.z};
+                px[i] = (p[uAxis[k]] - lo[uAxis[k]]) / ext[uAxis[k]] * R;
+                py[i] = upright[k] ? (hi[vAxis[k]] - p[vAxis[k]]) / ext[vAxis[k]] * R
+                                   : (p[vAxis[k]] - lo[vAxis[k]]) / ext[vAxis[k]] * R;
+            }
+            const float area = (px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0]);
+            if (std::fabs(area) < 1e-12f)
+                continue;
+            const int x0 = std::max(0, (int)std::floor(std::min({px[0], px[1], px[2]})));
+            const int x1 = std::min(R - 1, (int)std::ceil(std::max({px[0], px[1], px[2]})));
+            const int y0 = std::max(0, (int)std::floor(std::min({py[0], py[1], py[2]})));
+            const int y1 = std::min(R - 1, (int)std::ceil(std::max({py[0], py[1], py[2]})));
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x) {
+                    const float cx = x + 0.5f, cy = y + 0.5f;
+                    const float w0 = ((px[1] - cx) * (py[2] - cy) - (px[2] - cx) * (py[1] - cy)) / area;
+                    const float w1 = ((px[2] - cx) * (py[0] - cy) - (px[0] - cx) * (py[2] - cy)) / area;
+                    const float w2 = 1.0f - w0 - w1;
+                    if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f)
+                        continue;
+                    const float u = w0 * v[0]->texCoord.x + w1 * v[1]->texCoord.x + w2 * v[2]->texCoord.x;
+                    const float tv = w0 * v[0]->texCoord.y + w1 * v[1]->texCoord.y + w2 * v[2]->texCoord.y;
+                    float rgb[3];
+                    if (!sample(m, u, tv, rgb))
+                        continue;
+                    const size_t at = ((size_t)k * R * R + (size_t)y * R + x);
+                    for (int c = 0; c < 3; ++c)
+                        sum[at * 3 + c] += rgb[c];
+                    ++count[at];
+                    ++byMaterial[m];
+                }
+        }
+    }
+    out.dominant = (UINT)(std::max_element(byMaterial.begin(), byMaterial.end()) - byMaterial.begin());
+
+    // The texture: three tiles in a row, linear colour back to sRGB; empty texels grow their neighbours' colours.
+    std::vector<float> rgb((size_t)3 * R * R * 3, 0.0f);
+    std::vector<uint8_t> filled((size_t)3 * R * R, 0);
+    for (size_t i = 0; i < count.size(); ++i)
+        if (count[i]) {
+            for (int c = 0; c < 3; ++c)
+                rgb[i * 3 + c] = sum[i * 3 + c] / count[i];
+            filled[i] = 1;
+        }
+    for (int pass = 0; pass < 8; ++pass) {
+        std::vector<uint8_t> next = filled;
+        for (int k = 0; k < 3; ++k)
+            for (int y = 0; y < R; ++y)
+                for (int x = 0; x < R; ++x) {
+                    const size_t at = (size_t)k * R * R + (size_t)y * R + x;
+                    if (filled[at])
+                        continue;
+                    float acc[3] = {0, 0, 0};
+                    int n = 0;
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const int nx = x + dx, ny = y + dy;
+                            if (nx < 0 || ny < 0 || nx >= R || ny >= R)
+                                continue;
+                            const size_t nb = (size_t)k * R * R + (size_t)ny * R + nx;
+                            if (!filled[nb])
+                                continue;
+                            for (int c = 0; c < 3; ++c)
+                                acc[c] += rgb[nb * 3 + c];
+                            ++n;
+                        }
+                    if (!n)
+                        continue;
+                    for (int c = 0; c < 3; ++c)
+                        rgb[at * 3 + c] = acc[c] / n;
+                    next[at] = 1;
+                }
+        filled.swap(next);
+    }
+    if (FAILED(out.texture.image.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 3 * R, R, 1, 1)))
+        return false;
+    const DirectX::Image* img = out.texture.image.GetImage(0, 0, 0);
+    for (int k = 0; k < 3; ++k)
+        for (int y = 0; y < R; ++y)
+            for (int x = 0; x < R; ++x) {
+                const size_t at = (size_t)k * R * R + (size_t)y * R + x;
+                uint8_t* t = img->pixels + (size_t)y * img->rowPitch + ((size_t)k * R + x) * 4;
+                for (int c = 0; c < 3; ++c)
+                    t[c] = LinearToSrgb(rgb[at * 3 + c]);
+                t[3] = count[at] ? 255 : 0;
+            }
+    out.texture.width = 3 * R;
+    out.texture.height = R;
+    out.texture.channels = 4;
+    out.texture.original_width = 3 * R;
+    out.texture.original_height = R;
+
+    // The planes: two triangles each, over the bounds' cross-section, mapped to their tiles.
+    for (int k = 0; k < 3; ++k) {
+        const UINT base = (UINT)out.vertices.size();
+        for (int c = 0; c < 4; ++c) {
+            const float fu = (c & 1) ? 1.0f : 0.0f, fv = (c & 2) ? 1.0f : 0.0f;
+            float p[3];
+            p[normalAxis[k]] = mid[normalAxis[k]];
+            p[uAxis[k]] = lo[uAxis[k]] + fu * ext[uAxis[k]];
+            p[vAxis[k]] = upright[k] ? hi[vAxis[k]] - fv * ext[vAxis[k]] : lo[vAxis[k]] + fv * ext[vAxis[k]];
+            float n[3] = {0, 0, 0};
+            n[normalAxis[k]] = 1.0f;
+            out.vertices.push_back(Vertex({p[0], p[1], p[2]}, {n[0], n[1], n[2], 0.0f}, {(k + fu) / 3.0f, fv}));
+        }
+        for (UINT i : {0u, 1u, 2u, 2u, 1u, 3u})
+            out.indices.push_back(base + i);
+    }
+    return true;
+}
+} // namespace
+
 void AssetLoader::SplitOversizedMeshes(LoadedScene& scene, UINT maxTris) {
     const size_t meshesIn = scene.meshes.size();
     const size_t instancesIn = scene.instances.size();
@@ -168,6 +363,7 @@ void AssetLoader::SplitOversizedMeshes(LoadedScene& scene, UINT maxTris) {
         std::wcout << L"[Split]   mesh[" << i << L"] tris=" << triCount << L" verts=" << vtxCount
                    << (triCount > maxTris ? L"  (limit requires splitting)" : L"  (checking spatial cost)") << std::endl;
 
+        const std::string name = scene.meshes[i].name;
         auto pieces = SplitMeshSpatial(std::move(scene.meshes[i]), maxTris);
 
         if (pieces.size() > 1) {
@@ -180,6 +376,7 @@ void AssetLoader::SplitOversizedMeshes(LoadedScene& scene, UINT maxTris) {
 
         oldToNew[i].reserve(pieces.size());
         for (auto& p : pieces) {
+            p.name = name;
             oldToNew[i].push_back((UINT)newMeshes.size());
             newMeshes.push_back(std::move(p));
         }
@@ -205,6 +402,13 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
     // Streamed cluster hierarchies need the page pool in front of all mesh geometry.
     if (clusters::paging_enabled() && !scene.pagePoolTris && !scene.ReservePagePool())
         std::printf("[pager] meshes loaded before; this load keeps every hierarchy level resident\n");
+
+    // Micromaps for alpha pages, baked as the pages are written.
+    OmmPageBaker ommPages(scene.materials, [&albedoTextures](int texID) -> const DirectX::Image* {
+        return texID < (int)albedoTextures.size() && albedoTextures[texID].image.GetImageCount() > 0
+                   ? albedoTextures[texID].image.GetImage(0, 0, 0)
+                   : nullptr;
+    });
 
     for (const auto& entry : modelEntries) {
         const auto& modelPath = entry.path;
@@ -260,6 +464,15 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
         auto finalizeMesh = [&](std::vector<Vertex> verts, std::vector<UINT> idxOpaqueFirst,
                                 std::vector<UINT> matOpaqueFirst, UINT opaqueTris, UINT alphaTris) -> UINT {
             MeshGPU gpu{};
+            if (!verts.empty()) {
+                gpu.boundsMin = gpu.boundsMax = verts[0].position;
+                for (const Vertex& v : verts) {
+                    gpu.boundsMin = {std::min(gpu.boundsMin.x, v.position.x), std::min(gpu.boundsMin.y, v.position.y),
+                                     std::min(gpu.boundsMin.z, v.position.z)};
+                    gpu.boundsMax = {std::max(gpu.boundsMax.x, v.position.x), std::max(gpu.boundsMax.y, v.position.y),
+                                     std::max(gpu.boundsMax.z, v.position.z)};
+                }
+            }
             gpu.cpuVertices = std::move(verts);
             gpu.cpuIndices = std::move(idxOpaqueFirst);
             gpu.cpuMaterialIDs = std::move(matOpaqueFirst);
@@ -269,18 +482,36 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             gpu.alphaTriCount = alphaTris;
             gpu.materialIDBase = (UINT)scene.materialIDs.size();
             if (clusters::lod_enabled()) {
-                // A hierarchy per material over the opaque triangles that emit nothing; emitters stay as they are, as
-                // the lights are their triangles.
+                // A hierarchy per material over the triangles that emit nothing; emitters stay as they are, as the
+                // lights are their triangles. Alpha triangles join when paged, with micromaps baked per page.
                 const auto t0 = std::chrono::steady_clock::now();
-                std::vector<uint32_t> regions(opaqueTris, clusters::NO_REGION);
-                for (UINT t = 0; t < opaqueTris; ++t) {
+                const bool paged = scene.pagePoolTris && clusters::paging_enabled();
+                const UINT lodTris = paged ? opaqueTris + alphaTris : opaqueTris;
+                std::vector<uint32_t> regions(lodTris, clusters::NO_REGION);
+                for (UINT t = 0; t < lodTris; ++t) {
                     const UINT m = gpu.cpuMaterialIDs[t];
                     const XMFLOAT3& ke = scene.materials.Ke[m];
                     if (ke.x + ke.y + ke.z <= 0.0f) regions[t] = m;
                 }
                 const UINT before = gpu.indexCount / 3;
-                if (scene.pagePoolTris && clusters::paging_enabled()) {
-                    if (gpu.BuildPagedLod(std::move(regions), globalMatBase)) {
+                const auto& mats = scene.materials;
+                auto cutout = [&mats](uint32_t m) {
+                    const bool glass = m < mats.thinGlass.size() && mats.thinGlass[m] != 0u;
+                    return mats.alphaThreshold[m] < 1.0f && mats.Kd[m].w >= 1.0f && !glass;
+                };
+                auto alpha = [&mats](uint32_t m) {
+                    const bool glass = m < mats.thinGlass.size() && mats.thinGlass[m] != 0u;
+                    return mats.alphaThreshold[m] < 1.0f || mats.Kd[m].w < 1.0f || glass;
+                };
+                auto opacity = [&](uint32_t m, int maxLevel, const float* uvs, uint32_t vertexCount,
+                                   const uint32_t* indices, uint32_t triCount, clusters::PageOmm& out) {
+                    if (!alpha(m))
+                        return false;
+                    ommPages.Bake(m, maxLevel, uvs, vertexCount, indices, triCount, out);
+                    return true;
+                };
+                if (paged) {
+                    if (gpu.BuildPagedLod(std::move(regions), globalMatBase, cutout, opacity)) {
                         ++lodMeshes;
                         lodTrisBefore += before;
                         lodTrisAfter += gpu.indexCount / 3;
@@ -319,15 +550,34 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
         for (const auto& [meshIdx, xform] : loaded.instances)
             instCount[meshIdx]++;
 
+        // Meshes used once merge into spatial pieces; those the test scatter (RDN_SCATTER=<count>:<name part>) names
+        // merge apart, into the object it copies.
+        std::string scatterPart;
+        {
+            char v[256] = {};
+            if (GetEnvironmentVariableA("RDN_SCATTER", v, sizeof(v)) > 0 && std::strchr(v, ':'))
+                scatterPart = std::strchr(v, ':') + 1;
+        }
+        auto lower = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            return s;
+        };
+        scatterPart = lower(scatterPart);
+        // Decided up front: a mesh's source is cleared once it is used.
+        std::vector<uint8_t> scatterMesh(loaded.meshes.size());
+        for (size_t mi = 0; mi < loaded.meshes.size(); ++mi)
+            scatterMesh[mi] = !scatterPart.empty() && lower(loaded.meshes[mi].name).find(scatterPart) != std::string::npos;
         auto isMergeCandidate = [&](size_t mi) -> bool { return instCount[mi] <= 1; };
 
         int subIdx = 0;
 
         std::vector<int> keptSceneMesh(loaded.meshes.size(), -1);
+        std::vector<std::string> meshNames(loaded.meshes.size());
         for (size_t mi = 0; mi < loaded.meshes.size(); ++mi) {
             if (isMergeCandidate(mi))
                 continue;
             auto& srcMesh = loaded.meshes[mi];
+            meshNames[mi] = srcMesh.name;
 
             std::vector<UINT> globalMatIDs = srcMesh.perTriMaterialIDs;
             for (auto& mid : globalMatIDs)
@@ -348,13 +598,15 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             si.localTransform = xform;
             si.worldTransform = xform * modelXform;
             si.prevWorldTransform = si.worldTransform;
-            si.name = model.name + "_sub" + std::to_string(subIdx++);
+            si.name = model.name + "_sub" + std::to_string(subIdx++) +
+                      (meshNames[meshIdx].empty() ? std::string() : "_" + meshNames[meshIdx]);
             scene.instances.push_back(si);
         }
 
         std::vector<Vertex> mVerts;
         std::vector<UINT> mOpaqueIdx, mAlphaIdx, mOpaqueMat, mAlphaMat;
         int mergedCount = 0;
+        std::string mergedLabel = "_merged";
 
         auto flushMerged = [&]() {
             if (mVerts.empty())
@@ -368,8 +620,12 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             merged.vertices = std::move(mVerts);
             merged.indices = std::move(idx);
             merged.perTriMaterialIDs = std::move(mat);
-            // Split so distant parts don't bloat BLAS bounds.
-            auto pieces = SplitMeshSpatial(std::move(merged), MAX_TRIS_PER_MESH);
+            // Split so distant parts don't bloat BLAS bounds; the scatter's object stays whole.
+            std::vector<LoadedMesh> pieces;
+            if (mergedLabel == "_merged")
+                pieces = SplitMeshSpatial(std::move(merged), MAX_TRIS_PER_MESH);
+            else
+                pieces.push_back(std::move(merged));
             for (auto& piece : pieces) {
                 auto split = SplitOpaqueAlpha(piece.indices, piece.perTriMaterialIDs, scene.materials);
                 const UINT sceneMesh = finalizeMesh(std::move(piece.vertices), std::move(split.reorderedIndices),
@@ -380,7 +636,7 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
                 si.localTransform = XMMatrixIdentity();
                 si.worldTransform = modelXform;
                 si.prevWorldTransform = si.worldTransform;
-                si.name = model.name + "_merged" + std::to_string(mergedCount++);
+                si.name = model.name + mergedLabel + std::to_string(mergedCount++);
                 scene.instances.push_back(si);
             }
 
@@ -391,9 +647,7 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             mAlphaMat.clear();
         };
 
-        for (const auto& [meshIdx, localXform] : loaded.instances) {
-            if (!isMergeCandidate(meshIdx))
-                continue;
+        auto mergeInto = [&](UINT meshIdx, const XMMATRIX& localXform) {
             auto& srcMesh = loaded.meshes[meshIdx];
             const UINT thisTris = (UINT)srcMesh.indices.size() / 3;
             const UINT curTris = (UINT)(mOpaqueIdx.size() + mAlphaIdx.size()) / 3;
@@ -436,7 +690,60 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             }
 
             srcMesh = LoadedMesh{};
+        };
+        if (!scatterPart.empty()) {
+            // Its parts, each a mesh of its own as well as part of the whole.
+            const XMVECTOR shift = XMVectorSet(scene.sceneOriginWorld.x, scene.sceneOriginWorld.y,
+                                               scene.sceneOriginWorld.z, 0.0f);
+            mergedLabel = "_scatter_" + scatterPart + "_";
+            for (const auto& [meshIdx, localXform] : loaded.instances) {
+                if (!isMergeCandidate(meshIdx) || !scatterMesh[meshIdx])
+                    continue;
+                LoadedMesh part = loaded.meshes[meshIdx];
+                for (auto& mid : part.perTriMaterialIDs)
+                    mid += globalMatBase;
+                auto split = SplitOpaqueAlpha(part.indices, part.perTriMaterialIDs, scene.materials);
+                const UINT partMesh = finalizeMesh(std::move(part.vertices), std::move(split.reorderedIndices),
+                                                   std::move(split.reorderedMaterialIDs), split.opaqueTriCount,
+                                                   split.alphaTriCount);
+                XMMATRIX placed = localXform * modelXform;
+                placed.r[3] = XMVectorSubtract(placed.r[3], shift);
+                scene.scatter.parts.push_back({partMesh, placed});
+                mergeInto(meshIdx, localXform);
+            }
+            // Its far-field stand-in, from the whole before it is finalized.
+            StandIn stand;
+            std::vector<UINT> standIdx = mOpaqueIdx, standMat = mOpaqueMat;
+            standIdx.insert(standIdx.end(), mAlphaIdx.begin(), mAlphaIdx.end());
+            standMat.insert(standMat.end(), mAlphaMat.begin(), mAlphaMat.end());
+            if (BakeStandIn(mVerts, standIdx, standMat, scene.materials, albedoTextures, stand)) {
+                Material m;
+                m.albedoTexID = (int)albedoTextures.size();
+                m.alphaThreshold = 0.5f;
+                m.Pr_Pm_Ps_Pc = scene.materials.Pr_Pm_Ps_Pc[stand.dominant];
+                albedoTextures.push_back(std::move(stand.texture));
+                scene.materials.push_back(m);
+                scene.materialNames.push_back("scatter stand-in");
+                const UINT mat = (UINT)scene.materials.size() - 1;
+                std::vector<UINT> mats(stand.indices.size() / 3, mat);
+                auto split = SplitOpaqueAlpha(stand.indices, mats, scene.materials);
+                scene.scatter.standIn = finalizeMesh(std::move(stand.vertices), std::move(split.reorderedIndices),
+                                                     std::move(split.reorderedMaterialIDs), split.opaqueTriCount,
+                                                     split.alphaTriCount);
+            }
+            const size_t before = scene.instances.size();
+            flushMerged();
+            if (scene.instances.size() > before) {
+                scene.scatter.wholeInstance = (UINT)before;
+                scene.scatter.whole = scene.instances[before].meshIndex;
+            }
+            mergedLabel = "_merged";
+            std::printf("[sets] RDN_SCATTER: \"%s\" is %zu parts%s\n", scatterPart.c_str(), scene.scatter.parts.size(),
+                        scene.scatter.standIn != ~0u ? ", with a stand-in" : "");
         }
+        for (const auto& [meshIdx, localXform] : loaded.instances)
+            if (isMergeCandidate(meshIdx) && !scatterMesh[meshIdx])
+                mergeInto(meshIdx, localXform);
         flushMerged();
 
         if (lodMeshes)

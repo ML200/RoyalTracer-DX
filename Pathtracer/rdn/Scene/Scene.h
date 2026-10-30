@@ -42,8 +42,10 @@ struct MeshGPU {
     // Paged: the hierarchy streams from its page file (source, until the pager takes it) and the mesh keeps its fixed
     // triangles, in its own range of the scene's page pool.
     bool paged = false;
+    bool lodAlpha = false; // some of its hierarchy is alpha-tested or transmissive (alpha pages)
     UINT poolVertexBase = 0, poolTriBase = 0;
     std::shared_ptr<clusters::PagedSource> pagedSource;
+    XMFLOAT3 boundsMin = {0, 0, 0}, boundsMax = {0, 0, 0}; // object space
 
     void CreateBlasBuildInputs(ID3D12Device* device);
     // Reorders the opaque and the alpha triangles, each among themselves, into compact octree cells: a cluster is a run
@@ -56,7 +58,9 @@ struct MeshGPU {
     // BuildClusterLod's paged form: the hierarchy is baked once into a page file in clusters::cache_dir() (named after
     // the mesh's content), read back as tables, and the mesh keeps only the triangles outside it. materialBase: the
     // model's first material, so the file holds model-relative material IDs.
-    bool BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase);
+    // Alpha regions join too: foliage(region) simplifies with dilated borders, opacity bakes their pages' micromaps.
+    bool BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase, std::function<bool(uint32_t)> foliage,
+                       decltype(clusters::BakeMesh::opacity) opacity);
 };
 
 struct SceneInstance {
@@ -166,6 +170,22 @@ struct Scene {
     bool oceanMaterialEdited = false; // editor edits override generated values
     bool oceanMatIDReserved = false;
 
+    // The test scatter's object (RDN_SCATTER with a name part): its parts, meshes of their own placed as in the scene
+    // (relative to the scene origin then); the whole of them, one mesh (the scene instance's that shows it); and its
+    // far-field stand-in, three textured planes in the whole's space.
+    struct ScatterObject {
+        std::vector<std::pair<UINT, XMMATRIX>> parts;
+        UINT whole = ~0u, wholeInstance = ~0u, standIn = ~0u;
+    };
+    ScatterObject scatter;
+
+    // Instance sets (clusters::InstanceSets): a record per set mesh, the mesh in world space; the sets' instances
+    // carry a record's index as their instance ID and their own transforms in the TLAS.
+    UINT setPropsBase = 0, setSlots = 0;
+    void ReserveInstanceSets(UINT slots);
+    // The set record of slot for mesh: identity transforms, no light records.
+    void WriteSetRecord(UINT slot, UINT meshIndex);
+
     UINT combinedVertexCount() const {
         return totalVertexCount + terrainVertexElems + voxelVertexElems + oceanVertexElems;
     }
@@ -179,13 +199,16 @@ struct Scene {
         const UINT withRocks = base + rockInstanceSlots;
         const UINT withVoxels =
             voxelInstanceSlots ? std::max(withRocks, voxelPropsBase + voxelInstanceSlots) : withRocks;
-        return oceanInstanceSlots ? std::max(withVoxels, oceanPropsBase + oceanInstanceSlots) : withVoxels;
+        const UINT withSets = setSlots ? std::max(withVoxels, setPropsBase + setSlots) : withVoxels;
+        return oceanInstanceSlots ? std::max(withSets, oceanPropsBase + oceanInstanceSlots) : withSets;
     }
 
     UINT sceneInstanceCap() const {
         UINT cap = terrainInstanceSlots ? terrainPropsBase : 0u;
         if (voxelInstanceSlots)
             cap = cap ? std::min(cap, voxelPropsBase) : voxelPropsBase;
+        if (setSlots)
+            cap = cap ? std::min(cap, setPropsBase) : setPropsBase;
         return cap;
     }
 

@@ -35,6 +35,8 @@ struct IClusterClient {
     // Before the window opens: its tickets from the slot's last use still hold.
     virtual void before_cluster_work() {}
     virtual void queue_cluster_work(ID3D12GraphicsCommandList4* cl) = 0;
+    // After the TLAS build, in the same list: GPU-driven changes to the instances it holds.
+    virtual void after_tlas(ID3D12GraphicsCommandList4* cl, TlasBuilder& tlas) { (void)cl; (void)tlas; }
     virtual void on_submitted(uint64_t computeFence) { (void)computeFence; }
 };
 
@@ -146,6 +148,7 @@ public:
 #endif
     }
     const TlasBuilder& tlas() const { return m_tlas; }
+    TlasBuilder& tlas() { return m_tlas; }
     void set_cluster_client(IClusterClient* c) { m_clusterClient = c; }
     void bind_instance_properties(ID3D12Resource* props) { m_instanceProps = props; }
 

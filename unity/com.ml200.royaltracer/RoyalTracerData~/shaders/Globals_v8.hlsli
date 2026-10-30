@@ -141,6 +141,10 @@ cbuffer CameraParams : register(b0)
     float dlssResponsivityMirror; // at roughness 0
     float dlssWaterResponsivity;
     float hostSkyScale; // > 0: the host's sky (HostSkyRadiance) in place of the atmosphere model
+    // Instance-set records: an instance ID in [instanceSetBase, instanceSetEnd) is one of a set's many instances, whose
+    // record holds the set's mesh in world space (identity transforms); the hit's own transform places its vertices.
+    float instanceSetBase;
+    float instanceSetEnd;
 }
 
 // HitLean_v8.hlsl: Pass_pt_trace sends it no ocean hit and no in-water path, so the sea compiles out.
@@ -148,7 +152,8 @@ cbuffer CameraParams : register(b0)
 #define PT_HIT_LEAN 0
 #endif
 #define OCEAN_ENABLED (!PT_HIT_LEAN && oceanEnabled > 0.5f)
-#define IS_OCEAN_INSTANCE(instID) (OCEAN_ENABLED && ((instID) >= (uint)oceanInstanceBase))
+#define IS_SET_INSTANCE(instID) ((instID) >= (uint)instanceSetBase && (instID) < (uint)instanceSetEnd)
+#define IS_OCEAN_INSTANCE(instID) (OCEAN_ENABLED && ((instID) >= (uint)oceanInstanceBase) && !IS_SET_INSTANCE(instID))
 
 #define SUN_LATITUDE_DEG    sunLatitude
 #define SUN_LONGITUDE_DEG   sunLongitude

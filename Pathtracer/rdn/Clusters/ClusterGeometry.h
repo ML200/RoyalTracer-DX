@@ -4,12 +4,17 @@
 #include <mutex>
 #include <vector>
 #include "../Common.h"
+#include "../../shaders/DlssGuideLayout.h"
 
 struct DeviceContext;
 
 namespace clusters {
 
 constexpr uint32_t MAX_TRIS = 256, MAX_VERTS = 256;
+
+inline uint32_t cluster_info(uint32_t kind, uint32_t level) {
+    return (kind << CLUSTER_INFO_KIND_SHIFT) | (level & CLUSTER_INFO_LEVEL_MASK);
+}
 
 // A run of a mesh's triangle order: its cluster-local triangle i is the mesh's triangle firstTri + i, which is what
 // ClusterRecord.triBase gives the shaders.
@@ -40,8 +45,10 @@ struct Mesh {
     D3D12_GPU_VIRTUAL_ADDRESS indices = 0;  // uint32, addressed from vertices; the mesh's triangle 0
     const Span* spans = nullptr;
     uint32_t clusterCount = 0, clusterBase = 0;
-    // Triangles below opaqueTriCount are opaque (geometry 0); the rest alpha, as geometry 1 when there are opaque ones.
+    // Triangles below opaqueTriCount are opaque (geometry 0); the rest alpha, as geometry 1 when there are opaque ones
+    // unless alphaGeometry says which.
     uint32_t opaqueTriCount = 0;
+    uint32_t alphaGeometry = ~0u;
     D3D12_GPU_VIRTUAL_ADDRESS ommArray = 0, ommIndices = 0; // uint32 per alpha triangle, from the first; 0: none
     D3D12_RTAS_CLUSTER_LIMITS limits{};
     bool omm() const { return ommIndices != 0; }
@@ -82,7 +89,9 @@ class ClusterGeometry {
     // Thread-safe.
     bool allocate_ids(uint32_t count, uint32_t& base);
     void free_ids(uint32_t base, uint32_t count);
+    // Records with CLUSTER_KIND_STATIC; write_info then marks hierarchy clusters.
     void write_records(uint32_t base, const Span* spans, uint32_t count);
+    void write_info(uint32_t base, const uint32_t* info, uint32_t count);
 
 #if RDN_CLUSTER_API
     ID3D12DeviceRaytracing2* rtas_device() const { return m_device.Get(); }

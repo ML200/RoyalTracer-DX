@@ -143,7 +143,20 @@ inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
     return alpha >= LoadAlphaThreshold(matID);
 }
 
-inline float3 CandidateGeoNormalW(uint instID, uint primID)
+// The normal transform of an object-to-world matrix up to scale: the cofactors of its 3x3 (its inverse transpose times
+// the determinant), with the determinant's sign so mirrored instances keep their facing.
+float3x3 NormalMatrixOf(float3x4 M)
+{
+    const float3 c0 = float3(M[0][0], M[1][0], M[2][0]);
+    const float3 c1 = float3(M[0][1], M[1][1], M[2][1]);
+    const float3 c2 = float3(M[0][2], M[1][2], M[2][2]);
+    const float3 r0 = cross(c1, c2), r1 = cross(c2, c0), r2 = cross(c0, c1);
+    const float  s  = dot(c0, r0) < 0.0f ? -1.0f : 1.0f;
+    return s * float3x3(r0.x, r1.x, r2.x, r0.y, r1.y, r2.y, r0.z, r1.z, r2.z);
+}
+
+// hitToWorld: the hit instance's transform (an instance set's instances have no record of their own).
+inline float3 CandidateGeoNormalW(uint instID, uint primID, float3x4 hitToWorld)
 {
     const uint baseI = instanceProps[instID].indexBase;
     const uint i0 = indices[baseI + 3u * primID + 0u];
@@ -152,7 +165,8 @@ inline float3 CandidateGeoNormalW(uint instID, uint primID)
     const float3 p0 = BTriVertex[i0].vertex;
     const float3 p1 = BTriVertex[i1].vertex;
     const float3 p2 = BTriVertex[i2].vertex;
-    const float3x3 N = (float3x3)instanceProps[instID].objectToWorldNormal;
+    const float3x3 N = IS_SET_INSTANCE(instID) ? NormalMatrixOf(hitToWorld)
+                                               : (float3x3)instanceProps[instID].objectToWorldNormal;
     float3 nW = mul(N, cross(p1 - p0, p2 - p0));
     return nW * rsqrt(max(dot(nW, nW), 1e-20f));
 }
@@ -232,7 +246,7 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
         [branch]
         if (thinGlass || LoadKd_w(cMatID) < 1.0f - EPSILON)
         {
-            const float3 nW = CandidateGeoNormalW(cInstID, cPrimID);
+            const float3 nW = CandidateGeoNormalW(cInstID, cPrimID, q.CandidateObjectToWorld3x4());
             const float  Ni = LoadNi(cMatID);
             if (thinGlass)
                 tr *= (1.0f - FresnelDielectric(-direction, nW, 1.0f, Ni).x) * LoadTf(cMatID);
@@ -445,11 +459,12 @@ inline uint LightRecordOf(uint instID, uint primID)
     return gTriToLightId[base + primID];
 }
 
-// footprint: beam width at the hit, world units; selects texture mips.
+// footprint: beam width at the hit, world units; selects texture mips. hitToWorld: the hit instance's transform.
 HitInfo EvalSurfaceStateImpl(
     uint   instID,
     uint   primID,
     float2 bc2,
+    float3x4 hitToWorld,
     float3 originOrDir,
     bool   viewIsDir,
     float  footprint
@@ -539,9 +554,10 @@ HitInfo EvalSurfaceStateImpl(
     const int normalTexID = LoadNormalTexID(materialID);
 
     {
-        const float3x4 M = instanceProps[instID].objectToWorld;
+        const bool     set = IS_SET_INSTANCE(instID);
+        const float3x4 M = set ? hitToWorld : instanceProps[instID].objectToWorld;
         const float3x3 R = (float3x3)M;
-        const float3x3 N = (float3x3)instanceProps[instID].objectToWorldNormal;
+        const float3x3 N = set ? NormalMatrixOf(M) : (float3x3)instanceProps[instID].objectToWorldNormal;
 
         posW     = mul(M, float4(p_local, 1.0f));
         normW    = mul(N, n_local);
@@ -648,14 +664,15 @@ HitInfo EvalSurfaceStateImpl(
     return hit;
 }
 
-HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3 origin, float footprint = 0.0f)
+HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3x4 hitToWorld, float3 origin, float footprint = 0.0f)
 {
-    return EvalSurfaceStateImpl(instID, primID, bc2, origin, false, footprint);
+    return EvalSurfaceStateImpl(instID, primID, bc2, hitToWorld, origin, false, footprint);
 }
 
-HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir, float footprint = 0.0f)
+HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3x4 hitToWorld, float3 rayDir,
+                            float footprint = 0.0f)
 {
-    return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, footprint);
+    return EvalSurfaceStateImpl(instID, primID, bc2, hitToWorld, rayDir, true, footprint);
 }
 
 inline float3 GetEmissionFast(in uint instID, in uint primID, float cosOut)

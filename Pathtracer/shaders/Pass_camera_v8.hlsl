@@ -1,4 +1,5 @@
 #include "Includes_v8.hlsli"
+#include "VirtualGeometryView_v8.hlsli"
 
 // False when no path is needed: a miss or a directly seen mesh light.
 inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 rayDir, bool cameraWater)
@@ -8,6 +9,8 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     ray.Direction = rayDir;
     ray.TMin      = 0.00001f;
     ray.TMax      = RAY_TMAX_PLANET;
+    if (GEOMETRY_VIEW != 0u)
+        gScratchPing[uint3(pixel, GEOMETRY_VIEW_SCRATCH)] = float4(0.02f, 0.025f, 0.035f, 0.0f);
     if (!IsRayDescValid(ray))
         return false;
     dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, INSTANCE_MASK_SURFACE);
@@ -26,7 +29,12 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     const uint  primID = FlatPrimID(instID, HITOBJ_CLUSTER_ID(hitObj), hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
     BuiltInTriangleIntersectionAttributes attr;
     hitObj.GetAttributes(attr);
-    const HitInfo hinfo    = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, PixelConeAngle() * hitT);
+    const HitInfo hinfo    = EvalSurfaceState(instID, primID, attr.barycentrics, hitObj.GetObjectToWorld3x4(), rayOrigin,
+                                              PixelConeAngle() * hitT);
+    if (GEOMETRY_VIEW != 0u)
+        gScratchPing[uint3(pixel, GEOMETRY_VIEW_SCRATCH)] = float4(GeometryViewColor(GEOMETRY_VIEW, instID,
+            hitObj.GetInstanceIndex(), HITOBJ_CLUSTER_ID(hitObj), hitObj.GetPrimitiveIndex(), primID,
+            hitObj.GetObjectToWorld3x4(), hitT, hinfo.geometricNormal, rayDir), 0.0f);
     const uint matID = ResolveSurfaceMaterial(GetMatIDFast(instID, primID), hinfo);
     const float3  hitPos   = hinfo.hitPos;
     const float3  emission = GetEmissionFast(instID, primID, abs(dot(hinfo.geometricNormal, rayDir)));

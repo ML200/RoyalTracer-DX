@@ -146,7 +146,8 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
         if (!evaluate) break;
 
         const float   beam = PixelConeAngle() * (length(primaryHit - mul(viewI, float4(0, 0, 0, 1)).xyz) + pathLength);
-        const HitInfo h    = EvalSurfaceStateDir(inst, prim, q.CommittedTriangleBarycentrics(), dir, beam);
+        const HitInfo h    = EvalSurfaceStateDir(inst, prim, q.CommittedTriangleBarycentrics(), q.CommittedObjectToWorld3x4(),
+                                                 dir, beam);
         matID = ResolveSurfaceMaterial(matID, h);
         float3 kd; float pr, pm;
         RefetchMaterial(matID, h, kd, pr, pm);

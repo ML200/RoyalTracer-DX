@@ -71,8 +71,34 @@ Renderer::Renderer(DeviceContext& ctx, const RendererConfig& config)
     });
 }
 
+// RDN_SCATTER=<count>[:<instance name part>]: a test forest of count copies of a scene object around the scene, as
+// instance sets: the named one, else the largest instanced mesh with alpha-tested triangles (foliage, as a rule).
+static bool ScatterRequest(uint32_t& count, std::string& name) {
+    char v[256] = {};
+    if (GetEnvironmentVariableA("RDN_SCATTER", v, sizeof(v)) == 0)
+        return false;
+    const std::string s = v;
+    const size_t colon = s.find(':');
+    count = (uint32_t)std::strtoul(s.substr(0, colon).c_str(), nullptr, 10);
+    name = colon == std::string::npos ? std::string() : s.substr(colon + 1);
+    return count > 0;
+}
+
+// Instance-set records available to the scatter.
+static constexpr UINT SET_SLOTS = 64;
+// The error budget's factor for set instances off screen: coarser, but still there for the rays that leave the view.
+static constexpr float SET_OFFSCREEN_ERROR = 8.0f;
+
 void Renderer::InitDevice(HWND hwnd) {
     m_hwnd = hwnd;
+    {
+        // Starting values for the virtual geometry view and the cluster LOD error budget.
+        char v[32] = {};
+        if (GetEnvironmentVariableA("RDN_GEOMETRY_VIEW", v, sizeof(v)) > 0)
+            m_integratorSettings.geometryView = std::clamp(atoi(v), 0, (int)GEOMETRY_VIEW_COUNT - 1);
+        if (GetEnvironmentVariableA("RDN_LOD_ERROR", v, sizeof(v)) > 0)
+            m_integratorSettings.lodErrorPixels = std::max(0.01f, (float)atof(v));
+    }
     try {
         if (!m_headless)
             m_ctx.Init(hwnd, GetWidth(), GetHeight());
@@ -297,6 +323,12 @@ void Renderer::InitSceneGPU() {
         CreateRaytracingPipeline();
         CreateRaytracingOutputBuffer();
         CreateReadbackBuffer();
+        {
+            uint32_t count = 0;
+            std::string name;
+            if (ScatterRequest(count, name))
+                m_scene.ReserveInstanceSets(SET_SLOTS);
+        }
         m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
 
         m_scene.UploadMaterials(m_ctx.Device());
@@ -1175,6 +1207,7 @@ planet::CameraView Renderer::MakePlanetCamera() const {
 // Hands the paged meshes to the pager, which loads their roots; each mesh's BLAS becomes its coarsest cut.
 void Renderer::LoadPagedRoots() {
     m_pagedMeshes.clear();
+    m_lodGpuMode = false;
     for (UINT m = 0; m < (UINT)m_scene.meshes.size(); ++m)
         if (m_scene.meshes[m].paged)
             m_pagedMeshes.push_back(m);
@@ -1196,12 +1229,74 @@ void Renderer::LoadPagedRoots() {
         m_pager.add_mesh(&mesh.lod, std::move(*mesh.pagedSource), mesh.poolTriBase, mesh.hasOmm);
         mesh.pagedSource.reset();
     }
+    // The scatter's meshes stay resident in full: all their instances share cuts of the whole hierarchy.
+    uint32_t scatterCount = 0;
+    std::string scatterName;
+    m_scatterSources.clear();
+    if (ScatterRequest(scatterCount, scatterName) && m_planet.tlas().partitioned()) {
+        auto lower = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            return s;
+        };
+        const std::string part = lower(scatterName);
+        // The loader's scatter object: its whole shows it in the scene.
+        if (m_scene.scatter.wholeInstance != ~0u)
+            m_scatterSources.push_back(m_scene.scatter.wholeInstance);
+        for (UINT i = 0; i < (UINT)m_scene.instances.size() && !part.empty() && m_scatterSources.empty(); ++i) {
+            const SceneInstance& si = m_scene.instances[i];
+            if (m_scene.meshes[si.meshIndex].paged && lower(si.name).find(part) != std::string::npos)
+                m_scatterSources.push_back(i);
+        }
+        if (m_scatterSources.empty()) {
+            // Meshes the loader kept instanced ("_sub"), foliage first, then the most triangles.
+            UINT best = ~0u;
+            auto rank = [&](UINT i) {
+                const MeshGPU& m = m_scene.meshes[m_scene.instances[i].meshIndex];
+                return std::make_pair(m.alphaTriCount > 0 || m.lodAlpha, m.indexCount);
+            };
+            for (UINT i = 0; i < (UINT)m_scene.instances.size(); ++i)
+                if (m_scene.meshes[m_scene.instances[i].meshIndex].paged &&
+                    m_scene.instances[i].name.find("_sub") != std::string::npos && (best == ~0u || rank(i) > rank(best)))
+                    best = i;
+            if (best != ~0u)
+                m_scatterSources.push_back(best);
+        }
+        std::vector<UINT> pinned;
+        for (UINT i : m_scatterSources)
+            pinned.push_back(m_scene.instances[i].meshIndex);
+        if (m_scene.scatter.wholeInstance != ~0u) {
+            for (const auto& part : m_scene.scatter.parts)
+                pinned.push_back(part.first);
+            if (m_scene.scatter.standIn != ~0u)
+                pinned.push_back(m_scene.scatter.standIn);
+        }
+        for (UINT meshIndex : pinned) {
+            const auto at = std::find(m_pagedMeshes.begin(), m_pagedMeshes.end(), meshIndex);
+            if (at != m_pagedMeshes.end())
+                m_pager.pin((uint32_t)(at - m_pagedMeshes.begin()));
+        }
+        for (UINT i : m_scatterSources) {
+            const MeshGPU& m = m_scene.meshes[m_scene.instances[i].meshIndex];
+            std::printf("[sets] RDN_SCATTER: %s, %zu clusters in its hierarchy%s\n", m_scene.instances[i].name.c_str(),
+                        m.lod.clusters.size(), m.alphaTriCount || m.lodAlpha ? ", alpha-tested" : "");
+        }
+    }
     m_pager.load_roots(m_ctx.CmdList(), [this] { m_ctx.FlushAndReset(); },
                        [this](uint32_t pagerMesh, ComPtr<ID3D12Resource> blas) {
                            m_scene.meshes[m_pagedMeshes[pagerMesh]].blas = std::move(blas);
                        });
     m_scene.RebuildTLASInstanceList();
     m_scene.tlasFullRebuild = true;
+    CreateScatterSets(scatterCount);
+
+    // Cuts on the GPU apply as partitioned TLAS instance updates.
+    char v[8] = {};
+    const bool cpuCuts = GetEnvironmentVariableA("RDN_LOD_GPU", v, sizeof(v)) > 0 && v[0] == '0';
+    m_lodGpuMode = m_planet.tlas().partitioned() && !cpuCuts;
+    if (m_lodGpuMode)
+        m_lodGpu.init(&m_ctx, m_clusters.rtas_device(), m_clusters.frame_slots());
+    m_pager.set_external_feedback(m_lodGpuMode);
+    std::printf("[lod] paged meshes' cuts chosen on the %s\n", m_lodGpuMode ? "GPU" : "CPU");
 }
 
 void Renderer::UpdateSceneLod() {
@@ -1209,6 +1304,10 @@ void Renderer::UpdateSceneLod() {
     bool changed = m_lodMeshOf.size() != inst.size() || m_lodMeshes != m_scene.meshes.data();
     for (size_t i = 0; i < inst.size() && !changed; ++i)
         changed = m_lodMeshOf[i] != inst[i].meshIndex;
+    // The GPU's TLAS updates carry each instance's hit group.
+    for (size_t k = 0; k < m_lodGpuInstance.size() && !changed; ++k)
+        changed = m_lodGpuInstance[k] >= m_scene.tlasInstances.size() ||
+                  m_scene.tlasInstances[m_lodGpuInstance[k]].hitGroupContribution != m_lodGpuHitGroup[k];
     if (changed && m_pager.active() && m_lodMeshes != m_scene.meshes.data())
         for (uint32_t i = 0; i < (uint32_t)m_pagedMeshes.size(); ++i)
             m_pager.rebind(i, &m_scene.meshes[m_pagedMeshes[i]].lod);
@@ -1217,65 +1316,336 @@ void Renderer::UpdateSceneLod() {
         m_pager.moves(m_planetFrame);
     if (changed) {
         std::vector<clusters::LodInstances::Instance> set(inst.size());
+        std::vector<clusters::LodGpu::Instance> gpuSet;
+        m_lodGpuInstance.clear();
+        m_lodGpuHitGroup.clear();
         m_lodMeshOf.resize(inst.size());
         for (size_t i = 0; i < inst.size(); ++i) {
             m_lodMeshOf[i] = inst[i].meshIndex;
             MeshGPU& mesh = m_scene.meshes[inst[i].meshIndex];
-            if (!mesh.lod.empty())
-                set[i] = {&mesh.lod, mesh.hasOmm};
+            if (mesh.lod.empty())
+                continue;
+            if (m_lodGpuMode && mesh.lod.paged && mesh.blas && i < m_scene.tlasInstances.size()) {
+                const UINT hitGroup = m_scene.tlasInstances[i].hitGroupContribution;
+                gpuSet.push_back({&mesh.lod, mesh.blas->GetGPUVirtualAddress(), (uint32_t)i, hitGroup});
+                m_lodGpuInstance.push_back((UINT)i);
+                m_lodGpuHitGroup.push_back(hitGroup);
+            } else {
+                set[i] = {&mesh.lod, mesh.hasOmm || mesh.lodAlpha};
+            }
         }
         m_lodMeshes = m_scene.meshes.data();
         m_lod.reset(set, m_planetFrame);
+        if (m_lodGpuMode)
+            m_lodGpu.reset(gpuSet, m_ctx.ComputeList(), m_planetFrame);
     }
-    if (!m_lod.active())
+    const bool gpu = m_lodGpuMode && m_lodGpu.active();
+    if (!m_lod.active() && !gpu)
         return;
 
-    // The error budget in pixels at the output resolution; RDN_LOD_ERROR overrides it.
-    static const float threshold = [] {
-        char v[32] = {};
-        return GetEnvironmentVariableA("RDN_LOD_ERROR", v, sizeof(v)) > 0 ? std::max(0.01f, (float)atof(v)) : 1.0f;
-    }();
+    // The error budget in pixels at the output resolution, raised while the cuts crowd the page pools and lowered back
+    // once they have room.
+    if (m_pager.active()) {
+        const float pressure = m_pager.stats().pressure;
+        if (pressure > 0.85f)
+            m_lodErrorScale = std::min(m_lodErrorScale * 1.02f, 8.0f);
+        else if (pressure < 0.70f)
+            m_lodErrorScale = std::max(m_lodErrorScale * 0.98f, 1.0f);
+    }
+    const float threshold = std::max(0.01f, m_integratorSettings.lodErrorPixels) * m_lodErrorScale;
     const XMVECTOR camera = XMMatrixInverse(nullptr, m_camera.ViewMatrix()).r[3];
     const float pixelsPerUnit = 0.5f * (float)m_height / std::tan(0.5f * m_camera.fovDegrees * 0.01745329252f);
+    m_lodPixelsPerUnit = pixelsPerUnit;
+    m_lodThreshold = threshold;
     const size_t n = std::min(inst.size(), m_scene.tlasInstances.size());
-    m_lodViews.resize(inst.size());
-    for (size_t i = 0; i < n; ++i) {
-        if (m_scene.meshes[inst[i].meshIndex].lod.empty())
-            continue;
+    auto view = [&](size_t i, float out[3], float& znear) {
         const XMMATRIX& m = m_scene.tlasInstances[i].transform;
         const XMVECTOR local = XMVector3TransformCoord(camera, XMMatrixInverse(nullptr, m));
         const float scale = std::max({XMVectorGetX(XMVector3Length(m.r[0])), XMVectorGetX(XMVector3Length(m.r[1])),
                                       XMVectorGetX(XMVector3Length(m.r[2])), 1e-6f});
-        clusters::LodView& v = m_lodViews[i];
-        XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(v.camera), local);
-        v.pixelsPerUnit = pixelsPerUnit;
-        v.threshold = threshold;
-        v.znear = m_camera.nearPlane / scale;
-    }
+        XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(out), local);
+        znear = m_camera.nearPlane / scale;
+    };
     m_lodRequests.clear();
-    m_lod.update(m_lodViews.data(), m_planetFrame, m_pager.active() ? &m_lodRequests : nullptr);
+    if (m_lod.active()) {
+        m_lodViews.resize(inst.size());
+        for (size_t i = 0; i < n; ++i) {
+            if (m_scene.meshes[inst[i].meshIndex].lod.empty())
+                continue;
+            clusters::LodView& v = m_lodViews[i];
+            view(i, v.camera, v.znear);
+            v.pixelsPerUnit = pixelsPerUnit;
+            v.threshold = threshold;
+        }
+        m_lod.update(m_lodViews.data(), m_planetFrame, m_pager.active() ? &m_lodRequests : nullptr);
+    }
+    if (gpu) {
+        m_lodGpuViews.assign(4 * m_lodGpuInstance.size(), 0.0f);
+        for (size_t k = 0; k < m_lodGpuInstance.size(); ++k)
+            if (m_lodGpuInstance[k] < n)
+                view(m_lodGpuInstance[k], &m_lodGpuViews[4 * k], m_lodGpuViews[4 * k + 3]);
+        m_lodRequests.insert(m_lodRequests.end(), m_lodFeedback.requests.begin(), m_lodFeedback.requests.end());
+    }
     if (m_pager.active())
-        m_pager.installs(m_lodRequests, m_ctx.CopyList());
-    for (size_t i = 0; i < n && i < m_planetSceneInstances.size(); ++i)
-        if (const D3D12_GPU_VIRTUAL_ADDRESS va = m_lod.blas((uint32_t)i))
-            m_planetSceneInstances[i].blas = va;
+        m_pager.installs(m_lodRequests, m_ctx.CopyList(), m_ctx.ComputeList());
+    if (m_lod.active())
+        for (size_t i = 0; i < n && i < m_planetSceneInstances.size(); ++i)
+            if (const D3D12_GPU_VIRTUAL_ADDRESS va = m_lod.blas((uint32_t)i))
+                m_planetSceneInstances[i].blas = va;
 
     const auto& st = m_lod.stats();
+    const auto& gs = m_lodGpu.last();
+    auto& vg = m_frameStats.vgeo;
+    vg.gpu = gpu;
+    vg.lodInstances = st.instances + (gpu ? (UINT)m_lodGpuInstance.size() : 0u);
+    vg.builds = st.builds + (gpu ? gs.builds : 0u);
+    vg.deferred = st.deferred;
+    vg.tlasUpdates = gpu ? gs.tlasUpdates : 0u;
+    vg.cutClusters = st.cutClusters + (gpu ? gs.tracedClusters : 0u);
+    vg.baseClusters = st.fullClusters + (gpu ? m_lodGpu.base_clusters() : 0u);
+    vg.errorScale = m_lodErrorScale;
+    vg.pressure = m_pager.active() ? m_pager.stats().pressure : 0.0f;
+    vg.paged = m_pager.active();
+    if (vg.paged) {
+        const auto& ps = m_pager.stats();
+        vg.pages = ps.pages;
+        vg.resident = ps.resident;
+        vg.roots = ps.pinned;
+        vg.reading = ps.reading;
+        vg.building = ps.building;
+        vg.residentTris = ps.residentTris;
+        vg.poolTris = ps.trisUsed;
+        vg.poolTrisCapacity = ps.trisCapacity;
+        vg.clasBytes = ps.clasUsed;
+        vg.clasCapacity = ps.clasCapacity;
+        vg.readBytes = ps.readBytes;
+        vg.installed = ps.installedTotal;
+        vg.retired = ps.retiredTotal;
+        vg.evicted = ps.evictedTotal;
+    }
     if (m_pager.active() && m_planetFrame % 120 == 0) {
         const auto& ps = m_pager.stats();
         std::printf("[pager] %u of %u pages resident (%.2fM triangles), %u reading, %u building; pool %.1f/%.1fM "
-                    "triangles, CLAS %.0f/%.0f MB; %.1f MB read; %llu installed, %llu retired, %llu evicted, %llu dropped\n",
+                    "triangles, %.1f/%.1fM vertices, CLAS %.0f/%.0f MB; %.1f MB read; %llu installed, %llu retired, "
+                    "%llu evicted, %llu dropped\n",
                     ps.resident, ps.pages, (double)ps.residentTris / 1e6, ps.reading, ps.building,
-                    (double)ps.trisUsed / 1e6, (double)ps.trisCapacity / 1e6, (double)ps.clasUsed / 1048576.0,
+                    (double)ps.trisUsed / 1e6, (double)ps.trisCapacity / 1e6, (double)ps.vertsUsed / 1e6,
+                    (double)ps.vertsCapacity / 1e6, (double)ps.clasUsed / 1048576.0,
                     (double)ps.clasCapacity / 1048576.0, (double)ps.readBytes / 1048576.0,
                     (unsigned long long)ps.installedTotal, (unsigned long long)ps.retiredTotal,
                     (unsigned long long)ps.evictedTotal,
                     (unsigned long long)ps.droppedTotal);
     }
     if (m_planetFrame % 120 == 0)
-        std::printf("[lod] cut %llu clusters (meshes' own BLAS: %llu), %u builds, %u deferred (%.1f px)\n",
-                    (unsigned long long)st.cutClusters, (unsigned long long)st.fullClusters, st.builds, st.deferred,
-                    threshold);
+        std::printf("[lod] cut %llu clusters (meshes' own BLAS: %llu), %u builds, %u deferred, %u TLAS updates (%.2f "
+                    "px, x%.2f for %.0f%% pool use)%s\n",
+                    (unsigned long long)vg.cutClusters, (unsigned long long)vg.baseClusters, vg.builds, vg.deferred,
+                    vg.tlasUpdates, threshold, m_lodErrorScale, 100.0f * vg.pressure, gpu ? " on the GPU" : "");
+}
+
+// The test forest: count copies of the scatter's object (its pieces, a set each, with the same transforms) on a jittered
+// grid around the scene, on the object's ground, turned and scaled at random.
+void Renderer::CreateScatterSets(uint32_t count) {
+    if (m_scatterSources.empty() || !count)
+        return;
+    if (m_scatterSources.size() > m_scene.setSlots) {
+        std::printf("[sets] RDN_SCATTER: %zu pieces, %u set records; nothing scattered\n", m_scatterSources.size(),
+                    m_scene.setSlots);
+        return;
+    }
+    auto bounds = [&](UINT inst, XMVECTOR& lo, XMVECTOR& hi) {
+        const MeshGPU& mesh = m_scene.meshes[m_scene.instances[inst].meshIndex];
+        const XMMATRIX& M = m_scene.tlasInstances[inst].transform;
+        for (int c = 0; c < 8; ++c) {
+            const XMVECTOR p = XMVector3TransformCoord(
+                XMVectorSet(c & 1 ? mesh.boundsMax.x : mesh.boundsMin.x, c & 2 ? mesh.boundsMax.y : mesh.boundsMin.y,
+                            c & 4 ? mesh.boundsMax.z : mesh.boundsMin.z, 1.0f),
+                M);
+            lo = XMVectorMin(lo, p);
+            hi = XMVectorMax(hi, p);
+        }
+    };
+    XMVECTOR objLo = XMVectorReplicate(FLT_MAX), objHi = XMVectorReplicate(-FLT_MAX);
+    for (UINT i : m_scatterSources)
+        bounds(i, objLo, objHi);
+    XMVECTOR sceneLo = XMVectorReplicate(FLT_MAX), sceneHi = XMVectorReplicate(-FLT_MAX);
+    for (UINT i = 0; i < (UINT)m_scene.instances.size() && i < (UINT)m_scene.tlasInstances.size(); ++i)
+        bounds(i, sceneLo, sceneHi);
+    XMFLOAT3 ol, oh, sl, sh;
+    XMStoreFloat3(&ol, objLo);
+    XMStoreFloat3(&oh, objHi);
+    XMStoreFloat3(&sl, sceneLo);
+    XMStoreFloat3(&sh, sceneHi);
+    const XMFLOAT3 pivot = {0.5f * (ol.x + oh.x), ol.y, 0.5f * (ol.z + oh.z)};
+    const float spacing = std::max(1.1f * std::max(oh.x - ol.x, oh.z - ol.z), 1.0f);
+    const float cx = 0.5f * (sl.x + sh.x), cz = 0.5f * (sl.z + sh.z);
+    const float inner = 0.5f * std::max(sh.x - sl.x, sh.z - sl.z);
+    const float outer = std::sqrt(inner * inner + (float)count * spacing * spacing / 3.14159265f) + spacing;
+
+    // Grid cells between the scene and the outer radius, the nearest count of them.
+    std::vector<std::pair<float, std::pair<int, int>>> cells;
+    const int n = (int)std::ceil(outer / spacing);
+    for (int z = -n; z <= n; ++z)
+        for (int x = -n; x <= n; ++x) {
+            const float r = spacing * std::sqrt((float)(x * x + z * z));
+            if (r >= inner && r <= outer)
+                cells.push_back({r, {x, z}});
+        }
+    if (cells.size() > count) {
+        std::nth_element(cells.begin(), cells.begin() + count, cells.end());
+        cells.resize(count);
+    }
+    std::mt19937 rng(1);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    std::vector<clusters::InstanceSets::Instance> instances(cells.size());
+    for (size_t i = 0; i < cells.size(); ++i) {
+        clusters::InstanceSets::Instance& in = instances[i];
+        in.position[0] = cx + spacing * ((float)cells[i].second.first + 0.7f * (unit(rng) - 0.5f));
+        in.position[1] = pivot.y;
+        in.position[2] = cz + spacing * ((float)cells[i].second.second + 0.7f * (unit(rng) - 0.5f));
+        in.scale = 0.8f + 0.4f * unit(rng);
+        const float yaw = 6.2831853f * unit(rng);
+        in.rotation[0] = 0.0f;
+        in.rotation[1] = std::sin(0.5f * yaw);
+        in.rotation[2] = 0.0f;
+        in.rotation[3] = std::cos(0.5f * yaw);
+    }
+
+    m_instanceSets.init(&m_ctx, &m_clusters, m_clusters.rtas_device(), m_clusters.frame_slots());
+    auto flush = [this] { m_ctx.FlushAndReset(); };
+    m_setRecords.clear();
+    // Set space: the scene's, with the object's ground point at the origin.
+    const XMMATRIX toSet = XMMatrixTranslation(-pivot.x, -pivot.y, -pivot.z);
+    auto meshOf = [&](UINT meshIndex, const XMMATRIX& placed, UINT hitGroup) {
+        const MeshGPU& mesh = m_scene.meshes[meshIndex];
+        clusters::InstanceSets::Mesh d;
+        d.lod = &mesh.lod;
+        d.omm = mesh.hasOmm || mesh.lodAlpha;
+        d.record = m_scene.setPropsBase + (UINT)m_setRecords.size();
+        d.hitGroup = hitGroup;
+        d.flags = (mesh.alphaTriCount == 0 && !mesh.lodAlpha) ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
+                                                              : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+        const XMMATRIX T = XMMatrixTranspose(placed * toSet);
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 4; ++c)
+                d.base[r * 4 + c] = XMVectorGetByIndex(T.r[r], c);
+        m_setRecords.push_back({(UINT)m_setRecords.size(), meshIndex});
+        return d;
+    };
+    auto sphereOf = [&](XMVECTOR lo, XMVECTOR hi, clusters::InstanceSets::Desc& d) {
+        lo = XMVector3Transform(lo, toSet);
+        hi = XMVector3Transform(hi, toSet);
+        XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(d.center), XMVectorScale(XMVectorAdd(lo, hi), 0.5f));
+        d.radius = 0.5f * XMVectorGetX(XMVector3Length(XMVectorSubtract(hi, lo)));
+    };
+    const bool assembly = m_scene.scatter.wholeInstance != ~0u && m_scatterSources.size() == 1 &&
+                          m_scatterSources[0] == m_scene.scatter.wholeInstance;
+    for (UINT src : m_scatterSources) {
+        // Records are per mesh, and every mesh's clusters hit through the same records: those of its scene instance.
+        const UINT hitGroup = m_scene.tlasInstances[src].hitGroupContribution;
+        const XMMATRIX& placed = m_scene.tlasInstances[src].transform;
+        clusters::InstanceSets::Desc d;
+        d.whole = meshOf(m_scene.instances[src].meshIndex, placed, hitGroup);
+        if (assembly) {
+            const float height = std::max(oh.y - ol.y, 1e-3f);
+            for (const auto& [partMesh, partPlaced] : m_scene.scatter.parts) {
+                clusters::InstanceSets::Part p;
+                p.mesh = meshOf(partMesh, partPlaced, hitGroup);
+                // It hangs from the point of its bounds nearest the trunk (the set's y axis), at its foot; it sways
+                // the more the higher that is.
+                const MeshGPU& pm = m_scene.meshes[partMesh];
+                XMVECTOR plo = XMVectorReplicate(FLT_MAX), phi = XMVectorReplicate(-FLT_MAX);
+                for (int c = 0; c < 8; ++c) {
+                    const XMVECTOR q = XMVector3TransformCoord(
+                        XMVectorSet(c & 1 ? pm.boundsMax.x : pm.boundsMin.x, c & 2 ? pm.boundsMax.y : pm.boundsMin.y,
+                                    c & 4 ? pm.boundsMax.z : pm.boundsMin.z, 1.0f),
+                        partPlaced * toSet);
+                    plo = XMVectorMin(plo, q);
+                    phi = XMVectorMax(phi, q);
+                }
+                XMFLOAT3 l, h;
+                XMStoreFloat3(&l, plo);
+                XMStoreFloat3(&h, phi);
+                p.pivot[0] = std::clamp(0.0f, l.x, h.x);
+                p.pivot[1] = l.y;
+                p.pivot[2] = std::clamp(0.0f, l.z, h.z);
+                p.windWeight = std::clamp(l.y / (0.6f * height), 0.0f, 1.0f);
+                d.parts.push_back(p);
+            }
+            if (m_scene.scatter.standIn != ~0u) {
+                d.proxy = true;
+                d.stand = meshOf(m_scene.scatter.standIn, placed, hitGroup);
+            }
+        }
+        sphereOf(objLo, objHi, d);
+        m_instanceSets.add(d, instances, m_ctx.CmdList(), flush);
+    }
+    m_instanceSets.commit(m_planet.tlas(), &m_scene.sceneOriginWorld.x, m_ctx.CmdList(), flush);
+    for (const auto& [slot, meshIndex] : m_setRecords)
+        m_scene.WriteSetRecord(slot, meshIndex);
+    m_setRecordBuffer = m_scene.instanceProperties.Get();
+    m_camera.instanceSetBase = m_scene.setPropsBase;
+    m_camera.instanceSetEnd = m_scene.setPropsBase + (UINT)m_setRecords.size();
+    m_setStart = std::chrono::steady_clock::now();
+    std::printf("[sets] scattered %zu copies of %zu pieces, %.1f m apart, %.0f to %.0f m from the scene centre\n",
+                instances.size(), m_scatterSources.size(), spacing, inner, outer);
+}
+
+// After the TLAS build: each set instance's bucket for this view, and their TLAS writes and updates.
+void Renderer::RecordInstanceSets(ID3D12GraphicsCommandList4* cl, planet::TlasBuilder& tlas) {
+    if (!m_instanceSets.active())
+        return;
+    // A new instance-properties buffer starts without the records.
+    if (m_setRecordBuffer != m_scene.instanceProperties.Get()) {
+        for (const auto& [slot, meshIndex] : m_setRecords)
+            m_scene.WriteSetRecord(slot, meshIndex);
+        m_setRecordBuffer = m_scene.instanceProperties.Get();
+    }
+    clusters::InstanceSets::View v = {};
+    std::memcpy(v.origin, &m_scene.sceneOriginWorld, sizeof(v.origin));
+    const XMMATRIX view = m_camera.ViewMatrix();
+    XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(v.camera), XMMatrixInverse(nullptr, view).r[3]);
+    // In-view half-spaces from the view-projection's columns: left, right, bottom, top, near.
+    const XMMATRIX T = XMMatrixTranspose(XMMatrixMultiply(view, m_camera.ProjMatrix()));
+    const XMVECTOR planes[5] = {XMVectorAdd(T.r[3], T.r[0]), XMVectorSubtract(T.r[3], T.r[0]),
+                                XMVectorAdd(T.r[3], T.r[1]), XMVectorSubtract(T.r[3], T.r[1]), T.r[2]};
+    for (int i = 0; i < 5; ++i)
+        XMStoreFloat4(reinterpret_cast<XMFLOAT4*>(v.planes[i]), XMPlaneNormalize(planes[i]));
+    v.pixelsPerUnit = 0.5f * (float)m_height / std::tan(0.5f * m_camera.fovDegrees * 0.01745329252f);
+    v.threshold = std::max(0.01f, m_integratorSettings.lodErrorPixels);
+    v.znear = m_camera.nearPlane;
+    v.time = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_setStart).count();
+    m_instanceSets.record(cl, m_clusters.slot(), tlas, v, SET_OFFSCREEN_ERROR, clusters::InstanceSets::Wind{});
+
+    const auto& s = m_instanceSets.stats();
+    auto& vg = m_frameStats.vgeo;
+    vg.sets = s.sets;
+    vg.setInstances = s.instances;
+    vg.setWritten = s.written;
+    vg.setWrites = s.writes + s.blockWrites;
+    vg.setExpanded = s.expanded;
+    vg.setUpdates = s.updates;
+    vg.setCells = s.cells;
+    vg.setActiveCells = s.activeCells;
+    vg.setBytes = s.gpuBytes + s.blasBytes;
+    if (m_planetFrame % 120 == 0)
+        std::printf("[sets] %llu of %llu instances in the TLAS, %u in their parts; %u writes (%u of whole "
+                    "expansions and sways), %u updates, %u of %u cells visited; scene origin %.0f %.0f %.0f\n",
+                    (unsigned long long)s.written, (unsigned long long)s.instances, s.expanded,
+                    s.writes + s.blockWrites, s.blockWrites, s.updates, s.activeCells, s.cells, v.origin[0],
+                    v.origin[1], v.origin[2]);
+}
+
+// After the TLAS build: the GPU's cuts for the paged instances, their cluster BLAS, and their TLAS updates.
+void Renderer::RecordSceneLodGpu(ID3D12GraphicsCommandList4* cl, planet::TlasBuilder& tlas) {
+    if (!m_lodGpuMode)
+        return;
+    // Taken every frame: a reset reads the residency as it is.
+    const std::vector<clusters::ResidencyChange> changes = m_pager.take_changes();
+    if (!m_lodGpu.active())
+        return;
+    m_lodGpu.record(cl, m_clusters.slot(), tlas, m_lodGpuViews, changes, m_planetFrame, m_lodPixelsPerUnit,
+                    m_lodThreshold);
 }
 #endif
 
@@ -1873,7 +2243,8 @@ void Renderer::PopulateCommandList() {
             .count());
     setFloat(18, std::clamp(rs.lightTreeLearnRoughness, 0.0f, 0.8f));
     rsConsts[19] = (UINT)std::clamp(rs.dlssDebugLayer, 0, 13) | (m_dlss.guideOffPsr ? DLSS_GUIDE_OPT_NO_PSR : 0u) |
-                   (m_dlss.guideOffMvBlend ? DLSS_GUIDE_OPT_NO_MV_BLEND : 0u);
+                   (m_dlss.guideOffMvBlend ? DLSS_GUIDE_OPT_NO_MV_BLEND : 0u) |
+                   ((UINT)std::clamp(rs.geometryView, 0, (int)GEOMETRY_VIEW_COUNT - 1) << GEOMETRY_VIEW_SHIFT);
     {
         using DirectX::PackedVector::XMConvertFloatToHalf;
         const float dn = std::clamp(rs.dlssDebugDepthNear, 0.0f, 60000.0f);
@@ -2194,8 +2565,8 @@ void Renderer::PopulateCommandList() {
         return;
     }
 
-    const bool inspectBuffers =
-        sharcDebugMode != 0u || rs.dlssDebugLayer != 0 || (useLightLearning && rs.lightTreeDebug);
+    const bool inspectBuffers = sharcDebugMode != 0u || rs.dlssDebugLayer != 0 || rs.geometryView != 0 ||
+                                (useLightLearning && rs.lightTreeDebug);
     UINT layer = inspectBuffers ? 3u : m_displayLevels[m_currentDisplayLevel];
     UINT sub = D3D12CalcSubresource(0, layer, 0, 1, 4);
 

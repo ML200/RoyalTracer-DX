@@ -21,6 +21,7 @@ class Camera {
     ID3D12Resource* GPUBuffer() const { return m_buffer.Get(); }
     UINT BufferSize() const { return m_bufferSize; }
     XMMATRIX ViewMatrix() const { return m_viewMatrix; }
+    XMMATRIX ProjMatrix() const { return m_projMatrix; }
     XMMATRIX PrevView() const { return m_prevView; }
     XMMATRIX PrevProj() const { return m_prevProj; }
     float JitterX() const { return m_jitterX; }
@@ -70,6 +71,7 @@ class Camera {
 
     // Instances at or above this are ocean tiles.
     uint32_t oceanInstanceBase = 0xFFFFFFFFu;
+    uint32_t instanceSetBase = 0, instanceSetEnd = 0; // instance-set records (IS_SET_INSTANCE)
     bool oceanEnabled = false;
 
     // DLSS responsivity mask values, mirrored from DLSSManager.

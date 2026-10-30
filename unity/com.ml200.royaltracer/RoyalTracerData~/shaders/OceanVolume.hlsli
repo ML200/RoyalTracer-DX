@@ -8,6 +8,7 @@ struct OceanPathHit {
     uint geometry;
     uint primitive;
     float2 barycentrics;
+    float3x4 toWorld; // the hit instance's transform
 };
 OceanPathHit OceanPathHitOf(dx::HitObject hit, RayDesc ray) {
     OceanPathHit result = (OceanPathHit)0;
@@ -23,6 +24,7 @@ OceanPathHit OceanPathHitOf(dx::HitObject hit, RayDesc ray) {
         result.geometry = hit.GetGeometryIndex();
         result.primitive = hit.GetPrimitiveIndex();
         result.barycentrics = attr.barycentrics;
+        result.toWorld = hit.GetObjectToWorld3x4();
     }
     return result;
 }
@@ -34,7 +36,7 @@ OceanPathHit OceanTracePathHit(RayDesc ray) {
 bool OceanFacetPassed(OceanPathHit h, RayDesc ray, bool inWater) {
     if (!h.hit || !IS_OCEAN_INSTANCE(h.instance) || h.distance + 1e-3f >= ray.TMax)
         return false;
-    const float3 n = CandidateGeoNormalW(h.instance, FlatPrimID(h.instance, h.cluster, h.geometry, h.primitive));
+    const float3 n = CandidateGeoNormalW(h.instance, FlatPrimID(h.instance, h.cluster, h.geometry, h.primitive), h.toWorld);
     return (dot(ray.Direction, n) > 0.0f) != inWater;
 }
 
@@ -96,10 +98,11 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
     const uint hi = q.CommittedInstanceID();
     const uint hp = FlatPrimID(hi, RQ_COMMITTED_CLUSTER_ID(q), q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
     // Foam at a 0.25 m footprint, from the step's Kd_w (WriteMaterialSlot).
-    float3 n = CandidateGeoNormalW(hi, hp);
+    float3 n = CandidateGeoNormalW(hi, hp, q.CommittedObjectToWorld3x4());
     float foam = 0.0f;
     if (causticShare > 0.0f) {
-        const HitInfo h = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), pos, 0.25f);
+        const HitInfo h = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), q.CommittedObjectToWorld3x4(), pos,
+                                           0.25f);
         n = h.hitNormal;
         if (h.isOcean && h.oceanMaterialOffset < OCEAN_MATERIAL_LEVELS) {
             const float water = LoadKd_w(P.materialBase);

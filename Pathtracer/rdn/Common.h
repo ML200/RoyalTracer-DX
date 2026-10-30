@@ -65,7 +65,7 @@ struct ScopedTimer {
 
 static constexpr UINT FRAME_COUNT = 3;
 static constexpr UINT MAX_BACK_BUFFERS = 6;
-static constexpr UINT SCRATCH_LAYER_COUNT = 14;
+static constexpr UINT SCRATCH_LAYER_COUNT = 15;
 static constexpr int NUM_LUTS = 2;
 static constexpr int LUT_RESOLUTION = 16;
 static constexpr int NUM_SAMPLES_LUT = 32000;
@@ -126,8 +126,9 @@ static_assert(sizeof(InstanceProperties) == 224, "GPU record must stay in sync w
 // Indexed by a hit's ClusterID(); its primitive index is local to the cluster.
 struct ClusterRecord {
     UINT triBase; // the cluster's first triangle among its instance's flat triangles
+    UINT info;    // CLUSTER_INFO_*: hierarchy level and kind, for the virtual geometry view
 };
-static_assert(sizeof(ClusterRecord) == 4, "GPU record must stay in sync with Data_v8.hlsli");
+static_assert(sizeof(ClusterRecord) == 8, "GPU record must stay in sync with Data_v8.hlsli");
 
 struct InstancePropertiesCpu {
     XMMATRIX objectToWorld;
@@ -203,6 +204,8 @@ struct IntegratorSettings {
     int texturePointFilter = 0;
 
     int dlssDebugLayer = 0;
+    int geometryView = 0;          // GEOMETRY_VIEW_*: the virtual geometry view in place of the image
+    float lodErrorPixels = 1.0f;   // cluster LOD error budget, pixels at the output resolution
 
     float dlssDebugDepthNear = 0.0f;
     float dlssDebugDepthFar = 50.0f;
@@ -297,6 +300,21 @@ struct FrameStats {
     UINT cacheTimingMask = 0;
     UINT instanceCount = 0;
     UINT meshCount = 0;
+    struct VirtualGeometry {
+        UINT lodInstances = 0, builds = 0, deferred = 0;
+        uint64_t cutClusters = 0, baseClusters = 0;
+        bool paged = false;
+        UINT pages = 0, resident = 0, roots = 0, reading = 0, building = 0;
+        uint64_t residentTris = 0, poolTris = 0, poolTrisCapacity = 0, clasBytes = 0, clasCapacity = 0, readBytes = 0;
+        uint64_t installed = 0, retired = 0, evicted = 0;
+        bool gpu = false;            // cuts chosen on the GPU
+        UINT tlasUpdates = 0;        // instances the GPU pointed at a new BLAS
+        float errorScale = 1.0f;     // the adaptive budget's factor on the error budget
+        float pressure = 0.0f;       // the pools' share in use by the cuts
+        // Instance sets: instances, those in the TLAS, the last frame's TLAS writes and updates, cells visited.
+        UINT sets = 0, setWrites = 0, setUpdates = 0, setCells = 0, setActiveCells = 0, setExpanded = 0;
+        uint64_t setInstances = 0, setWritten = 0, setBytes = 0;
+    } vgeo;
 };
 
 inline float Halton(uint32_t index, uint32_t base) {

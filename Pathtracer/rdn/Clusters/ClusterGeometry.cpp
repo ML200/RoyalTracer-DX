@@ -253,7 +253,11 @@ void ClusterGeometry::free_ids(uint32_t base, uint32_t count) {
 }
 
 void ClusterGeometry::write_records(uint32_t base, const Span* spans, uint32_t count) {
-    for (uint32_t i = 0; i < count; ++i) m_recordsMapped[base + i].triBase = spans[i].firstTri;
+    for (uint32_t i = 0; i < count; ++i) m_recordsMapped[base + i] = ClusterRecord{ spans[i].firstTri, 0u };
+}
+
+void ClusterGeometry::write_info(uint32_t base, const uint32_t* info, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) m_recordsMapped[base + i].info = info[i];
 }
 
 #if RDN_CLUSTER_API
@@ -341,7 +345,7 @@ ClusterGeometry::Ticket ClusterGeometry::queue_build(const Mesh& mesh, D3D12_GPU
     const uint32_t n = mesh.clusterCount;
     const uint64_t argsOff = m_argsUsed;
     auto* args = reinterpret_cast<D3D12_RTAS_OPERATION_BUILD_CLAS_FROM_TRIANGLES_ARGS*>(m_argsMapped[m_slot] + argsOff);
-    const UINT alphaGeometry = mesh.opaqueTriCount ? 1u : 0u;
+    const UINT alphaGeometry = mesh.alphaGeometry != ~0u ? mesh.alphaGeometry : (mesh.opaqueTriCount ? 1u : 0u);
     for (uint32_t i = 0; i < n; ++i) {
         const Span& s = mesh.spans[i];
         const bool alpha = s.firstTri >= mesh.opaqueTriCount;

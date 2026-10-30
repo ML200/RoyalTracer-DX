@@ -7,30 +7,40 @@
 #include <filesystem>
 #include <numeric>
 #include <unordered_map>
+#include <unordered_set>
 #include <DirectXPackedVector.h>
 
 namespace clusters {
 
 namespace {
 constexpr char MAGIC[8] = { 'R', 'D', 'N', 'P', 'A', 'G', 'E', 'S' };
-constexpr uint32_t VERSION = 1;
-// File: header, LodGroup per group, FilePage per group, FileCluster per hierarchy cluster (by offset), the deps, then
-// the pages: BTriVertex per page vertex, then three page-local uint16 indices per triangle.
+constexpr uint32_t VERSION = 3;
+// File: header, LodGroup per group, FilePage per group, FileCluster per hierarchy cluster (by offset), the deps, the
+// mesh's micromaps (OmmHeader, descs, histogram, raw data), then the pages: BTriVertex per page vertex, three page-local
+// uint16 indices per triangle, and for an alpha page (flags bit 0), 4-byte aligned, an int32 OMM index per triangle.
+constexpr uint32_t PAGE_ALPHA = 1;
+// Micromap subdivisions: full detail as the texture asks, where equal micromaps are shared widely; coarser levels' larger
+// triangles rarely share theirs and are seen from further away.
+constexpr int OMM_LEVEL_FULL = 8, OMM_LEVEL_COARSE = 5;
+struct OmmHeader {
+    uint32_t descCount, histogramCount, rawBytes, pad;
+};
 struct FileHeader {
     char magic[8];
     uint32_t version, groups, clusters, deps;
-    uint64_t dataOffset;
+    uint64_t dataOffset, ommOffset;
+    uint32_t ommBytes, pad;
 };
 struct FilePage {
     uint64_t offset;
-    uint32_t bytes, firstCluster, clusterCount, vertexCount, triCount, depFirst, depCount, pad;
+    uint32_t bytes, firstCluster, clusterCount, vertexCount, triCount, depFirst, depCount, flags;
 };
 struct FileCluster {
     uint32_t group, refined, firstTri, material;
     uint16_t triCount, uniqueVerts;
     uint32_t pad;
 };
-static_assert(sizeof(FileHeader) == 32 && sizeof(FilePage) == 40 && sizeof(FileCluster) == 24);
+static_assert(sizeof(FileHeader) == 48 && sizeof(FilePage) == 40 && sizeof(FileCluster) == 24);
 static_assert(sizeof(BTriVertex) == 20);
 #if RDN_CLUSTER_API
 constexpr uint64_t CLAS_UNIT = D3D12_RAYTRACING_CLAS_BYTE_ALIGNMENT;
@@ -101,9 +111,10 @@ std::string cache_dir() {
 
 PoolSizes pool_sizes() {
     PoolSizes s;
-    s.vertices = (uint32_t)env_u64("RDN_PAGE_POOL_VERTS", 4u << 20);
+    s.vertices = (uint32_t)env_u64("RDN_PAGE_POOL_VERTS", 8u << 20); // foliage cards need about 2 per triangle
     s.tris = (uint32_t)env_u64("RDN_PAGE_POOL_TRIS", 4u << 20);
     s.clasBytes = env_u64("RDN_PAGE_POOL_CLAS_MB", 512) << 20;
+    s.ommBytes = env_u64("RDN_PAGE_POOL_OMM_MB", 256) << 20;
     return s;
 }
 
@@ -123,13 +134,95 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
     std::vector<uint32_t> order(groups);
     std::iota(order.begin(), order.end(), 0u);
     std::stable_partition(order.begin(), order.end(), [&](uint32_t g) { return b.groups[g].error == FLT_MAX; });
+    auto region_of = [&](uint32_t g) { return b.regions[b.spans[members[g][0]].firstTri]; };
+
+    // Micromaps: baked once per alpha region over all its levels, so equal ones are shared, and kept with the mesh; an
+    // alpha page holds an index per triangle into them.
+    std::vector<std::vector<int32_t>> pageOmm(groups);
+    PageOmm meshOmm;
+    if (mesh.opacity) {
+        std::unordered_map<uint32_t, std::vector<uint32_t>> regionPages;
+        std::vector<uint32_t> regionOrder;
+        for (uint32_t g : order) {
+            if (members[g].empty()) continue;
+            const auto [it, fresh] = regionPages.try_emplace(region_of(g));
+            if (fresh) regionOrder.push_back(region_of(g));
+            it->second.push_back(g);
+        }
+        std::unordered_map<uint32_t, uint32_t> local;
+        std::vector<float> uvs;
+        std::vector<uint32_t> idx;
+        std::vector<int32_t> regionIndices;
+        for (uint32_t region : regionOrder) {
+            // Per triangle in page order, its index; the full-detail and the coarser triangles bake apart.
+            size_t regionTris = 0;
+            for (uint32_t g : regionPages[region])
+                for (uint32_t c : members[g]) regionTris += b.spans[c].triCount;
+            regionIndices.assign(regionTris, D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_OPAQUE);
+            bool alpha = false;
+            for (int pass = 0; pass < 2; ++pass) {
+                const bool coarse = pass == 1;
+                local.clear();
+                uvs.clear();
+                idx.clear();
+                std::vector<size_t> where;
+                size_t t = 0;
+                for (uint32_t g : regionPages[region])
+                    for (uint32_t c : members[g]) {
+                        const bool clusterCoarse = b.clusters[c].refined != LOD_NONE;
+                        for (uint32_t k = 0; k < b.spans[c].triCount; ++k, ++t) {
+                            if (clusterCoarse != coarse) continue;
+                            where.push_back(t);
+                            for (uint32_t i = 3 * (b.spans[c].firstTri + k); i < 3 * (b.spans[c].firstTri + k + 1); ++i) {
+                                const auto [it, fresh] = local.emplace(b.indices[i], (uint32_t)(uvs.size() / 2));
+                                if (fresh) {
+                                    float uv[2];
+                                    std::memcpy(uv, mesh.vertices + (size_t)b.indices[i] * mesh.stride + mesh.uvOffset, 8);
+                                    uvs.insert(uvs.end(), uv, uv + 2);
+                                }
+                                idx.push_back(it->second);
+                            }
+                        }
+                    }
+                if (where.empty()) continue;
+                PageOmm r;
+                if (!mesh.opacity(region, coarse ? OMM_LEVEL_COARSE : OMM_LEVEL_FULL, uvs.data(), (uint32_t)(uvs.size() / 2),
+                                  idx.data(), (uint32_t)where.size(), r))
+                    break;
+                alpha = true;
+                r.indices.resize(where.size(), D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_OPAQUE);
+                const int32_t descBase = (int32_t)meshOmm.descs.size();
+                for (D3D12_RAYTRACING_OPACITY_MICROMAP_DESC d : r.descs) {
+                    d.ByteOffset += (UINT)meshOmm.raw.size();
+                    meshOmm.descs.push_back(d);
+                }
+                meshOmm.raw.insert(meshOmm.raw.end(), r.raw.begin(), r.raw.end());
+                for (const auto& e : r.histogram) {
+                    auto same = std::find_if(meshOmm.histogram.begin(), meshOmm.histogram.end(), [&](const auto& x) {
+                        return x.SubdivisionLevel == e.SubdivisionLevel && x.Format == e.Format;
+                    });
+                    if (same != meshOmm.histogram.end()) same->Count += e.Count;
+                    else meshOmm.histogram.push_back(e);
+                }
+                for (size_t i = 0; i < where.size(); ++i)
+                    regionIndices[where[i]] = r.indices[i] >= 0 ? r.indices[i] + descBase : r.indices[i];
+            }
+            if (!alpha) continue;
+            size_t t = 0;
+            for (uint32_t g : regionPages[region]) {
+                std::vector<int32_t>& out = pageOmm[g];
+                for (uint32_t c : members[g])
+                    for (uint32_t k = 0; k < b.spans[c].triCount; ++k) out.push_back(regionIndices[t++]);
+            }
+        }
+    }
 
     std::vector<FilePage> pages(groups);
     std::vector<FileCluster> fileClusters(clusters);
     std::vector<uint32_t> depList;
     std::vector<uint8_t> data;
     std::unordered_map<uint32_t, uint16_t> local;
-    std::vector<uint32_t> verts;
+    std::vector<uint32_t> verts, corner; // per page vertex: mesh vertex, and an index entry using it
     uint32_t offset = 0;
     for (uint32_t g : order) {
         FilePage& p = pages[g];
@@ -142,6 +235,7 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
         depList.insert(depList.end(), deps[g].begin(), deps[g].end());
         local.clear();
         verts.clear();
+        corner.clear();
         std::vector<uint16_t> idx;
         for (uint32_t c : members[g]) {
             const Span& s = b.spans[c];
@@ -158,6 +252,7 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
                 if (fresh) {
                     if (verts.size() == 0xFFFF) return false;
                     verts.push_back(b.indices[i]);
+                    corner.push_back(i);
                 }
                 idx.push_back(it->second);
             }
@@ -171,7 +266,7 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
             const uint8_t* v = mesh.vertices + (size_t)verts[i] * mesh.stride;
             XMFLOAT3 pos, n;
             XMFLOAT2 uv;
-            std::memcpy(&pos, v, 12);
+            std::memcpy(&pos, b.positions.empty() ? (const void*)v : (const void*)&b.positions[3ull * corner[i]], 12);
             std::memcpy(&n, v + mesh.normalOffset, 12);
             std::memcpy(&uv, v + mesh.uvOffset, 8);
             out[i].vertex = pos;
@@ -179,8 +274,30 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
             PackedVector::XMStoreHalf2(&out[i].texCoord, XMLoadFloat2(&uv));
         }
         std::memcpy(data.data() + at + verts.size() * sizeof(BTriVertex), idx.data(), idx.size() * sizeof(uint16_t));
+        if (!pageOmm[g].empty()) {
+            p.flags |= PAGE_ALPHA;
+            data.resize((data.size() + 3) & ~size_t(3));
+            const size_t o = data.size();
+            data.resize(o + pageOmm[g].size() * sizeof(int32_t));
+            std::memcpy(data.data() + o, pageOmm[g].data(), pageOmm[g].size() * sizeof(int32_t));
+        }
         p.bytes = (uint32_t)(data.size() - at);
         data.resize((data.size() + 15) & ~size_t(15));
+    }
+
+    // The mesh's micromaps: OmmHeader, descs, histogram, raw data.
+    std::vector<uint8_t> ommBlock;
+    if (!meshOmm.descs.empty()) {
+        const OmmHeader oh{ (uint32_t)meshOmm.descs.size(), (uint32_t)meshOmm.histogram.size(), (uint32_t)meshOmm.raw.size(), 0 };
+        auto put = [&](const void* src, size_t bytes) {
+            const size_t o = ommBlock.size();
+            ommBlock.resize(o + bytes);
+            if (bytes) std::memcpy(ommBlock.data() + o, src, bytes);
+        };
+        put(&oh, sizeof(oh));
+        put(meshOmm.descs.data(), meshOmm.descs.size() * sizeof(meshOmm.descs[0]));
+        put(meshOmm.histogram.data(), meshOmm.histogram.size() * sizeof(meshOmm.histogram[0]));
+        put(meshOmm.raw.data(), meshOmm.raw.size());
     }
 
     FileHeader h = {};
@@ -191,7 +308,9 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
     h.deps = (uint32_t)depList.size();
     const uint64_t tables = sizeof(h) + groups * (sizeof(LodGroup) + sizeof(FilePage)) + clusters * sizeof(FileCluster) +
                             depList.size() * sizeof(uint32_t);
-    h.dataOffset = (tables + 4095) & ~4095ull;
+    h.ommOffset = (tables + 15) & ~15ull;
+    h.ommBytes = (uint32_t)ommBlock.size();
+    h.dataOffset = (h.ommOffset + h.ommBytes + 4095) & ~4095ull;
     for (FilePage& p : pages) p.offset += h.dataOffset;
 
     // Written aside and renamed, so a crash leaves no half file under the real name.
@@ -205,8 +324,13 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
     ok = ok && fwrite(pages.data(), sizeof(FilePage), groups, f) == groups;
     ok = ok && fwrite(fileClusters.data(), sizeof(FileCluster), clusters, f) == clusters;
     ok = ok && (depList.empty() || fwrite(depList.data(), sizeof(uint32_t), depList.size(), f) == depList.size());
-    const std::vector<uint8_t> pad(h.dataOffset - tables, 0);
-    ok = ok && (pad.empty() || fwrite(pad.data(), 1, pad.size(), f) == pad.size());
+    auto pad = [&](uint64_t from, uint64_t to) {
+        const std::vector<uint8_t> zeros(to - from, 0);
+        return zeros.empty() || fwrite(zeros.data(), 1, zeros.size(), f) == zeros.size();
+    };
+    ok = ok && pad(tables, h.ommOffset);
+    ok = ok && (ommBlock.empty() || fwrite(ommBlock.data(), 1, ommBlock.size(), f) == ommBlock.size());
+    ok = ok && pad(h.ommOffset + h.ommBytes, h.dataOffset);
     ok = ok && fwrite(data.data(), 1, data.size(), f) == data.size();
     ok = fclose(f) == 0 && ok;
     if (ok) {
@@ -238,20 +362,43 @@ bool read_pages(const std::string& path, Lod& lod, PagedSource& src) {
         at += h.clusters * sizeof(FileCluster);
         ok = ok && (h.deps == 0 || read_at(file, at, lod.deps.data(), h.deps * (uint32_t)sizeof(uint32_t)));
     }
+    std::vector<uint8_t> omm(ok ? h.ommBytes : 0);
+    ok = ok && (omm.empty() || read_at(file, h.ommOffset, omm.data(), h.ommBytes));
     CloseHandle(file);
     if (!ok) return false;
+    src.omm = PageOmm{};
+    if (omm.size() >= sizeof(OmmHeader)) {
+        OmmHeader oh;
+        std::memcpy(&oh, omm.data(), sizeof(oh));
+        const uint8_t* at = omm.data() + sizeof(oh);
+        auto take = [&](auto& v, size_t n) {
+            v.resize(n);
+            std::memcpy(v.data(), at, n * sizeof(v[0]));
+            at += n * sizeof(v[0]);
+        };
+        take(src.omm.descs, oh.descCount);
+        take(src.omm.histogram, oh.histogramCount);
+        take(src.omm.raw, oh.rawBytes);
+    }
 
     src.path = path;
     src.pages.resize(h.groups);
     lod.depFirst.resize(h.groups + 1);
+    // The file lists the deps in page order; the hierarchy keeps them in group order.
+    std::vector<uint32_t> fileDeps;
+    fileDeps.swap(lod.deps);
+    lod.deps.reserve(fileDeps.size());
     uint32_t roots = 0;
     for (uint32_t g = 0; g < h.groups; ++g) {
         const FilePage& p = pages[g];
-        src.pages[g] = PageEntry{ p.offset, p.bytes, p.firstCluster, p.clusterCount, p.vertexCount, p.triCount };
-        lod.depFirst[g] = p.depFirst;
+        src.pages[g] = PageEntry{ p.offset, p.bytes, p.firstCluster, p.clusterCount, p.vertexCount, p.triCount,
+                                  (p.flags & PAGE_ALPHA) != 0 };
+        if ((uint64_t)p.depFirst + p.depCount > fileDeps.size()) return false;
+        lod.depFirst[g] = (uint32_t)lod.deps.size();
+        lod.deps.insert(lod.deps.end(), fileDeps.begin() + p.depFirst, fileDeps.begin() + p.depFirst + p.depCount);
         if (lod.groups[g].error == FLT_MAX) roots += p.clusterCount;
     }
-    lod.depFirst[h.groups] = h.deps;
+    lod.depFirst[h.groups] = (uint32_t)lod.deps.size();
     lod.clusters.resize(h.clusters);
     src.spans.resize(h.clusters);
     src.materials.resize(h.clusters);
@@ -269,6 +416,55 @@ bool read_pages(const std::string& path, Lod& lod, PagedSource& src) {
 }
 
 #if RDN_CLUSTER_API
+namespace {
+constexpr uint64_t OMM_UNIT = D3D12_RAYTRACING_OPACITY_MICROMAP_ARRAY_BYTE_ALIGNMENT;
+inline uint64_t align(uint64_t v, uint64_t a) { return (v + a - 1) / a * a; }
+
+// A page's CLAS limits: an alpha page is geometry 1 (the alpha hit group) with micromaps.
+D3D12_RTAS_CLUSTER_LIMITS page_limits(const PagedSource& src, uint32_t g) {
+    const PageEntry& e = src.pages[g];
+    return limits(src.spans.data() + e.firstCluster, e.clusterCount, e.alpha ? 1u : 0u, e.alpha);
+}
+} // namespace
+
+const int32_t* Pager::omm_indices(const PageEntry& e, const uint8_t* data) {
+    if (!e.alpha) return nullptr;
+    return reinterpret_cast<const int32_t*>(
+        data + align((uint64_t)e.vertexCount * sizeof(BTriVertex) + 3ull * e.triCount * sizeof(uint16_t), 4));
+}
+
+void Pager::omm_prebuild(const PageOmm& o, uint64_t& result, uint64_t& scratch) const {
+    D3D12_RAYTRACING_OPACITY_MICROMAP_ARRAY_DESC desc{};
+    desc.NumOmmHistogramEntries = (UINT)o.histogram.size();
+    desc.pOmmHistogram = o.histogram.data();
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{};
+    in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_ARRAY;
+    in.NumDescs = 1;
+    in.pOpacityMicromapArrayDesc = &desc;
+    in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
+    m_ctx->Device()->GetRaytracingAccelerationStructurePrebuildInfo(&in, &info);
+    result = align(info.ResultDataMaxSizeInBytes, OMM_UNIT);
+    scratch = align(info.ScratchDataSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+}
+
+void Pager::omm_build(ID3D12GraphicsCommandList4* cl, const PageOmm& o, D3D12_GPU_VIRTUAL_ADDRESS rawVa,
+                      D3D12_GPU_VIRTUAL_ADDRESS descsVa, D3D12_GPU_VIRTUAL_ADDRESS dest, D3D12_GPU_VIRTUAL_ADDRESS scratch) {
+    D3D12_RAYTRACING_OPACITY_MICROMAP_ARRAY_DESC desc{};
+    desc.NumOmmHistogramEntries = (UINT)o.histogram.size();
+    desc.pOmmHistogram = o.histogram.data();
+    desc.InputBuffer = rawVa;
+    desc.PerOmmDescs = { descsVa, sizeof(D3D12_RAYTRACING_OPACITY_MICROMAP_DESC) };
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
+    build.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_ARRAY;
+    build.Inputs.NumDescs = 1;
+    build.Inputs.pOpacityMicromapArrayDesc = &desc;
+    build.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    build.DestAccelerationStructureData = dest;
+    build.ScratchAccelerationStructureData = scratch;
+    cl->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+}
+
 Pager::~Pager() {
     {
         std::lock_guard<std::mutex> lk(m_ioMutex);
@@ -291,6 +487,17 @@ void Pager::init(DeviceContext* ctx, ClusterGeometry* geometry, const Geometry& 
                               D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nv_helpers_dx12::kDefaultHeapProps);
     m_clasPool->SetName(L"PageClasPool");
     m_clasAlloc.init(cfg.clasPoolBytes / CLAS_UNIT);
+    m_ommPool = CreateBuffer(device, cfg.ommPoolBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                             D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nv_helpers_dx12::kDefaultHeapProps);
+    m_ommPool->SetName(L"PageOmmPool");
+    m_ommAlloc.init(cfg.ommPoolBytes / OMM_UNIT);
+    m_ommIndexPool = CreateBuffer(device, std::max<uint64_t>(g.triAlloc->capacity() * sizeof(int32_t), 256),
+                                  D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+    m_ommIndexPool->SetName(L"PageOmmIndices");
+    {
+        D3D12_RANGE noRead{ 0, 0 };
+        ThrowIfFailed(m_ommIndexPool->Map(0, &noRead, reinterpret_cast<void**>(&m_ommIndexMapped)));
+    }
     m_arenas.resize(geometry->frame_slots());
     for (Arena& a : m_arenas) {
         a.buffer = CreateBuffer(device, cfg.arenaBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -317,9 +524,11 @@ void Pager::add_mesh(Lod* lod, PagedSource&& source, uint32_t triBase, bool omm)
     if (m.file == INVALID_HANDLE_VALUE) throw std::runtime_error("pager: cannot open " + m.src.path);
     m.triBase = triBase;
     m.materialBase = m.src.materialBase;
+    for (const PageEntry& e : m.src.pages) m.omm = m.omm || e.alpha;
     m.pages.resize(lod->groups.size());
     for (uint32_t g = 0; g < (uint32_t)lod->groups.size(); ++g) m.pages[g].pinned = lod->groups[g].error == FLT_MAX;
     lod->pager = (uint32_t)m_meshes.size() - 1;
+    lod_levels(*lod, m.levels);
     if (!m_geometry->allocate_ids((uint32_t)lod->clusters.size(), lod->idBase))
         throw std::runtime_error("pager: out of cluster IDs");
     lod->clas.resize(lod->count(), 0);
@@ -376,6 +585,18 @@ void Pager::upload(Mesh& m, uint32_t g, const uint8_t* data, ID3D12GraphicsComma
         records[k] = Span{ (uint32_t)p.tri + s.firstTri - m.triBase, s.triCount, s.uniqueVerts };
     }
     m_geometry->write_records(m.lod->idBase + e.firstCluster, records.data(), e.clusterCount);
+    thread_local std::vector<uint32_t> info;
+    info.resize(e.clusterCount);
+    for (uint32_t k = 0; k < e.clusterCount; ++k)
+        info[k] = cluster_info(p.pinned ? CLUSTER_KIND_ROOT : CLUSTER_KIND_STREAMED, m.levels[e.firstCluster + k]);
+    m_geometry->write_info(m.lod->idBase + e.firstCluster, info.data(), e.clusterCount);
+    if (e.alpha) {
+        const int32_t* src = omm_indices(e, data);
+        for (uint32_t t = 0; t < e.triCount; ++t)
+            m_ommIndexMapped[p.tri + t] = src[t] >= 0 && !m.ommUnits
+                                              ? D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_UNKNOWN_OPAQUE
+                                              : src[t];
+    }
 }
 
 clusters::Mesh Pager::build_desc(const Mesh& m, uint32_t g) const {
@@ -387,8 +608,15 @@ clusters::Mesh Pager::build_desc(const Mesh& m, uint32_t g) const {
     d.spans = m.src.spans.data() + e.firstCluster;
     d.clusterCount = e.clusterCount;
     d.clusterBase = m.lod->idBase + e.firstCluster;
-    d.opaqueTriCount = e.triCount; // hierarchies are opaque
-    d.limits = limits(d.spans, e.clusterCount, 0, false);
+    d.limits = page_limits(m.src, g);
+    if (e.alpha) {
+        d.opaqueTriCount = 0;
+        d.alphaGeometry = 1;
+        d.ommArray = m.ommUnits ? m_ommPool->GetGPUVirtualAddress() + m.ommArray * OMM_UNIT : 0;
+        d.ommIndices = m_ommIndexPool->GetGPUVirtualAddress() + m.pages[g].tri * sizeof(int32_t);
+    } else {
+        d.opaqueTriCount = e.triCount;
+    }
     return d;
 }
 
@@ -416,7 +644,7 @@ bool Pager::place_clas(uint32_t mi, uint32_t g, D3D12_GPU_VIRTUAL_ADDRESS scratc
         at += (p.sizes[k] + CLAS_UNIT - 1) / CLAS_UNIT * CLAS_UNIT;
         m.lod->clas[m.lod->fixed + e.firstCluster + k] = dests[k];
     }
-    m_geometry->queue_move_to(m.lod->idBase + e.firstCluster, e.clusterCount, false, dests.data(), bytes, scratch);
+    m_geometry->queue_move_to(m.lod->idBase + e.firstCluster, e.clusterCount, e.alpha, dests.data(), bytes, scratch);
     p.clas = off;
     p.clasUnits = units;
     std::vector<uint64_t>().swap(p.sizes);
@@ -428,7 +656,7 @@ bool Pager::move(uint32_t mi, uint32_t g, Arena& a) {
     const PageEntry& e = m_meshes[mi].src.pages[g];
     uint64_t bytes = 0;
     for (uint64_t s : m_meshes[mi].pages[g].sizes) bytes += s;
-    const uint64_t scratch = m_geometry->move_scratch(e.clusterCount, bytes, false, true);
+    const uint64_t scratch = m_geometry->move_scratch(e.clusterCount, bytes, e.alpha, true);
     if (a.scratchUsed + scratch > m_cfg.arenaBytes / 4 || !m_geometry->can_queue_blas(e.clusterCount)) return false;
     if (!place_clas(mi, g, a.scratch->GetGPUVirtualAddress() + a.scratchUsed, true)) return false;
     a.scratchUsed += scratch;
@@ -441,6 +669,7 @@ void Pager::make_resident(uint32_t mi, uint32_t g) {
     m.pages[g].state = State::Resident;
     m.lod->resident[g] = 1;
     m.lod->lastUsed[g] = m_frame;
+    if (m_external) m_changes.push_back(ResidencyChange{ m.lod, g, e.firstCluster, e.clusterCount, true });
     for (uint32_t i = m.lod->depFirst[g]; i < m.lod->depFirst[g + 1]; ++i) ++m.pages[m.lod->deps[i]].dependents;
     ++m_stats.resident;
     m_stats.residentClusters += e.clusterCount;
@@ -466,7 +695,9 @@ void Pager::retire(uint32_t mi, uint32_t g) {
     Mesh& m = m_meshes[mi];
     const PageEntry& e = m.src.pages[g];
     m.pages[g].state = State::Retiring;
+    m.pages[g].retiredAt = m_frame;
     m.lod->resident[g] = 0;
+    if (m_external) m_changes.push_back(ResidencyChange{ m.lod, g, e.firstCluster, e.clusterCount, false });
     for (uint32_t i = m.lod->depFirst[g]; i < m.lod->depFirst[g + 1]; ++i) --m.pages[m.lod->deps[i]].dependents;
     --m_stats.resident;
     m_stats.residentClusters -= e.clusterCount;
@@ -487,6 +718,7 @@ void Pager::rebalance(float pressure) {
         }
     }
     const size_t n = std::min<size_t>(cold.size(), m_cfg.retiresPerFrame);
+    m_reviveBar = pressure;
     std::partial_sort(cold.begin(), cold.begin() + (ptrdiff_t)n, cold.end());
     for (size_t i = 0; i < n; ++i) {
         retire(std::get<1>(cold[i]), std::get<2>(cold[i]));
@@ -496,26 +728,44 @@ void Pager::rebalance(float pressure) {
 
 bool Pager::make_room(const std::function<bool()>& test) {
     // Candidates once a frame: resident, not a root, no resident page depending on it, and no frame in flight tracing it.
+    // With external feedback, lastUsed lags by the readback (a traced cut marks it every frame, so it stays within the
+    // lag while traced), and frames in flight may have taken any resident page into their cuts: a resident page only
+    // retires here, and its memory is freed once the frames before that have finished and no traced cut has held it
+    // for a while (an instance whose rebuild waits keeps tracing its last cut).
+    const uint64_t margin = m_geometry->frame_slots() + 2;
     if (!m_lruBuilt) {
         m_lruBuilt = true;
         m_lru.clear();
         m_lruNext = 0;
-        const uint64_t margin = m_geometry->frame_slots() + 2;
+        const uint64_t unused = m_external ? 2 * margin : margin;
         for (uint32_t mi = 0; mi < (uint32_t)m_meshes.size(); ++mi) {
             const Mesh& m = m_meshes[mi];
             for (uint32_t g = 0; g < (uint32_t)m.pages.size(); ++g) {
                 const Page& p = m.pages[g];
-                if ((p.state == State::Resident || p.state == State::Retiring) && !p.pinned && !p.dependents &&
-                    m_frame >= m.lod->lastUsed[g] + margin)
-                    m_lru.emplace_back(p.state == State::Retiring ? 0 : m.lod->lastUsed[g], mi, g);
+                if ((p.state != State::Resident && p.state != State::Retiring) || p.pinned || p.dependents) continue;
+                if (m_frame < m.lod->lastUsed[g] + unused) continue;
+                if (p.state == State::Retiring && m_external && m_frame < p.retiredAt + margin) continue;
+                m_lru.emplace_back(p.state == State::Retiring ? 0 : m.lod->lastUsed[g], mi, g);
             }
         }
         std::sort(m_lru.begin(), m_lru.end());
     }
     while (m_lruNext < m_lru.size()) {
-        const auto [used, mi, g] = m_lru[m_lruNext++];
+        const auto [used, mi, g] = m_lru[m_lruNext];
         const Page& p = m_meshes[mi].pages[g];
-        if ((p.state != State::Resident && p.state != State::Retiring) || p.dependents) continue;
+        if ((p.state != State::Resident && p.state != State::Retiring) || p.dependents) {
+            ++m_lruNext;
+            continue;
+        }
+        if (m_external && p.state == State::Resident) {
+            if (!m_retiresLeft) return false;
+            --m_retiresLeft;
+            ++m_lruNext;
+            retire(mi, g);
+            ++m_stats.retiredTotal;
+            continue;
+        }
+        ++m_lruNext;
         evict(mi, g);
         if (test()) return true;
     }
@@ -548,21 +798,75 @@ void Pager::load_roots(ID3D12GraphicsCommandList4* cl, const std::function<void(
     // In batches: read and place, build, then move tightly into the CLAS pool.
     constexpr uint64_t BATCH_STAGING = 256ull << 20;
     constexpr uint32_t BATCH_CLUSTERS = 1u << 16;
-    std::vector<uint8_t> data;
+    // Every mesh's micromaps, before any CLAS that references them; they stay.
+    uint64_t ommWanted = 0;
+    uint32_t ommMissing = 0;
+    {
+        uint64_t staging = 0, scratch = 0;
+        std::vector<uint64_t> at(m_meshes.size()), scratchAt(m_meshes.size());
+        for (size_t mi = 0; mi < m_meshes.size(); ++mi) {
+            Mesh& m = m_meshes[mi];
+            if (m.src.omm.descs.empty()) continue;
+            uint64_t result = 0, sc = 0, off = 0;
+            omm_prebuild(m.src.omm, result, sc);
+            ommWanted += result;
+            if (!m_ommAlloc.allocate(result / OMM_UNIT, off)) {
+                // Its alpha triangles fall back to any-hit tests.
+                ++ommMissing;
+                m.src.omm = PageOmm{};
+                continue;
+            }
+            m.ommArray = off;
+            m.ommUnits = result / OMM_UNIT;
+            at[mi] = staging = align(staging, OMM_UNIT);
+            staging += align(m.src.omm.raw.size(), 16) + m.src.omm.descs.size() * sizeof(D3D12_RAYTRACING_OPACITY_MICROMAP_DESC);
+            scratchAt[mi] = scratch;
+            scratch += sc;
+        }
+        if (staging) {
+            ComPtr<ID3D12Resource> stage = CreateBuffer(device, staging, D3D12_RESOURCE_FLAG_NONE,
+                                                        D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+            ComPtr<ID3D12Resource> scratchBuf = scratchBuffer(scratch);
+            uint8_t* mapped = nullptr;
+            D3D12_RANGE noRead{ 0, 0 };
+            ThrowIfFailed(stage->Map(0, &noRead, reinterpret_cast<void**>(&mapped)));
+            for (size_t mi = 0; mi < m_meshes.size(); ++mi) {
+                Mesh& m = m_meshes[mi];
+                if (m.src.omm.descs.empty()) continue;
+                const PageOmm& o = m.src.omm;
+                const uint64_t descs = at[mi] + align(o.raw.size(), 16);
+                std::memcpy(mapped + at[mi], o.raw.data(), o.raw.size());
+                std::memcpy(mapped + descs, o.descs.data(), o.descs.size() * sizeof(o.descs[0]));
+                omm_build(cl, o, stage->GetGPUVirtualAddress() + at[mi], stage->GetGPUVirtualAddress() + descs,
+                          m_ommPool->GetGPUVirtualAddress() + m.ommArray * OMM_UNIT,
+                          scratchBuf->GetGPUVirtualAddress() + scratchAt[mi]);
+            }
+            stage->Unmap(0, nullptr);
+            const D3D12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+            cl->ResourceBarrier(1, &b);
+            flush();
+        }
+        for (Mesh& m : m_meshes) m.src.omm = PageOmm{};
+    }
+
     for (size_t next = 0; next < roots.size();) {
         size_t end = next;
         uint64_t staging = 0, arena = 0, scratch = 0;
         uint32_t batchClusters = 0;
         std::vector<ClusterGeometry::Sizes> sz;
+        std::vector<std::vector<uint8_t>> data;
         while (end < roots.size()) {
-            const Mesh& m = m_meshes[roots[end].first];
+            Mesh& m = m_meshes[roots[end].first];
             const PageEntry& e = m.src.pages[roots[end].second];
             if (end > next && (staging + stagingBytes(e) > BATCH_STAGING || batchClusters + e.clusterCount > BATCH_CLUSTERS))
                 break;
             ClusterGeometry::Sizes s;
-            if (!m_geometry->prebuild(limits(m.src.spans.data() + e.firstCluster, e.clusterCount, 0, false), false, s))
+            if (!m_geometry->prebuild(page_limits(m.src, roots[end].second), e.alpha, s))
                 throw std::runtime_error("pager: CLAS prebuild query failed");
             sz.push_back(s);
+            std::vector<uint8_t>& d = data.emplace_back(e.bytes);
+            if (!read_at(m.file, e.offset, d.data(), e.bytes)) throw std::runtime_error("pager: cannot read " + m.src.path);
+            m_stats.readBytes += e.bytes;
             staging += stagingBytes(e);
             arena += s.clas;
             scratch += s.clasScratch;
@@ -587,12 +891,9 @@ void Pager::load_roots(ID3D12GraphicsCommandList4* cl, const std::function<void(
             const auto [mi, g] = roots[i];
             Mesh& m = m_meshes[mi];
             const PageEntry& e = m.src.pages[g];
-            data.resize(e.bytes);
-            if (!read_at(m.file, e.offset, data.data(), e.bytes)) throw std::runtime_error("pager: cannot read " + m.src.path);
-            m_stats.readBytes += e.bytes;
             if (!alloc_geometry(m, g, false))
                 throw std::runtime_error("pager: the page pool cannot hold the roots; raise RDN_PAGE_POOL_VERTS / RDN_PAGE_POOL_TRIS");
-            upload(m, g, data.data(), cl, stage.Get(), mapped, at, gpuMaterials);
+            upload(m, g, data[i - next].data(), cl, stage.Get(), mapped, at, gpuMaterials);
             at += stagingBytes(e);
         }
         const D3D12_RESOURCE_BARRIER toRead[2] = {
@@ -628,7 +929,7 @@ void Pager::load_roots(ID3D12GraphicsCommandList4* cl, const std::function<void(
             uint64_t bytes = 0;
             for (uint64_t s : p.sizes) bytes += s;
             moveOff[i - next] = moveScratch;
-            moveScratch += m_geometry->move_scratch(e.clusterCount, bytes, false, true);
+            moveScratch += m_geometry->move_scratch(e.clusterCount, bytes, e.alpha, true);
         }
         scratchBuf = scratchBuffer(moveScratch);
         m_geometry->begin(slot, cl);
@@ -666,6 +967,8 @@ void Pager::load_roots(ID3D12GraphicsCommandList4* cl, const std::function<void(
     for (uint32_t mi = 0; mi < (uint32_t)m_meshes.size(); ++mi)
         if (out[mi]) blas(mi, out[mi]);
     m_stats.pinned = (uint32_t)roots.size();
+    std::printf("[pager] micromaps %.1f MB in a %.0f MB pool%s\n", (double)ommWanted / 1048576.0,
+                (double)m_cfg.ommPoolBytes / 1048576.0, ommMissing ? "; some meshes did not fit and test alpha in any-hit" : "");
     std::printf("[pager] %u meshes, %u pages; %u roots loaded (%.2fM triangles), CLAS pool %.1f of %.0f MB\n",
                 m_stats.meshes, m_stats.pages, m_stats.pinned, (double)m_stats.residentTris / 1e6,
                 (double)(m_clasAlloc.used() * CLAS_UNIT) / 1048576.0, (double)m_cfg.clasPoolBytes / 1048576.0);
@@ -694,7 +997,9 @@ void Pager::moves(uint64_t frame) {
     m_stats.installed = m_stats.evicted = m_stats.dropped = 0;
     m_lruBuilt = false;
     m_starved = false;
-    for (Mesh& m : m_meshes) std::fill(m.lod->want.begin(), m.lod->want.end(), 0.0f);
+    m_retiresLeft = m_cfg.retiresPerFrame;
+    if (!m_external)
+        for (Mesh& m : m_meshes) std::fill(m.lod->want.begin(), m.lod->want.end(), 0.0f);
     const uint32_t slot = m_geometry->slot();
     Arena& a = m_arenas[slot % m_arenas.size()];
     a.used = a.scratchUsed = a.stagingUsed = 0;
@@ -714,13 +1019,15 @@ void Pager::moves(uint64_t frame) {
     }
 }
 
-bool Pager::install(uint32_t mi, uint32_t g, ID3D12GraphicsCommandList* copy, Arena& a, uint32_t* gpuMaterials) {
+bool Pager::install(uint32_t mi, uint32_t g, ID3D12GraphicsCommandList* copy, ID3D12GraphicsCommandList4* compute,
+                    Arena& a, uint32_t* gpuMaterials) {
     Mesh& m = m_meshes[mi];
     const PageEntry& e = m.src.pages[g];
     Page& p = m.pages[g];
     // This frame's room first: arena, scratch, staging, arguments.
+    (void)compute;
     ClusterGeometry::Sizes sz;
-    if (!m_geometry->prebuild(limits(m.src.spans.data() + e.firstCluster, e.clusterCount, 0, false), false, sz)) return false;
+    if (!m_geometry->prebuild(page_limits(m.src, g), e.alpha, sz)) return false;
     const uint64_t staging = ((uint64_t)e.vertexCount * sizeof(BTriVertex) + 3ull * e.triCount * sizeof(uint32_t) + 15) & ~15ull;
     if (a.used + sz.clas > m_cfg.arenaBytes || a.scratchUsed + sz.clasScratch > m_cfg.arenaBytes / 4 ||
         a.stagingUsed + staging > m_cfg.stagingBytes || !m_geometry->can_queue(e.clusterCount, false))
@@ -744,7 +1051,7 @@ bool Pager::install(uint32_t mi, uint32_t g, ID3D12GraphicsCommandList* copy, Ar
     return true;
 }
 
-void Pager::installs(std::vector<LodRequest>& requests, ID3D12GraphicsCommandList* copy) {
+void Pager::installs(std::vector<LodRequest>& requests, ID3D12GraphicsCommandList* copy, ID3D12GraphicsCommandList4* compute) {
     std::deque<Read> done;
     {
         std::lock_guard<std::mutex> lk(m_ioMutex);
@@ -772,8 +1079,12 @@ void Pager::installs(std::vector<LodRequest>& requests, ID3D12GraphicsCommandLis
             if (m_reading + m_read.size() >= m_cfg.readsInFlight) break;
             Mesh& m = m_meshes[q.mesh];
             Page& p = m.pages[q.group];
-            if (p.state == State::Retiring) { // still in memory: back into the cuts
-                make_resident(q.mesh, q.group);
+            if (p.state == State::Retiring) { // still in memory: back into the cuts, once its deps are
+                bool ready = true;
+                for (uint32_t d = m.lod->depFirst[q.group]; d < m.lod->depFirst[q.group + 1] && ready; ++d)
+                    ready = m.lod->resident[m.lod->deps[d]] != 0;
+                // Not one the pools just gave up for better pages.
+                if (ready && q.priority * 2.0f >= m_reviveBar) make_resident(q.mesh, q.group);
                 continue;
             }
             if (p.state != State::Absent) continue;
@@ -810,7 +1121,7 @@ void Pager::installs(std::vector<LodRequest>& requests, ID3D12GraphicsCommandLis
                 continue;
             }
             if (full || m_starved || m_stats.installed >= m_cfg.installsPerFrame ||
-                !install(mi, g, copy, a, gpuMaterials)) {
+                !install(mi, g, copy, compute, a, gpuMaterials)) {
                 full = !m_starved;
                 ++i;
                 continue;
@@ -821,15 +1132,6 @@ void Pager::installs(std::vector<LodRequest>& requests, ID3D12GraphicsCommandLis
         }
         if (matBuf) matBuf->Unmap(0, nullptr);
     }
-    if (m_starved) {
-        float pressure = 0.0f;
-        for (const LodRequest& q : requests)
-            if (m_meshes[q.mesh].pages[q.group].state != State::Resident) {
-                pressure = q.priority;
-                break;
-            }
-        if (pressure > 0.0f) rebalance(pressure);
-    }
     m_stats.droppedTotal += m_stats.dropped;
     m_stats.reading = m_reading + (uint32_t)m_read.size();
     m_stats.building = (uint32_t)m_inFlight.size();
@@ -839,6 +1141,72 @@ void Pager::installs(std::vector<LodRequest>& requests, ID3D12GraphicsCommandLis
     m_stats.trisCapacity = m_geo.triAlloc->capacity();
     m_stats.vertsUsed = m_geo.vertexAlloc->used();
     m_stats.vertsCapacity = m_geo.vertexAlloc->capacity();
+
+    // What the cuts need: the pages they used lately or bring in with the deps that hold them up, and the absent ones
+    // they ask for (their CLAS at the pool's present bytes per triangle). Pages kept only because nothing needed their
+    // room yet do not count.
+    const uint64_t recent = (m_geometry->frame_slots() + 2) * (m_external ? 2 : 1);
+    uint64_t tris = 0, verts = 0, clasUnits = 0, wantedTris = 0;
+    uint32_t retiring = 0;
+    thread_local std::vector<uint8_t> needed;
+    thread_local std::vector<uint32_t> stack;
+    for (const Mesh& m : m_meshes) {
+        needed.assign(m.pages.size(), 0);
+        stack.clear();
+        for (uint32_t g = 0; g < (uint32_t)m.pages.size(); ++g) {
+            const Page& p = m.pages[g];
+            retiring += p.state == State::Retiring;
+            if (p.state == State::Building || p.state == State::Built ||
+                (p.state == State::Resident && (p.pinned || m_frame < m.lod->lastUsed[g] + recent))) {
+                needed[g] = 1;
+                stack.push_back(g);
+            }
+        }
+        while (!stack.empty()) {
+            const uint32_t g = stack.back();
+            stack.pop_back();
+            for (uint32_t i = m.lod->depFirst[g]; i < m.lod->depFirst[g + 1]; ++i)
+                if (!needed[m.lod->deps[i]] && m.pages[m.lod->deps[i]].state == State::Resident) {
+                    needed[m.lod->deps[i]] = 1;
+                    stack.push_back(m.lod->deps[i]);
+                }
+        }
+        for (uint32_t g = 0; g < (uint32_t)m.pages.size(); ++g)
+            if (needed[g]) {
+                tris += m.src.pages[g].triCount;
+                verts += m.src.pages[g].vertexCount;
+                clasUnits += m.pages[g].clasUnits;
+            }
+    }
+    thread_local std::unordered_set<uint64_t> counted;
+    counted.clear();
+    for (const LodRequest& q : requests) {
+        const State st = m_meshes[q.mesh].pages[q.group].state;
+        if ((st != State::Absent && st != State::Reading && st != State::Read) ||
+            !counted.insert((uint64_t)q.mesh << 32 | q.group).second)
+            continue;
+        wantedTris += m_meshes[q.mesh].src.pages[q.group].triCount;
+        verts += m_meshes[q.mesh].src.pages[q.group].vertexCount;
+    }
+    const double clasPerTri = m_stats.trisUsed ? (double)m_stats.clasUsed / (double)m_stats.trisUsed : 0.0;
+    auto share = [](double used, uint64_t capacity) { return capacity ? (float)(used / (double)capacity) : 0.0f; };
+    m_stats.pressure = std::max({ share((double)(tris + wantedTris), m_stats.trisCapacity),
+                                  share((double)verts, m_stats.vertsCapacity),
+                                  share((double)clasUnits * CLAS_UNIT + (double)wantedTris * clasPerTri,
+                                        m_stats.clasCapacity) });
+
+    // Starved: leaves wanted far less than the best waiting page leave the cuts. With external feedback, not while
+    // pages already retired wait out the frames in flight before their memory frees.
+    if (m_starved && !(m_external && retiring)) {
+        float pressure = 0.0f;
+        for (const LodRequest& q : requests)
+            if (m_meshes[q.mesh].pages[q.group].state != State::Resident) {
+                pressure = q.priority;
+                break;
+            }
+        if (pressure > 0.0f) rebalance(pressure);
+    }
+    if (!m_starved) m_reviveBar = 0.0f;
 }
 
 void Pager::on_submitted(uint64_t computeFence) {

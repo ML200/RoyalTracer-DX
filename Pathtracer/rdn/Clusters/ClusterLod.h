@@ -1,14 +1,15 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 #include "ClusterGeometry.h"
 
 namespace clusters {
 
 constexpr uint32_t LOD_NONE = ~0u, NO_REGION = ~0u;
-// Smaller regions are not worth a hierarchy.
-constexpr uint32_t MIN_LOD_TRIS = 4 * MAX_TRIS;
+// Every region gets a hierarchy, down to a single cluster.
+constexpr uint32_t MIN_LOD_TRIS = 1;
 
 // Hierarchies for scene meshes: with clustered geometry, unless RDN_LOD=0.
 bool lod_enabled();
@@ -51,6 +52,18 @@ struct Lod {
     bool is_resident(uint32_t group) const { return !paged || resident[group]; }
 };
 
+// Each hierarchy cluster's level: 0 for original triangles, one above the deepest cluster of the group simplified
+// into it otherwise.
+void lod_levels(const Lod& lod, std::vector<uint8_t>& levels);
+
+// A page entering a hierarchy's cuts (its clusters' CLAS addresses with it) or leaving them, for whoever mirrors
+// residency elsewhere.
+struct ResidencyChange {
+    Lod* lod;
+    uint32_t group, firstCluster, clusterCount;
+    bool resident;
+};
+
 // A page a cut would refine into: not resident, with its deps resident. priority: how far over the error budget the
 // coarser level it replaces is.
 struct LodRequest {
@@ -66,9 +79,13 @@ struct LodSource {
     const uint32_t* indices = nullptr;
     const uint32_t* regions = nullptr; // per triangle
     uint32_t triCount = 0;
+    // Foliage regions (alpha-tested cards): their simplification dilates open borders against area loss and keeps the
+    // folds of double-sided sheets.
+    std::function<bool(uint32_t region)> foliage;
 };
 struct LodBuild {
     std::vector<uint32_t> indices; // the hierarchy's triangles, cluster after cluster: cluster k is spans[k]
+    std::vector<float> positions;  // per entry of indices: its vertex's position as that cluster has it (dilation moves them)
     std::vector<uint32_t> regions; // per triangle of indices
     std::vector<Span> spans;       // firstTri counts from indices' first triangle
     std::vector<LodCluster> clusters;

@@ -50,16 +50,16 @@ void order_cells(const std::vector<Vertex>& vertices, std::vector<UINT>& indices
 }
 } // namespace
 
-bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase) {
+bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase, std::function<bool(uint32_t)> foliage,
+                            decltype(clusters::BakeMesh::opacity) opacity) {
     using clusters::NO_REGION;
     const UINT triCount = (UINT)(cpuIndices.size() / 3);
     regions.resize(triCount, NO_REGION);
-    std::fill(regions.begin() + opaqueTriCount, regions.end(), NO_REGION);
     std::unordered_map<uint32_t, uint32_t> regionTris;
-    for (UINT t = 0; t < opaqueTriCount; ++t)
+    for (UINT t = 0; t < triCount; ++t)
         if (regions[t] != NO_REGION) ++regionTris[regions[t]];
     UINT lodSourceTris = 0;
-    for (UINT t = 0; t < opaqueTriCount; ++t) {
+    for (UINT t = 0; t < triCount; ++t) {
         if (regions[t] != NO_REGION && regionTris[regions[t]] < clusters::MIN_LOD_TRIS) regions[t] = NO_REGION;
         lodSourceTris += regions[t] != NO_REGION ? 1u : 0u;
     }
@@ -69,7 +69,7 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
     }
 
     // The page file is named after what it is built from: vertices, triangles and their model-relative regions.
-    uint64_t key = 0xcbf29ce484222325ull ^ 1u; // FNV-1a over words; the xor is the bake's version
+    uint64_t key = 0xcbf29ce484222325ull ^ 4u; // FNV-1a over words; the xor is the page format version
     auto mix = [&](const void* data, size_t bytes) {
         const uint8_t* p = static_cast<const uint8_t*>(data);
         for (; bytes >= 8; bytes -= 8, p += 8) {
@@ -98,6 +98,7 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
     src.indices = cpuIndices.data();
     src.regions = regions.data();
     src.triCount = triCount;
+    src.foliage = foliage;
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
         clusters::LodBuild b;
@@ -106,7 +107,7 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
             OrderForClusters();
             return false;
         }
-        const clusters::BakeMesh bake{ src.vertices, src.stride, src.normalOffset, src.uvOffset, materialBase };
+        const clusters::BakeMesh bake{ src.vertices, src.stride, src.normalOffset, src.uvOffset, materialBase, opacity };
         if (!clusters::write_pages(path, b, bake)) {
             std::printf("[pager] cannot write %s; this mesh keeps every level resident\n", path.c_str());
             return BuildClusterLod(std::move(regions));
@@ -136,6 +137,7 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
     vertexCount = (UINT)cpuVertices.size();
     indexCount = (UINT)cpuIndices.size();
     opaqueTriCount = fixedOpaque;
+    alphaTriCount = indexCount / 3 - fixedOpaque;
     clusterCuts.clear();
     std::vector<UINT> cuts;
     order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, 0, opaqueTriCount, cuts);
@@ -147,6 +149,7 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
     pagedSource = std::make_shared<clusters::PagedSource>();
     if (!clusters::read_pages(path, lod, *pagedSource)) throw std::runtime_error("cannot read page file " + path);
     pagedSource->materialBase = materialBase;
+    lodAlpha = std::any_of(pagedSource->pages.begin(), pagedSource->pages.end(), [](const clusters::PageEntry& e) { return e.alpha; });
     paged = true;
     return true;
 }
@@ -292,6 +295,34 @@ void Scene::ReserveOcean(UINT vertexElems, UINT indexElems, UINT matIDElems, UIN
     }
     materialNames.resize(materials.size());
     materialNames[oceanMatIndex] = "Water";
+}
+
+void Scene::ReserveInstanceSets(UINT slots) {
+    if (setSlots >= slots)
+        return;
+    setSlots = 0;
+    setPropsBase = instancePropsCount();
+    setSlots = slots;
+}
+
+void Scene::WriteSetRecord(UINT slot, UINT meshIndex) {
+    const MeshGPU& mesh = meshes[meshIndex];
+    InstanceProperties p = {};
+    p.objectToWorld = MakeFloat3x4(XMMatrixIdentity());
+    p.objectToWorldInverse = p.objectToWorld;
+    p.objectToWorldNormal = p.objectToWorld;
+    p.prevObjectToWorld = p.objectToWorld;
+    p.indexBase = mesh.globalIndexBase;
+    p.vertexBase = mesh.globalVertexBase;
+    p.materialBase = mesh.materialIDBase;
+    p.opaqueTriCount = mesh.opaqueTriCount;
+    p.triToLightBase = 0xFFFFFFFFu;
+    p.lightSlot = 0xFFFFFFFFu;
+    uint8_t* dst = nullptr;
+    const CD3DX12_RANGE noRead(0, 0);
+    ThrowIfFailed(instanceProperties->Map(0, &noRead, reinterpret_cast<void**>(&dst)));
+    std::memcpy(dst + (size_t)(setPropsBase + slot) * sizeof(InstanceProperties), &p, sizeof(p));
+    instanceProperties->Unmap(0, nullptr);
 }
 
 void Scene::ReserveRocks(UINT instanceSlots) {
@@ -647,8 +678,8 @@ void Scene::RebuildTLASInstanceList() {
 
         UINT hitGroupContrib = static_cast<UINT>(i) * 2;
 
-        auto flags = (mesh.alphaTriCount == 0) ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
-                                               : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+        auto flags = (mesh.alphaTriCount == 0 && !mesh.lodAlpha) ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
+                                                                 : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
 
         XMMATRIX shifted = si.worldTransform;
         shifted.r[3] = XMVectorSubtract(shifted.r[3], shift);

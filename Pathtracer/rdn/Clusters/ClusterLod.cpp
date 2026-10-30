@@ -23,6 +23,7 @@ struct RegionLod {
     uint32_t region = NO_REGION;
     std::vector<uint32_t> tris;    // the region's triangles in the mesh
     std::vector<uint32_t> indices; // the hierarchy's triangles, in mesh vertex indices
+    std::vector<float> positions;  // per entry of indices, as its group was emitted
     std::vector<RegionCluster> clusters;
     std::vector<LodGroup> groups;
 };
@@ -66,7 +67,12 @@ void build_region(const LodSource& src, const std::vector<uint8_t>& locked, cons
     mesh.attribute_weights = weights;
     mesh.attribute_count = 3;
     mesh.attribute_protect_mask = (1u << 3) | (1u << 4);
-    const clodConfig config = clodDefaultConfigRT(MAX_TRIS);
+    clodConfig config = clodDefaultConfigRT(MAX_TRIS);
+    if (src.foliage && src.foliage(r.region)) {
+        // Dilation moves positions in place, so each group's are copied as it is emitted.
+        config.simplify_dilate_borders = true;
+        config.simplify_preserve_folds = true;
+    }
 
     clodBuild(config, mesh, [&](clodGroup group, const clodCluster* cl, size_t count) -> int {
         const uint32_t g = (uint32_t)r.groups.size();
@@ -75,7 +81,10 @@ void build_region(const LodSource& src, const std::vector<uint8_t>& locked, cons
         for (size_t i = 0; i < count; ++i) {
             RegionCluster c{ (uint32_t)(r.indices.size() / 3), (uint32_t)(cl[i].index_count / 3), (uint32_t)cl[i].vertex_count,
                              g, cl[i].refined < 0 ? LOD_NONE : (uint32_t)cl[i].refined };
-            for (size_t k = 0; k < cl[i].index_count; ++k) r.indices.push_back(verts[cl[i].indices[k]]);
+            for (size_t k = 0; k < cl[i].index_count; ++k) {
+                r.indices.push_back(verts[cl[i].indices[k]]);
+                r.positions.insert(r.positions.end(), &pos[cl[i].indices[k] * 3ull], &pos[cl[i].indices[k] * 3ull] + 3);
+            }
             r.clusters.push_back(c);
         }
         return (int)g;
@@ -136,6 +145,8 @@ void build_lod(const LodSource& src, LodBuild& out) {
         out.spans.push_back(Span{ (uint32_t)(out.indices.size() / 3), (uint16_t)c.triCount, (uint16_t)c.vertexCount });
         out.clusters.push_back(LodCluster{ base + c.group, c.refined == LOD_NONE ? LOD_NONE : base + c.refined });
         out.indices.insert(out.indices.end(), r.indices.begin() + 3ull * c.firstTri, r.indices.begin() + 3ull * (c.firstTri + c.triCount));
+        out.positions.insert(out.positions.end(), r.positions.begin() + 9ull * c.firstTri,
+                             r.positions.begin() + 9ull * (c.firstTri + c.triCount));
         out.regions.insert(out.regions.end(), c.triCount, r.region);
     };
     for (const RegionLod& r : regions) {
@@ -149,6 +160,24 @@ void build_lod(const LodSource& src, LodBuild& out) {
     for (const auto& [r, base] : later)
         for (const RegionCluster& c : r->clusters)
             if (c.refined != LOD_NONE) emit(*r, c, base);
+}
+
+void lod_levels(const Lod& lod, std::vector<uint8_t>& levels) {
+    // A cluster joins a group output after the one it was simplified from, so groups in order see final levels.
+    const uint32_t n = (uint32_t)lod.clusters.size(), groups = (uint32_t)lod.groups.size();
+    std::vector<uint32_t> first(groups + 1, 0), members(n);
+    for (const LodCluster& c : lod.clusters) ++first[c.group + 1];
+    for (uint32_t g = 0; g < groups; ++g) first[g + 1] += first[g];
+    std::vector<uint32_t> at(first.begin(), first.end() - 1);
+    for (uint32_t c = 0; c < n; ++c) members[at[lod.clusters[c].group]++] = c;
+    std::vector<uint8_t> groupLevel(groups, 0);
+    levels.assign(n, 0);
+    for (uint32_t g = 0; g < groups; ++g)
+        for (uint32_t i = first[g]; i < first[g + 1]; ++i) {
+            const uint32_t c = members[i], r = lod.clusters[c].refined;
+            levels[c] = r == LOD_NONE ? 0 : (uint8_t)std::min(255, groupLevel[r] + 1);
+            groupLevel[g] = std::max(groupLevel[g], levels[c]);
+        }
 }
 
 void select_cut(const Lod& lod, const LodView& v, std::vector<uint32_t>& cut, std::vector<LodRequest>* requests) {

@@ -58,8 +58,8 @@ target_include_directories(DirectXTex PUBLIC
 target_compile_features(DirectXTex PUBLIC cxx_std_17)
 target_link_libraries(DirectXTex PUBLIC dxguid ole32)
 
-# meshoptimizer 1.1 (MIT): clustering and simplification for the cluster LOD hierarchy; demo/clusterlod.h builds it.
-set(MESHOPT_ROOT "${CMAKE_SOURCE_DIR}/third_party/meshoptimizer-1.1")
+# meshoptimizer 1.3 (MIT): clustering and simplification for the cluster LOD hierarchy; demo/clusterlod.h builds it.
+set(MESHOPT_ROOT "${CMAKE_SOURCE_DIR}/third_party/meshoptimizer-1.3")
 file(GLOB MESHOPT_SOURCES "${MESHOPT_ROOT}/src/*.cpp")
 add_library(meshoptimizer STATIC ${MESHOPT_SOURCES})
 target_include_directories(meshoptimizer PUBLIC "${MESHOPT_ROOT}/src" "${MESHOPT_ROOT}/demo")
@@ -200,6 +200,10 @@ add_executable(Pathtracer WIN32
         rdn/Clusters/ClusterLod.cpp
         rdn/Clusters/ClusterPages.h
         rdn/Clusters/ClusterPages.cpp
+        rdn/Clusters/LodGpu.h
+        rdn/Clusters/LodGpu.cpp
+        rdn/Clusters/InstanceSets.h
+        rdn/Clusters/InstanceSets.cpp
         rdn/Renderer_Minecraft.cpp
 
         engine/Core/Transform.h

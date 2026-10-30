@@ -119,12 +119,13 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
         if (LoadIsThinGlass(hm))
         {
             tint *= LoadTf(hm);
-            const float3 geoN = CandidateGeoNormalW(hi, hp);
+            const float3 geoN = CandidateGeoNormalW(hi, hp, q.CommittedObjectToWorld3x4());
             ro = offset_ray(hpos, (dot(vdir, geoN) >= 0.0f) ? geoN : -geoN);
             continue;
         }
 
-        HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), ro, PixelConeAngle() * pathLength);
+        HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), q.CommittedObjectToWorld3x4(), ro,
+                                      PixelConeAngle() * pathLength);
         float3 bKd; float bPr, bPm;
         RefetchMaterial(hm, bh, bKd, bPr, bPm);
         g.x = bh.hitPos; g.n = bh.hitNormal; g.Kd = bKd * tint; g.Pr = bPr; g.Pm = bPm;
@@ -181,7 +182,7 @@ OceanBelow ResolveOceanBelow(SurfaceVertex sv, float3 transmitted, float3 camPos
     const uint  hm   = GetMatIDFast(hi, hp);
     const float dist = q.CommittedRayT();
 
-    HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), r.Origin,
+    HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), q.CommittedObjectToWorld3x4(), r.Origin,
                                   PixelConeAngle() * (length(sv.x - camPos) + dist));
     float3 bKd; float bPr, bPm;
     RefetchMaterial(hm, bh, bKd, bPr, bPm);

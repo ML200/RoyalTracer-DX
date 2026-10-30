@@ -49,6 +49,20 @@ public:
     // Partitioned: the last build's instance writes, and partitions in use.
     uint32_t        writes()         const { return m_lastWrites; }
     uint32_t        partitions_used() const { return (uint32_t)m_cellPartition.size(); }
+    // Partitioned: the instance IDs the last build wrote.
+    const std::vector<uint32_t>& written() const { return m_written; }
+    // Partitioned: instances and partitions the GPU writes (build_gpu_ops), after the CPU's own. Changing them starts a
+    // new structure, as growth does; generation() then changes, and their writer writes them all again.
+    void reserve_external(uint32_t instances, uint32_t partitions);
+    uint32_t external_instance_base() const { return m_cpuCapacity; }
+    uint32_t external_partition_base() const;
+    uint32_t external_instances() const { return m_extInstances; }
+    uint32_t generation() const { return m_generation; }
+#if RDN_CLUSTER_API
+    // Partitioned, after build: a second in-place build of operations the GPU wrote (opsVa: the operations, countVa:
+    // their count), applied over the CPU's writes. Their arguments may only update instances the TLAS holds enabled.
+    void build_gpu_ops(ID3D12GraphicsCommandList4* cmd, D3D12_GPU_VIRTUAL_ADDRESS opsVa, D3D12_GPU_VIRTUAL_ADDRESS countVa);
+#endif
 
 private:
     // Partitioned TLAS state.
@@ -89,6 +103,10 @@ private:
     std::vector<uint32_t> m_partitionCount, m_freePartitions;
     uint32_t m_globalCount = 0;
     uint32_t m_lastWrites = 0;
+    std::vector<uint32_t> m_written;
+    uint32_t m_cpuCapacity = 0;                    // instance indices the CPU writes; the external ones follow
+    uint32_t m_extInstances = 0, m_extPartitions = 0;
+    uint32_t m_generation = 0;
 
     ComPtr<ID3D12Device5> m_device;
     ComPtr<ID3D12Resource> m_result;

@@ -1,6 +1,7 @@
 #include "../stdafx.h"
 #include "Editor.h"
 #include "../../shaders/OceanLayout.h"
+#include "../../shaders/DlssGuideLayout.h"
 #include <unordered_set>
 
 namespace {
@@ -107,6 +108,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
         if (ImGui::BeginMenu("Diagnostics")) {
             ImGui::MenuItem("Render passes", nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS buffers", nullptr, &m_showDlssInputs);
+            ImGui::MenuItem("Virtual geometry", nullptr, &m_showVirtualGeometry);
             ImGui::MenuItem("Performance", nullptr, &m_showPerformance);
             ImGui::EndMenu();
         }
@@ -147,6 +149,8 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
         DrawDlssInputsPanel(restir, dlss);
     if (!m_showDlssInputs)
         restir.dlssDebugLayer = 0;
+    if (m_showVirtualGeometry)
+        DrawVirtualGeometryPanel(restir, stats);
     if (m_showIntegrator)
         DrawIntegratorPanel(restir, stats);
     if (m_showSun)
@@ -1624,6 +1628,63 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
     ImGui::PopItemWidth();
     ImGui::End();
 }
+void Editor::DrawVirtualGeometryPanel(IntegratorSettings& rs, const FrameStats& stats) {
+    if (!ImGui::Begin("Virtual geometry", &m_showVirtualGeometry)) {
+        ImGui::End();
+        return;
+    }
+    static const char* views[] = {"Off", "Clusters", "LOD level", "Triangles", "Triangle size", "Instances", "Residency"};
+    ImGui::Combo("View", &rs.geometryView, views, IM_ARRAYSIZE(views));
+    switch (rs.geometryView) {
+    case GEOMETRY_VIEW_LOD_LEVEL:
+        ImGui::TextDisabled("Blue: full detail, towards red: coarser levels. Magenta: kept out of the hierarchy "
+                            "(alpha, emissive, small parts). Grey: no hierarchy.");
+        break;
+    case GEOMETRY_VIEW_TRIANGLE_SIZE:
+        ImGui::TextDisabled("Triangle size on screen: blue 1/4 px, green 1 px, yellow 4 px, red 16 px and more.");
+        break;
+    case GEOMETRY_VIEW_RESIDENCY:
+        ImGui::TextDisabled("Blue: every level in memory, orange: root page, green: streamed page, magenta: kept "
+                            "out of the hierarchy, grey: no hierarchy.");
+        break;
+    default:
+        break;
+    }
+    ImGui::SliderFloat("Error budget (px)", &rs.lodErrorPixels, 0.25f, 32.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+
+    const auto& v = stats.vgeo;
+    ImGui::SeparatorText("Cuts");
+    ImGui::Text("%u instances with a hierarchy", v.lodInstances);
+    ImGui::Text("%llu clusters traced (%llu in the meshes' own BLAS)", (unsigned long long)v.cutClusters,
+                (unsigned long long)v.baseClusters);
+    if (v.gpu)
+        ImGui::Text("Chosen on the GPU: %u cluster BLAS built, %u TLAS instances updated", v.builds, v.tlasUpdates);
+    else
+        ImGui::Text("%u cluster BLAS built this frame, %u deferred", v.builds, v.deferred);
+    if (v.sets) {
+        ImGui::SeparatorText("Instance sets");
+        ImGui::Text("%u sets, %llu instances (%llu in the TLAS), %.1f MB", v.sets, (unsigned long long)v.setInstances,
+                    (unsigned long long)v.setWritten, (double)v.setBytes / 1048576.0);
+        ImGui::Text("%u TLAS writes, %u updates; %u of %u cells visited", v.setWrites, v.setUpdates, v.setActiveCells,
+                    v.setCells);
+        ImGui::Text("%u instances expanded into their parts", v.setExpanded);
+    }
+    if (v.paged) {
+        ImGui::Text("Error budget x%.2f: the cuts use %.0f%% of the tightest pool", v.errorScale, 100.0f * v.pressure);
+        ImGui::SeparatorText("Streaming");
+        ImGui::Text("%u of %u pages resident (%u roots), %.2fM triangles", v.resident, v.pages, v.roots,
+                    (double)v.residentTris / 1e6);
+        ImGui::ProgressBar(v.poolTrisCapacity ? (float)((double)v.poolTris / (double)v.poolTrisCapacity) : 0.0f,
+                           ImVec2(-1, 0), "triangle pool");
+        ImGui::ProgressBar(v.clasCapacity ? (float)((double)v.clasBytes / (double)v.clasCapacity) : 0.0f, ImVec2(-1, 0),
+                           "CLAS pool");
+        ImGui::Text("%u reading, %u building; %.1f MB read", v.reading, v.building, (double)v.readBytes / 1048576.0);
+        ImGui::Text("%llu installed, %llu retired, %llu evicted", (unsigned long long)v.installed,
+                    (unsigned long long)v.retired, (unsigned long long)v.evicted);
+    }
+    ImGui::End();
+}
+
 void Editor::DrawDlssInputsPanel(IntegratorSettings& rs, DLSSManager& dlss) {
     ImGui::SetNextWindowSize(ImVec2(430, 480), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("DLSS buffers###DLSS Inputs", &m_showDlssInputs)) {

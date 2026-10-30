@@ -24,6 +24,7 @@ struct InstanceProperties
 struct ClusterRecord
 {
     uint triBase; // the cluster's first triangle among its instance's flat triangles
+    uint info;    // CLUSTER_INFO_*: hierarchy level and kind, for the virtual geometry view
 };
 
 struct LightTriangle {

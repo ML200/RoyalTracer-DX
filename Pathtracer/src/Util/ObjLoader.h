@@ -131,6 +131,7 @@ inline std::vector<uint8_t> DecodeBase64(const char* in, size_t len) {
 using namespace DirectX;
 
 struct LoadedMesh {
+    std::string name; // the glTF mesh's, if any
     std::vector<Vertex> vertices;
     std::vector<UINT> indices;
     std::vector<UINT> perTriMaterialIDs;
@@ -1618,6 +1619,7 @@ class ObjLoader {
                 continue;
             const tg3_mesh& mesh = model.meshes[mi];
             LoadedMesh lm;
+            lm.name = tg3_to_string(mesh.name);
             std::unordered_map<Vertex, uint32_t> uniqueVerts;
 
             for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {

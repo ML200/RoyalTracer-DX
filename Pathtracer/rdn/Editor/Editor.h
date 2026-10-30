@@ -42,6 +42,7 @@ class Editor {
     void DrawDLSSNRPanel(DLSSNRManager& nr);
 
     void DrawDlssInputsPanel(IntegratorSettings& restir, DLSSManager& dlss);
+    void DrawVirtualGeometryPanel(IntegratorSettings& restir, const FrameStats& stats);
     void DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir, mc::VoxelStreamer* voxels);
     void DrawIntegratorPanel(IntegratorSettings& restir, const FrameStats& stats);
     void DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats, mc::VoxelStreamer* voxels);
@@ -60,6 +61,7 @@ class Editor {
     bool m_showDLSS = false;
     bool m_showDLSSNR = false;
     bool m_showDlssInputs = false;
+    bool m_showVirtualGeometry = false;
     bool m_showIntegrator = false;
     bool m_showInactivePasses = false;
     bool m_showSun = false;

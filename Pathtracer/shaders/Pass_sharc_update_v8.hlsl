@@ -567,7 +567,7 @@ void Pass_sharc_update_v8()
                 const float spreadHere = (ps & PT_PS_SPREAD) != 0u
                     ? hitT_n * sqrt(min(16.0f, rcp(max(prev_pdf, 1e-6f)))) : 0.0f;
                 const float beam = PixelConeAngle() * float(sharc_updateStride) * (pathDist + hitT_n) + pathSpread + spreadHere;
-                hinfo_n = EvalSurfaceStateDir(instID_n, primID_n, bary_n, rayDir, beam);
+                hinfo_n = EvalSurfaceStateDir(instID_n, primID_n, bary_n, hit.toWorld, rayDir, beam);
                 pathDist += hitT_n;
             }
             hitPos_n = hinfo_n.hitPos;

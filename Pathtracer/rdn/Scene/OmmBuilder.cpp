@@ -299,6 +299,127 @@ void OmmBuilder::BakeAll(std::vector<MeshGPU>& meshes, const MaterialSoA& materi
                                 << L" ms");
 }
 
+OmmPageBaker::OmmPageBaker(const MaterialSoA& materials, std::function<const Image*(int)> albedo)
+    : m_materials(materials), m_albedo(std::move(albedo)) {
+    ommBakerCreationDesc desc{};
+    desc.type = ommBakerType_CPU;
+    ommBaker baker = nullptr;
+    if (ommCreateBaker(&desc, &baker) == ommResult_SUCCESS)
+        m_baker = baker;
+}
+
+OmmPageBaker::~OmmPageBaker() {
+    for (auto& [id, t] : m_textures)
+        if (t.handle)
+            ommCpuDestroyTexture((ommBaker)m_baker, (ommCpuTexture)t.handle);
+    if (m_baker)
+        ommDestroyBaker((ommBaker)m_baker);
+}
+
+void OmmPageBaker::Bake(uint32_t material, int maxLevel, const float* uvs, uint32_t vertexCount, const uint32_t* indices,
+                        uint32_t triCount, clusters::PageOmm& out) {
+    out = {};
+    const bool thinGlass = material < m_materials.thinGlass.size() && m_materials.thinGlass[material] != 0u;
+    if (thinGlass || m_materials.Kd[material].w < 1.0f) {
+        out.indices.assign(triCount, D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_UNKNOWN_OPAQUE);
+        return;
+    }
+    out.indices.assign(triCount, D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_OPAQUE);
+    const int texID = m_materials.albedoTexID[material];
+    const Image* img = texID >= 0 ? m_albedo(texID) : nullptr;
+    if (!m_baker || !img)
+        return;
+    const float threshold = m_materials.alphaThreshold[material];
+    Texture& tex = m_textures[texID];
+    if (tex.alpha.empty()) {
+        tex.alpha = ExtractAlphaChannel(*img);
+        for (uint8_t a : tex.alpha) {
+            tex.lo = std::min(tex.lo, a);
+            tex.hi = std::max(tex.hi, a);
+        }
+        ommCpuTextureMipDesc mip{};
+        mip.width = (uint32_t)img->width;
+        mip.height = (uint32_t)img->height;
+        mip.rowPitch = (uint32_t)img->width;
+        mip.textureData = tex.alpha.data();
+        ommCpuTextureDesc texDesc{};
+        texDesc.format = ommCpuTextureFormat_UNORM8;
+        texDesc.flags = ommCpuTextureFlags_None;
+        texDesc.mips = &mip;
+        texDesc.mipCount = 1;
+        texDesc.alphaCutoff = threshold;
+        ommCpuTexture handle = nullptr;
+        if (ommCpuCreateTexture((ommBaker)m_baker, &texDesc, &handle) == ommResult_SUCCESS)
+            tex.handle = handle;
+    }
+    const uint8_t cut = (uint8_t)(threshold * 255.0f);
+    if (tex.hi < cut) {
+        std::fill(out.indices.begin(), out.indices.end(), D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_TRANSPARENT);
+        return;
+    }
+    if (tex.lo >= cut || !tex.handle)
+        return;
+
+    // The same bake as BakeAll, over this page's triangles.
+    const XMFLOAT2 scale = m_materials.albedoUVScale[material];
+    std::vector<float> scaled(2ull * vertexCount);
+    for (uint32_t v = 0; v < vertexCount; ++v) {
+        scaled[2ull * v] = uvs[2ull * v] * scale.x;
+        scaled[2ull * v + 1] = uvs[2ull * v + 1] * scale.y;
+    }
+    ommCpuBakeInputDesc input = ommCpuBakeInputDescDefault();
+    input.bakeFlags = ommCpuBakeFlags_EnableInternalThreads;
+    input.texture = (ommCpuTexture)tex.handle;
+    input.runtimeSamplerDesc.addressingMode = ommTextureAddressMode_Wrap;
+    input.runtimeSamplerDesc.filter = ommTextureFilterMode_Linear;
+    input.runtimeSamplerDesc.borderAlpha = 0.0f;
+    input.alphaMode = ommAlphaMode_Test;
+    input.texCoordFormat = ommTexCoordFormat_UV32_FLOAT;
+    input.texCoords = scaled.data();
+    input.texCoordStrideInBytes = 0;
+    input.indexFormat = ommIndexFormat_UINT_32;
+    input.indexBuffer = indices;
+    input.indexCount = triCount * 3;
+    input.dynamicSubdivisionScale = 0.5f;
+    input.rejectionThreshold = 0.0f;
+    input.alphaCutoff = threshold;
+    input.format = ommFormat_OC1_4_State;
+    input.unknownStatePromotion = ommUnknownStatePromotion_ForceOpaque;
+    input.maxSubdivisionLevel = (uint8_t)maxLevel;
+    ommCpuBakeResult result = nullptr;
+    if (ommCpuBake((ommBaker)m_baker, &input, &result) != ommResult_SUCCESS)
+        return;
+    const ommCpuBakeResultDesc* desc = nullptr;
+    ommCpuGetBakeResultDesc(result, &desc);
+    out.raw.assign((const uint8_t*)desc->arrayData, (const uint8_t*)desc->arrayData + desc->arrayDataSize);
+    for (uint32_t d = 0; d < desc->descArrayCount; ++d) {
+        D3D12_RAYTRACING_OPACITY_MICROMAP_DESC dx{};
+        dx.ByteOffset = desc->descArray[d].offset;
+        dx.SubdivisionLevel = desc->descArray[d].subdivisionLevel;
+        dx.Format = (D3D12_RAYTRACING_OPACITY_MICROMAP_FORMAT)desc->descArray[d].format;
+        out.descs.push_back(dx);
+    }
+    for (uint32_t h = 0; h < desc->descArrayHistogramCount; ++h) {
+        D3D12_RAYTRACING_OPACITY_MICROMAP_HISTOGRAM_ENTRY entry{};
+        entry.Count = desc->descArrayHistogram[h].count;
+        entry.SubdivisionLevel = desc->descArrayHistogram[h].subdivisionLevel;
+        entry.Format = (D3D12_RAYTRACING_OPACITY_MICROMAP_FORMAT)desc->descArrayHistogram[h].format;
+        out.histogram.push_back(entry);
+    }
+    for (uint32_t t = 0; t < triCount; ++t) {
+        if (desc->indexFormat == ommIndexFormat_UINT_32) {
+            out.indices[t] = ((const int32_t*)desc->indexBuffer)[t];
+        } else if (desc->indexFormat == ommIndexFormat_UINT_16) {
+            const uint16_t v = ((const uint16_t*)desc->indexBuffer)[t];
+            out.indices[t] = v >= 0xFFFC ? (int32_t)(int16_t)v : (int32_t)v;
+        } else {
+            const uint8_t v = ((const uint8_t*)desc->indexBuffer)[t];
+            out.indices[t] = v >= 0xFC ? (int32_t)(int8_t)v : (int32_t)v;
+        }
+    }
+    ommCpuDestroyBakeResult(result);
+}
+
 OmmGpuData OmmBuilder::BuildGPU(const OmmBakeResult& bake, ID3D12Device5* device, ID3D12GraphicsCommandList4* cmdList) {
     // OmmGpuData keeps the uploads until the build completes.
     OmmGpuData gpu;

@@ -6,10 +6,32 @@
 
 #define DLSS_SPEC_HIT_MAX 65504.0f
 
-// dbg_dlssLayer: debug view in the low byte, guide options above.
+// dbg_dlssLayer: debug view in the low byte, guide options above, the virtual geometry view in bits 24-27.
 #define DLSS_DBG_LAYER_MASK 0xFFu
 #define DLSS_GUIDE_OPT_NO_PSR 0x100u
 #define DLSS_GUIDE_OPT_NO_MV_BLEND 0x200u
+
+#define GEOMETRY_VIEW_SHIFT 24u
+#define GEOMETRY_VIEW_MASK 0xFu
+#define GEOMETRY_VIEW_OFF 0u
+#define GEOMETRY_VIEW_CLUSTERS 1u
+#define GEOMETRY_VIEW_LOD_LEVEL 2u
+#define GEOMETRY_VIEW_TRIANGLES 3u
+#define GEOMETRY_VIEW_TRIANGLE_SIZE 4u
+#define GEOMETRY_VIEW_INSTANCES 5u
+#define GEOMETRY_VIEW_RESIDENCY 6u
+#define GEOMETRY_VIEW_COUNT 7u
+// Scratch slice the camera pass writes the view's colour into, at render resolution.
+#define GEOMETRY_VIEW_SCRATCH 14u
+
+// ClusterRecord.info: the cluster's hierarchy level (0: full detail) and what kind of cluster it is.
+#define CLUSTER_INFO_LEVEL_MASK 0xFFu
+#define CLUSTER_INFO_KIND_SHIFT 8u
+#define CLUSTER_KIND_STATIC 0u   // geometry without a hierarchy
+#define CLUSTER_KIND_EXCLUDED 1u // in a mesh with a hierarchy, kept out of it (alpha, emissive, small regions)
+#define CLUSTER_KIND_RESIDENT 2u // hierarchy, every level in memory
+#define CLUSTER_KIND_ROOT 3u     // hierarchy, a root page (always resident)
+#define CLUSTER_KIND_STREAMED 4u // hierarchy, a streamed page
 
 // Scratch slice of the packed PSR chain end (camera pass -> shading pass).
 #define DLSS_PSR_PROBE_SLOT 5u

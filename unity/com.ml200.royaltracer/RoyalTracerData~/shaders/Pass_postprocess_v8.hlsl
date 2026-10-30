@@ -186,6 +186,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= IMG_W || DTid.y >= IMG_H) return;
 
     const float exposure = ReadExposure();
+    const uint geometryView = (dbg_dlssLayer >> GEOMETRY_VIEW_SHIFT) & GEOMETRY_VIEW_MASK;
+    if (geometryView != 0u)
+    {
+        uint rw, rh;
+        g_dlssInput.GetDimensions(rw, rh);
+        const uint2 rpx = min((DTid.xy * uint2(rw, rh)) / uint2(IMG_W, IMG_H), uint2(rw - 1u, rh - 1u));
+        gOutput[uint3(DTid.xy, 3)] = float4(sRGBGammaCorrection(saturate(gScratchPing[uint3(rpx, GEOMETRY_VIEW_SCRATCH)].rgb)), 0.0f);
+        return;
+    }
     if((rs_flags & LT_FLAG_DEBUG)!=0u) {
         uint rw,rh;g_dlssInput.GetDimensions(rw,rh);
         uint2 rpx=min((DTid.xy*uint2(rw,rh))/uint2(IMG_W,IMG_H),uint2(rw-1u,rh-1u));

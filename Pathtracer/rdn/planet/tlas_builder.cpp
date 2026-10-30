@@ -45,7 +45,7 @@ void TlasBuilder::reserve(uint32_t required_instances) {
     if (m_partitioned) {
         m_max = required_instances;
 #if RDN_CLUSTER_API
-        if (required_instances > m_ptlasInputs.InstanceCount) create_partitioned(required_instances);
+        if (required_instances > m_cpuCapacity) create_partitioned(required_instances);
 #endif
         return;
     }
@@ -202,10 +202,14 @@ void TlasBuilder::create_partitioned(uint32_t instanceCapacity) {
     D3D12_RTAS_PARTITIONED_TLAS_INPUTS_DESC& in = m_ptlasInputs;
     in = {};
     in.Flags = D3D12_RTAS_PARTITIONED_TLAS_FLAG_FAST_TRACE;
-    in.InstanceCount = capacity;
+    // The GPU's instances follow the scene origin by translating their partitions.
+    if (m_extPartitions) in.Flags |= D3D12_RTAS_PARTITIONED_TLAS_FLAG_ENABLE_PARTITION_TRANSLATION;
+    in.InstanceCount = capacity + m_extInstances;
     in.MaxInstancePerPartitionCount = MAX_PER_PARTITION;
-    in.PartitionCount = PARTITION_COUNT;
+    in.PartitionCount = PARTITION_COUNT + m_extPartitions;
     in.MaxInstanceInGlobalPartitionCount = capacity;
+    m_cpuCapacity = capacity;
+    ++m_generation;
     D3D12_RTAS_OPERATION_INPUTS opIn = {};
     opIn.Type = D3D12_RTAS_OPERATION_TYPE_PARTITIONED_TLAS;
     opIn.pPartitionedTLASInputsDesc = &in;
@@ -240,11 +244,21 @@ void TlasBuilder::create_partitioned(uint32_t instanceCapacity) {
     m_freePartitions.resize(PARTITION_COUNT);
     for (uint32_t p = 0; p < PARTITION_COUNT; ++p) m_freePartitions[p] = PARTITION_COUNT - 1 - p;
     m_globalCount = 0;
-    std::printf("[tlas] partitioned: %u instances, %u partitions of up to %u; %.1f MB + %.1f MB scratch\n", capacity,
-                PARTITION_COUNT, MAX_PER_PARTITION, (double)info.ResultDataMaxSizeInBytes / 1048576.0,
-                (double)info.ScratchDataSizeInBytes / 1048576.0);
+    std::printf("[tlas] partitioned: %u instances (%u GPU-written), %u partitions of up to %u; %.1f MB + %.1f MB "
+                "scratch\n",
+                in.InstanceCount, m_extInstances, in.PartitionCount, MAX_PER_PARTITION,
+                (double)info.ResultDataMaxSizeInBytes / 1048576.0, (double)info.ScratchDataSizeInBytes / 1048576.0);
+}
+
+void TlasBuilder::reserve_external(uint32_t instances, uint32_t partitions) {
+    if (!m_partitioned || (instances == m_extInstances && partitions == m_extPartitions)) return;
+    m_extInstances = instances;
+    m_extPartitions = partitions;
+    create_partitioned(std::max(m_cpuCapacity, 1024u));
 }
 #endif
+
+uint32_t TlasBuilder::external_partition_base() const { return PARTITION_COUNT; }
 
 // The partition of the world cell holding the instance's origin; an instance stays in a full partition it is already in.
 uint32_t TlasBuilder::partition_for(const D3D12_RAYTRACING_INSTANCE_DESC& d, bool dynamic, const Slot& s) {
@@ -287,7 +301,7 @@ bool TlasBuilder::build_partitioned(ID3D12GraphicsCommandList4* cmd) {
 #if RDN_CLUSTER_API
     uint32_t maxId = 0;
     for (const Frame& f : m_frame) maxId = std::max(maxId, f.desc.InstanceID);
-    if (!m_frame.empty() && maxId >= m_ptlasInputs.InstanceCount) create_partitioned(maxId + 1);
+    if (!m_frame.empty() && maxId >= m_cpuCapacity) create_partitioned(maxId + 1);
 
     using Args = D3D12_RTAS_PARTITIONED_TLAS_OPERATION_WRITE_INSTANCE_ARGS;
     ++m_serial;
@@ -295,7 +309,9 @@ bool TlasBuilder::build_partitioned(ID3D12GraphicsCommandList4* cmd) {
     uint8_t* base = m_ptlasArgsMapped[m_ptlasRing];
     Args* args = reinterpret_cast<Args*>(base + PTLAS_ARGS_OFFSET);
     uint32_t n = 0;
+    m_written.clear();
     auto write = [&](const D3D12_RAYTRACING_INSTANCE_DESC& d, uint32_t index, uint32_t partition, bool enabled) {
+        m_written.push_back(index);
         Args a = {};
         std::memcpy(a.Transform, d.Transform, sizeof(a.Transform));
         a.InstanceID = d.InstanceID;
@@ -371,5 +387,31 @@ bool TlasBuilder::build_partitioned(ID3D12GraphicsCommandList4* cmd) {
     return false;
 #endif
 }
+
+#if RDN_CLUSTER_API
+void TlasBuilder::build_gpu_ops(ID3D12GraphicsCommandList4* cmd, D3D12_GPU_VIRTUAL_ADDRESS opsVa,
+                                D3D12_GPU_VIRTUAL_ADDRESS countVa) {
+    if (!m_partitioned || !m_ptlasBuilt) return;
+    const D3D12_RESOURCE_BARRIER all = CD3DX12_RESOURCE_BARRIER::UAV(nullptr); // the TLAS and the shared scratch
+    cmd->ResourceBarrier(1, &all);
+    const D3D12_RESOURCE_BARRIER uav = CD3DX12_RESOURCE_BARRIER::UAV(m_ptlas.Get());
+    const D3D12_GPU_VIRTUAL_ADDRESS va = m_ptlas->GetGPUVirtualAddress();
+    D3D12_RTAS_PARTITIONED_TLAS_OPERATION_DATA data = {};
+    data.SourceAccelerationStructureData = va;
+    data.DestAccelerationStructureData = va;
+    data.ScratchAccelerationStructureData = m_ptlasScratch->GetGPUVirtualAddress();
+    data.IndirectPartitionedTlasOpCount = countVa;
+    data.IndirectPartitionedTlasOps = opsVa;
+    D3D12_RTAS_OPERATION_DESC desc = {};
+    desc.Inputs.Type = D3D12_RTAS_OPERATION_TYPE_PARTITIONED_TLAS;
+    desc.Inputs.pPartitionedTLASInputsDesc = &m_ptlasInputs;
+    desc.pPartitionedTlasOperationData = &data;
+    ComPtr<ID3D12CommandListRaytracing2> list;
+    if (FAILED(cmd->QueryInterface(IID_PPV_ARGS(&list))))
+        throw std::runtime_error("planet::TlasBuilder: RTAS command list unavailable");
+    list->ExecuteIndirectRTASOperations(1, &desc, D3D12_EXECUTE_INDIRECT_RTAS_OPERATIONS_FLAG_NONE);
+    cmd->ResourceBarrier(1, &uav);
+}
+#endif
 
 }

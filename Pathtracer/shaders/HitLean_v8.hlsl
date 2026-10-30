@@ -9,8 +9,8 @@
 [shader("closesthit")]
 void ClosestHitLean(inout PtVertexIO io, in BuiltInTriangleIntersectionAttributes attr)
 {
-    PtShadeHit(io, InstanceID(), HIT_CLUSTER_ID(), GeometryIndex(), PrimitiveIndex(), attr.barycentrics, RayTCurrent(),
-        WorldRayDirection(), DispatchRaysIndex().xy);
+    PtShadeHit(io, InstanceID(), HIT_CLUSTER_ID(), GeometryIndex(), PrimitiveIndex(), attr.barycentrics, ObjectToWorld3x4(),
+        RayTCurrent(), WorldRayDirection(), DispatchRaysIndex().xy);
 }
 
 // The camera record's vertex off the sea, through a MakeMiss HitObject.

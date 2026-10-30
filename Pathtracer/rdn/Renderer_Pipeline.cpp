@@ -191,6 +191,15 @@ void Renderer::BuildClusterBlas(const std::vector<MeshGPU*>& meshes) {
         if (!m_clusters.allocate_ids(mesh->clusterCount, mesh->clusterBase))
             throw std::runtime_error("clusters: out of cluster IDs for the scene");
         m_clusters.write_records(mesh->clusterBase, s.spans.data(), mesh->clusterCount);
+        if (!mesh->lod.empty()) {
+            // Excluded clusters first, then the hierarchy's when it is resident here.
+            std::vector<uint8_t> levels;
+            clusters::lod_levels(mesh->lod, levels);
+            std::vector<uint32_t> info(mesh->clusterCount, clusters::cluster_info(CLUSTER_KIND_EXCLUDED, 0));
+            for (uint32_t c = mesh->lod.fixed; c < mesh->clusterCount; ++c)
+                info[c] = clusters::cluster_info(CLUSTER_KIND_RESIDENT, levels[c - mesh->lod.fixed]);
+            m_clusters.write_info(mesh->clusterBase, info.data(), mesh->clusterCount);
+        }
         mesh->clas.clear();
         tris += triCount;
         const UINT maxGeometry = (mesh->opaqueTriCount && mesh->alphaTriCount) ? 1u : 0u;
