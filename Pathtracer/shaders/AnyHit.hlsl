@@ -5,7 +5,7 @@ void AlphaTestAnyHit(inout TracePayload payload,
                      in BuiltInTriangleIntersectionAttributes attr)
 {
     uint instID = InstanceID();
-    uint primID = FlatPrimID(instID, GeometryIndex(), PrimitiveIndex());
+    uint primID = FlatPrimID(instID, HIT_CLUSTER_ID(), GeometryIndex(), PrimitiveIndex());
 
     uint matID = materialIDs[instanceProps[instID].materialBase + primID];
 

@@ -80,7 +80,7 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
         r.TMax      = RAY_TMAX_PLANET;
 
         const bool traceable = IsRayDescValid(r);
-        RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+        RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS | RQ_ALLOW_CLUSTERS> q;
         if (traceable)
         {
             q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
@@ -90,7 +90,7 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
                 if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
                 {
                     const uint ci = q.CandidateInstanceID();
-                    const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+                    const uint cp = FlatPrimID(ci, RQ_CANDIDATE_CLUSTER_ID(q), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
                     const uint cm = GetMatIDFast(ci, cp);
                     if (LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON)
                         q.CommitNonOpaqueTriangleHit();
@@ -111,7 +111,7 @@ inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3
         }
 
         const uint   hi   = q.CommittedInstanceID();
-        const uint   hp   = FlatPrimID(hi, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+        const uint   hp   = FlatPrimID(hi, RQ_COMMITTED_CLUSTER_ID(q), q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
         const uint   hm   = GetMatIDFast(hi, hp);
         const float3 hpos = ro + vdir * q.CommittedRayT();
         pathLength += q.CommittedRayT();
@@ -159,14 +159,14 @@ OceanBelow ResolveOceanBelow(SurfaceVertex sv, float3 transmitted, float3 camPos
     if (!IsRayDescValid(r))
         return b;
 
-    RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+    RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS | RQ_ALLOW_CLUSTERS> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
     [loop]
     for (uint it = 0u; q.Proceed() && it < 32u; ++it)
     {
         if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
         const uint ci = q.CandidateInstanceID();
-        const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+        const uint cp = FlatPrimID(ci, RQ_CANDIDATE_CLUSTER_ID(q), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
         const uint cm = GetMatIDFast(ci, cp);
         if (LoadIsOceanMaterial(cm)) continue;
         if (LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON ||
@@ -177,7 +177,7 @@ OceanBelow ResolveOceanBelow(SurfaceVertex sv, float3 transmitted, float3 camPos
         return b;
 
     const uint  hi   = q.CommittedInstanceID();
-    const uint  hp   = FlatPrimID(hi, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+    const uint  hp   = FlatPrimID(hi, RQ_COMMITTED_CLUSTER_ID(q), q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
     const uint  hm   = GetMatIDFast(hi, hp);
     const float dist = q.CommittedRayT();
 
@@ -470,7 +470,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // Underwater paths already carry their transport; no atmosphere.
     const uint waterPixel = MapPixelID(uint2(IMG_W,IMG_H),DTid.xy);
-    if ((load_flagsWord(g_sample_current,waterPixel) & SD_FLAG_CAMERA_WATER) != 0u)
+    if ((load_flagsWord(g_sample_current,waterPixel) & SD_FLAG_CAMERA_WATER) != 0u ||
+        (rs_flags & RS_FLAG_HOST_COMPOSITE) != 0u)
         accumulation = output_primary+output_indirect;
     if (SHADING_DEBUG_SLICES) {
     gScratchPing[uint3(DTid.xy, 1)] = float4(accumulation, 0);

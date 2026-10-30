@@ -21,7 +21,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     float3 viewTr    = float3(1, 1, 1);
     float  hitPlanet = 0.0f;
 
-    if (!SkyObserverIsUnderground())
+    if (hostSkyScale > 0.0f)
+        scatter = HostSkyRadiance(v); // its irradiance below; read as it is (EvaluateSkyBackground)
+    else if (!SkyObserverIsUnderground())
     {
         bool hit;
         scatter   = IntegrateScattering(v, S.dirWS, viewTr, hit);

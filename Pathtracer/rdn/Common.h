@@ -116,6 +116,19 @@ struct InstanceProperties {
 };
 static_assert(sizeof(InstanceProperties) == 224, "GPU record must stay in sync with Data_v8.hlsli");
 
+// The clustered-geometry API (Agility 1.722 preview headers); the Unity plugin builds against 1.619 without it.
+#if defined(D3D12_PREVIEW_SDK_VERSION) && D3D12_PREVIEW_SDK_VERSION >= 722
+#define RDN_CLUSTER_API 1
+#else
+#define RDN_CLUSTER_API 0
+#endif
+
+// Indexed by a hit's ClusterID(); its primitive index is local to the cluster.
+struct ClusterRecord {
+    UINT triBase; // the cluster's first triangle among its instance's flat triangles
+};
+static_assert(sizeof(ClusterRecord) == 4, "GPU record must stay in sync with Data_v8.hlsli");
+
 struct InstancePropertiesCpu {
     XMMATRIX objectToWorld;
     XMMATRIX objectToWorldInverse;
@@ -247,6 +260,12 @@ struct SunSettings {
 
     // Solar aureole fade-in distance; 0 = undamped.
     float atmosHaloDistanceKm = 1.0f;
+
+    // World-space direction towards the sun, used instead of the solar time model when sunDirOverride > 0.5.
+    float sunDirX = 0.0f;
+    float sunDirY = 1.0f;
+    float sunDirZ = 0.0f;
+    float sunDirOverride = 0.0f;
 };
 
 struct GpuPassTiming {

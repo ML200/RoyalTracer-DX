@@ -7,10 +7,12 @@
 #define ENABLE_D3D12_DIAGNOSTICS 1
 #include "../Diagnostics.h"
 
+#ifndef RT_HOSTED
 extern "C" {
-__declspec(dllexport) extern const UINT D3D12SDKVersion = 719;
+__declspec(dllexport) extern const UINT D3D12SDKVersion = 722;
 __declspec(dllexport) extern const char* D3D12SDKPath = ".\\";
 }
+#endif
 
 #ifndef SL_CHECK
 #define SL_CHECK(x)                                                                                                    \
@@ -55,7 +57,202 @@ void DeviceContext::Init(HWND hwnd, UINT w, UINT h, bool useWarp) {
     DXLOG(L"Actual swap chain buffer count: " << bufferCount);
 
     CreateRTVsAndDepth();
+    CreateFrameObjects();
+}
 
+void DeviceContext::InitHeadless(const HeadlessDeviceDesc& desc) {
+    headless = true;
+    width = desc.width;
+    height = desc.height;
+    bufferCount = FRAME_COUNT;
+    frameIndex = 0;
+
+    // CLSID_D3D12SDKConfiguration; the Windows SDK's dxguid.lib may predate it.
+    static const GUID kSdkConfigurationClsid = {0x7cda6aca, 0xa03e, 0x49c8, {0x94, 0x58, 0x03, 0x34, 0xd2, 0x0e, 0x07, 0xce}};
+    ComPtr<ID3D12SDKConfiguration1> sdkConfig;
+    ComPtr<ID3D12DeviceFactory> factory;
+    if (FAILED(D3D12GetInterface(kSdkConfigurationClsid, IID_PPV_ARGS(&sdkConfig))) ||
+        FAILED(sdkConfig->CreateDeviceFactory(desc.sdkVersion, desc.sdkPath.c_str(), IID_PPV_ARGS(&factory))))
+        throw std::runtime_error("The Direct3D 12 Agility SDK could not be loaded (Windows too old, or the plugin "
+                                 "data folder is incomplete)");
+    // Fail instead of replacing the host's device as the process singleton.
+    ThrowIfFailed(factory->SetFlags(D3D12_DEVICE_FACTORY_FLAG_DISALLOW_STORING_NEW_DEVICE_AS_SINGLETON));
+
+    ComPtr<IDXGIFactory4> dxgi;
+    ThrowIfFailed(CreateDXGIFactory2(0, IID_PPV_ARGS(&dxgi)));
+    headlessFactory = dxgi;
+    ComPtr<IDXGIAdapter1> adapter;
+    if (desc.adapterLuid.LowPart || desc.adapterLuid.HighPart) {
+        ThrowIfFailed(dxgi->EnumAdapterByLuid(desc.adapterLuid, IID_PPV_ARGS(&adapter)));
+    } else {
+        for (UINT i = 0; dxgi->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC1 ad;
+            adapter->GetDesc1(&ad);
+            if (!(ad.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+                break;
+        }
+    }
+    AdapterReport& report = adapterReport;
+    {
+        DXGI_ADAPTER_DESC1 ad{};
+        adapter->GetDesc1(&ad);
+        report.name = ad.Description;
+        report.vendorId = ad.VendorId;
+        report.dedicatedVideoMemory = ad.DedicatedVideoMemory;
+    }
+    if (FAILED(factory->CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device))))
+        throw std::runtime_error("The GPU does not support Direct3D 12 feature level 12_1");
+    nativeDevice = device;
+
+    // The shaders are SM 6.9 libraries using SER and opacity micromaps (DXR 1.2).
+    D3D12_FEATURE_DATA_SHADER_MODEL sm{D3D_HIGHEST_SHADER_MODEL};
+    while (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) &&
+           sm.HighestShaderModel > D3D_SHADER_MODEL_5_1)
+        sm.HighestShaderModel = (D3D_SHADER_MODEL)(sm.HighestShaderModel - 1);
+    report.shaderModel = sm.HighestShaderModel;
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5{};
+    if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5))))
+        report.raytracingTier = opts5.RaytracingTier;
+    D3D12_FEATURE_DATA_D3D12_OPTIONS22 opts22{};
+    if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS22, &opts22, sizeof(opts22))))
+        report.serReorders = opts22.ShaderExecutionReorderingActuallyReorders;
+    if (report.shaderModel < D3D_SHADER_MODEL_6_9)
+        throw std::runtime_error("The GPU driver does not support Shader Model 6.9 (update the driver)");
+    if (report.raytracingTier < D3D12_RAYTRACING_TIER_1_2)
+        throw std::runtime_error("The GPU does not support DirectX Raytracing 1.2");
+
+    slModule = LoadLibraryW((desc.pluginDir + L"\\sl.interposer.dll").c_str());
+    if (!slModule)
+        throw std::runtime_error("sl.interposer.dll not found next to the plugin");
+    static const std::wstring pluginDir = desc.pluginDir;
+    static const wchar_t* pluginPaths[] = {pluginDir.c_str()};
+    static sl::Feature features[] = {sl::kFeatureDLSS_RR, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
+    sl::Preferences pref{};
+    pref.renderAPI = sl::RenderAPI::eD3D12;
+    pref.engine = sl::EngineType::eCustom;
+    pref.applicationId = 231313132;
+    pref.logLevel = sl::LogLevel::eDefault;
+    pref.logMessageCallback = desc.slLog;
+    pref.pathsToPlugins = pluginPaths;
+    pref.numPathsToPlugins = 1;
+    // No proxies: the host owns its swap chain; DLSS-RR needs a device and command lists, frame generation the
+    // swap chain of AttachWindow, upgraded by hand.
+    pref.flags = sl::PreferenceFlags::eUseManualHooking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
+    pref.featuresToLoad = features;
+    pref.numFeaturesToLoad = _countof(features);
+    if (slInit(pref, sl::kSDKVersion) != sl::Result::eOk)
+        throw std::runtime_error("slInit failed");
+    if (slSetD3DDevice(device.Get()) != sl::Result::eOk) {
+        slShutdown();
+        throw std::runtime_error("slSetD3DDevice failed");
+    }
+    {
+        LUID luid = device->GetAdapterLuid();
+        sl::AdapterInfo ai;
+        ai.deviceLUID = (uint8_t*)&luid;
+        ai.deviceLUIDSizeInBytes = sizeof(LUID);
+        const sl::Result sr = slIsFeatureSupported(sl::kFeatureDLSS_RR, ai);
+        report.dlssRayReconstruction = sr == sl::Result::eOk;
+        if (!report.dlssRayReconstruction) {
+            slShutdown();
+            if (sr == sl::Result::eErrorDriverOutOfDate)
+                throw std::runtime_error("DLSS Ray Reconstruction needs a newer NVIDIA driver");
+            if (sr == sl::Result::eErrorOSOutOfDate)
+                throw std::runtime_error("DLSS Ray Reconstruction needs a newer Windows version");
+            throw std::runtime_error(std::string("DLSS Ray Reconstruction is not supported on this GPU (") +
+                                     sl::getResultAsStr(sr) + ")");
+        }
+    }
+
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ThrowIfFailed(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&cmdQueue)));
+
+    CreatePresentHook();
+    slGetNewFrameToken(frameToken, nullptr);
+
+    CreateFrameObjects();
+}
+
+void DeviceContext::CreatePresentHook() {
+    DXGI_SWAP_CHAIN_DESC1 scd = {};
+    scd.Width = 8;
+    scd.Height = 8;
+    scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.SampleDesc.Count = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.BufferCount = 2;
+    scd.Scaling = DXGI_SCALING_STRETCH;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    scd.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+    ComPtr<IDXGISwapChain1> native;
+    ThrowIfFailed(headlessFactory->CreateSwapChainForComposition(cmdQueue.Get(), &scd, nullptr, &native));
+    slPresentHook = UpgradeSwapChain(native.Get());
+}
+
+// Streamline's proxy for a swap chain, in place of the caller's reference (which the proxy takes over).
+template <class T> ComPtr<T> DeviceContext::UpgradeSwapChain(T* native) {
+    T* hooked = native;
+    native->AddRef();
+    if (slUpgradeInterface((void**)&hooked) != sl::Result::eOk) {
+        std::wcout << L"[SL] slUpgradeInterface(swap chain) failed" << std::endl;
+        ComPtr<T> plain;
+        plain.Attach(native);
+        return plain;
+    }
+    // The proxy keeps the native swap chain alive; the reference taken above goes unless the proxy took it over,
+    // so that releasing the proxy releases the swap chain (Streamline follows one swap chain at a time).
+    const ULONG count = native->AddRef() - 1;
+    native->Release();
+    if (hooked != native && count > 2)
+        native->Release();
+    ComPtr<T> proxy;
+    proxy.Attach(hooked);
+    return proxy;
+}
+
+void DeviceContext::AttachWindow(HWND hwnd, UINT width, UINT height) {
+    DetachWindow();
+    // Streamline follows one swap chain: the hidden one goes while the window presents.
+    WaitForGPU();
+    slPresentHook.Reset();
+    ComPtr<IDXGIFactory5> factory5;
+    BOOL tearing = FALSE;
+    if (SUCCEEDED(headlessFactory.As(&factory5)))
+        factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing));
+    windowTearing = tearing == TRUE;
+    DXGI_SWAP_CHAIN_DESC1 scd = {};
+    scd.Width = std::max(width, 8u);
+    scd.Height = std::max(height, 8u);
+    scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.SampleDesc.Count = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.BufferCount = WindowBufferCount();
+    scd.Scaling = DXGI_SCALING_STRETCH;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    scd.Flags = windowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    // Created through Streamline's factory proxy: frame generation sets itself up as it sees the swap chain created.
+    ComPtr<IDXGIFactory4> nativeFactory;
+    ThrowIfFailed(CreateDXGIFactory2(0, IID_PPV_ARGS(&nativeFactory)));
+    ComPtr<IDXGIFactory4> factory = UpgradeSwapChain(nativeFactory.Get());
+    nativeFactory.Reset();
+    ComPtr<IDXGISwapChain1> created;
+    ThrowIfFailed(factory->CreateSwapChainForHwnd(cmdQueue.Get(), hwnd, &scd, nullptr, nullptr, &created));
+    factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+    ThrowIfFailed(created.As(&windowSwapChain));
+}
+
+void DeviceContext::DetachWindow() {
+    if (!windowSwapChain)
+        return;
+    WaitForGPU();
+    windowSwapChain.Reset();
+    if (headless && !slPresentHook)
+        CreatePresentHook();
+}
+
+void DeviceContext::CreateFrameObjects() {
     for (UINT n = 0; n < bufferCount; ++n)
         ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAllocators[n])));
 
@@ -111,6 +308,14 @@ void DeviceContext::ExecuteAndPresent() {
     dxdiag::DumpNewMessages();
 #endif
 
+    if (headless) {
+        if (slPresentHook && !windowSwapChain) // with a window, its present (the host's) ends the frame
+            slPresentHook->Present(0, 0);
+        ThrowIfFailed(cmdQueue->Signal(fence.Get(), fenceValues[frameIndex] = nextFenceValue++));
+        frameIndex = (frameIndex + 1) % bufferCount;
+        return;
+    }
+
     UINT presentFlags = tearingSupported ? DXGI_PRESENT_ALLOW_TEARING : 0;
     HRESULT presentHr = swapChain->Present(0, presentFlags);
     if (FAILED(presentHr)) {
@@ -149,7 +354,8 @@ void DeviceContext::WaitForGPU() {
         ThrowIfFailed(fence->SetEventOnCompletion(fv, fenceEvent));
         WaitForSingleObject(fenceEvent, INFINITE);
     }
-    frameIndex = swapChain->GetCurrentBackBufferIndex();
+    if (swapChain)
+        frameIndex = swapChain->GetCurrentBackBufferIndex();
 }
 
 void DeviceContext::FlushAndReset() {
@@ -168,6 +374,12 @@ void DeviceContext::Resize(UINT newWidth, UINT newHeight) {
         return;
 
     WaitForGPU();
+
+    if (headless) {
+        width = newWidth;
+        height = newHeight;
+        return;
+    }
 
     for (UINT n = 0; n < bufferCount; ++n)
         renderTargets[n].Reset();
@@ -268,6 +480,26 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
     dxdiag::EnableDebugLayerAndDred();
 #endif
 
+#ifndef RT_HOSTED
+    // Clustered geometry needs SM 6.10 and the raytracing preview, both experimental: without Windows Developer Mode
+    // this fails and the renderer keeps classic BLAS. RDN_CLUSTERS=0 opts out. Must precede device creation.
+    bool clustersWanted = true;
+    {
+        wchar_t v[8] = {};
+        if (GetEnvironmentVariableW(L"RDN_CLUSTERS", v, 8) > 0 && v[0] == L'0')
+            clustersWanted = false;
+    }
+    bool experimentalOn = false;
+    if (clustersWanted) {
+        UUID experimental[] = {D3D12ExperimentalShaderModels, D3D12RaytracingPreview};
+        const HRESULT hr = D3D12EnableExperimentalFeatures(_countof(experimental), experimental, nullptr, nullptr);
+        experimentalOn = SUCCEEDED(hr);
+        if (!experimentalOn)
+            std::wcout << L"[DXR] Experimental features unavailable (0x" << std::hex << (uint32_t)hr << std::dec
+                       << L"; Developer Mode off?)" << std::endl;
+    }
+#endif
+
     if (useWarp) {
         ComPtr<IDXGIAdapter> warpAdapter;
         ThrowIfFailed(factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter)));
@@ -294,6 +526,25 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
         dxdiag::HookDevice(NativeDevice());
 #endif
     }
+
+#ifndef RT_HOSTED
+    if (experimentalOn) {
+        D3D12_FEATURE_DATA_SHADER_MODEL sm{D3D_SHADER_MODEL_6_10};
+        D3D12_FEATURE_DATA_D3D12_OPTIONS_RAYTRACING2 rt2{};
+        ComPtr<ID3D12Device16> device16;
+        clusteredGeometry =
+            SUCCEEDED(NativeDevice()->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) &&
+            sm.HighestShaderModel >= D3D_SHADER_MODEL_6_10 &&
+            SUCCEEDED(NativeDevice()->QueryInterface(IID_PPV_ARGS(&device16))) &&
+            SUCCEEDED(device16->CheckFeatureSupport1(D3D12_FEATURE_D3D12_OPTIONS_RAYTRACING2, &rt2, sizeof(rt2),
+                                                     D3D12_PREVIEW_SDK_VERSION)) &&
+            rt2.ClustersAndPTLASSupported;
+    }
+    nv_helpers_dx12::g_clusteredGeometry = clusteredGeometry;
+    std::wcout << L"[DXR] Clustered geometry + PTLAS: "
+               << (clusteredGeometry ? L"on (SM 6.10)" : clustersWanted ? L"unsupported" : L"off (RDN_CLUSTERS=0)")
+               << std::endl;
+#endif
 
     sl::Result res = slSetD3DDevice(device.Get());
     if (res != sl::Result::eOk)

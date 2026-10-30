@@ -32,8 +32,10 @@
 #include "minecraft/mc_config.h"
 #include "minecraft/mc_omm.h"
 #include "Scene/OmmBuilder.h"
+#include "Scene/HostStream.h"
 #include "minecraft/mc_world.h"
 #include "minecraft/voxel_streamer.h"
+#include "Clusters/ClusterLod.h"
 
 // Byte strides shared with the shader SoA layouts.
 struct SampleData {
@@ -47,11 +49,19 @@ inline UINT TileAlignedPx(UINT w, UINT h) {
 
 constexpr UINT kPathStateBytesPerPx = PS_PATH_STATE_BYTES;
 
+// How the renderer is hosted. The standalone app owns a window and lets the renderer create the device; a host
+// process (the Unity plugin) creates the DeviceContext headless, keeps it across renderers and reads HostOutputs.
+struct RendererConfig {
+    UINT width = 0;
+    UINT height = 0;
+    bool headless = false;
+};
+
 class Renderer {
   public:
-    Renderer(UINT width, UINT height);
+    Renderer(DeviceContext& ctx, const RendererConfig& config);
 
-    void InitDevice();
+    void InitDevice(HWND hwnd = nullptr);
     void LoadScene(const std::vector<ModelEntry>& models);
 
     bool LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const DirectX::XMMATRIX& placement);
@@ -65,6 +75,7 @@ class Renderer {
     Camera& GetCamera() { return m_camera; }
     ocean::OceanSystem& GetOcean() { return m_ocean; }
     DeviceContext& GetContext() { return m_ctx; }
+    const DLSSManager& GetDLSS() const { return m_dlss; }
     void SetFlyCam(FlyCamController* fc) { m_flyCam = fc; }
     UINT GetWidth() const { return m_width; }
     UINT GetHeight() const { return m_height; }
@@ -75,6 +86,15 @@ class Renderer {
     UINT CreateMeshInstance(UINT sourceMeshIndex, const Material& material);
     void HandleSceneStructuralChange();
 
+    // Headless: where this frame's results go (shaders/HostOutputLayout.h). RGBA16F color and R32F depth at display
+    // size, UAV-capable with simultaneous access; null discards. Call between UpdateRenderer and RenderFrame.
+    void SetHostOutputs(ID3D12Resource* color, ID3D12Resource* depth);
+    // The host's sky map (HOST_SKY_SRV_SLOT), read while Camera::hostSkyScale > 0; null clears it.
+    void SetHostSky(ID3D12Resource* sky);
+    void SetDlssMode(sl::DLSSMode mode) { m_dlss.mode = mode; } // applied by the next UpdateRenderer
+    // Before InitSceneGPU; takes the voxel world's slot, so not together with a Minecraft world.
+    void AttachHostStream(IHostStream* stream) { m_host = stream; }
+
     bool WantsKeyboard() const;
     bool WantsMouse() const;
     void HandleKeyUp(UINT8 key);
@@ -83,8 +103,10 @@ class Renderer {
     UINT m_width;
     UINT m_height;
     float m_aspectRatio;
+    bool m_headless;
+    HWND m_hwnd = nullptr;
 
-    DeviceContext m_ctx;
+    DeviceContext& m_ctx;
     Scene m_scene;
     Camera m_camera;
     PassSystem m_passes;
@@ -94,6 +116,8 @@ class Renderer {
 
     ComPtr<ID3D12Resource> m_dlssHudlessColor;
     Editor m_editor;
+    // Before its clients (the streams below), which return their clusters on destruction.
+    clusters::ClusterGeometry m_clusters;
     planet::StreamOrchestrator m_planet;
     ocean::OceanSystem m_ocean;
     float m_lastDt = 0.0f;
@@ -102,12 +126,41 @@ class Renderer {
 
     std::vector<planet::SceneInstanceDesc> m_planetSceneInstances;
 
+#if RDN_CLUSTER_API
+    // Per-instance cuts of the scene meshes' cluster LOD hierarchies, chosen and built first in each frame's cluster
+    // window; an instance with a cut traces its cluster BLAS in place of its mesh's.
+    struct LodClient final : planet::IClusterClient {
+        Renderer* renderer = nullptr;
+        void before_cluster_work() override {
+            if (renderer->m_pager.active()) renderer->m_pager.before_begin();
+        }
+        void queue_cluster_work(ID3D12GraphicsCommandList4*) override { renderer->UpdateSceneLod(); }
+        void on_submitted(uint64_t computeFence) override {
+            if (renderer->m_pager.active()) renderer->m_pager.on_submitted(computeFence);
+        }
+    };
+    clusters::LodInstances m_lod;
+    // Streams the paged meshes' hierarchy pages the cuts want.
+    clusters::Pager m_pager;
+    std::vector<UINT> m_pagedMeshes; // scene mesh per pager mesh
+    std::vector<clusters::LodRequest> m_lodRequests;
+    void LoadPagedRoots();
+    LodClient m_lodClient;
+    std::vector<UINT> m_lodMeshOf;        // per instance, as of the last reset
+    const MeshGPU* m_lodMeshes = nullptr; // the mesh array then
+    std::vector<clusters::LodView> m_lodViews;
+    void UpdateSceneLod();
+#endif
+
     planet::RockScatter m_rockScatter;
     std::vector<UINT> m_rockMeshIndices;
 
     // Workers must stop before their world is destroyed.
     std::unique_ptr<mc::World> m_mcWorld;
     mc::VoxelStreamer m_voxels;
+    IHostStream* m_host = nullptr;
+    // Streamed emissive geometry: the voxel world's or the host's (they share the external slot).
+    IDynamicLights* DynamicLights() { return m_voxels.enabled() ? static_cast<IDynamicLights*>(&m_voxels) : m_host; }
     mc::MinecraftWorldConfig m_mcConfig;
     FlyCamController* m_flyCam = nullptr;
     IntegratorSettings m_integratorSettings;
@@ -193,6 +246,8 @@ class Renderer {
                                                      const std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>>& ib,
                                                      UINT opaqueTriCount, UINT alphaTriCount,
                                                      MeshGPU* meshOmm = nullptr);
+    // Cluster BLAS for meshes with BLAS build inputs (and micromaps, if any), synchronously.
+    void BuildClusterBlas(const std::vector<MeshGPU*>& meshes);
     void CreateTopLevelAS(const std::vector<Scene::TLASInstance>& instances, bool updateOnly = false);
     void CreateAccelerationStructures();
 
@@ -268,6 +323,9 @@ class Renderer {
     ComPtr<ID3D12Resource> m_blueNoiseTexture;
     ComPtr<ID3D12Resource> m_blueNoiseUploadHeap;
     void InitBlueNoiseTexture();
+
+    // t60 placeholder (one unused record) without clustered geometry.
+    ComPtr<ID3D12Resource> m_clusterRecords;
 
     ComPtr<ID3D12Resource> m_terrainHeightmapTexture;
     ComPtr<ID3D12Resource> m_terrainHeightmapUploadHeap;

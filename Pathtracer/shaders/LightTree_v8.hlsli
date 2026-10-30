@@ -412,7 +412,6 @@ LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSamp
     if (treeSample.id == LT_SENTINEL || treeSample.inst == LT_SENTINEL || !(treeSample.pdf > 0.0f)) return result;
 
     LightTriangle triData = g_EmissiveTriangles[result.triIndex];
-    result.emission = triData.emission * GLOBAL_EMISSION_STRENGTH;
 
     float3x4 worldMat = instanceProps[result.objID].objectToWorld;
     float3 v0 = mul(worldMat, float4(triData.x, 1.0));
@@ -442,6 +441,7 @@ LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSamp
     float dist     = sqrt(distSq);
 
     float cosLight = max(dot(result.normal, -toLight / dist), 0.0f);
+    result.emission = LightRecordRadiance(result.triIndex, cosLight);
 
     float pdfArea = treeSample.pdf / max(area, 1e-10f);
 

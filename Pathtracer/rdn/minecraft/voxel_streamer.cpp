@@ -25,6 +25,57 @@ constexpr double   INITIAL_TRIS_PER_CHUNK = 6000.0;
 
 inline uint64_t align_up_u64(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 inline float luminance(const Vec3f& e) { return 0.2126f * e.x + 0.7152f * e.y + 0.0722f * e.z; }
+
+#if RDN_CLUSTER_API
+// The mesher's four triangle ranges: lit then unlit opaque, lit then unlit alpha.
+inline void mesh_ranges(const ChunkMesh& mesh, uint32_t r[5]) {
+    r[0] = 0;
+    r[1] = mesh.opaqueLightTriCount;
+    r[2] = mesh.opaqueTriCount;
+    r[3] = mesh.opaqueTriCount + mesh.alphaLightTriCount;
+    r[4] = mesh.triangle_count();
+}
+
+// Clusters are runs of the triangle order, which the mesher emits slice by slice across the whole chunk. Each range's
+// quads (triangle pairs) are reordered into octree cells (clusters::morton_cells); cuts receives each cell's first
+// triangle. Ranges keep their place, so the light records and the opaque/alpha split are unaffected.
+void sort_for_clusters(ChunkMesh& mesh, uint32_t maxTris, std::vector<uint32_t>& cuts) {
+    cuts.clear();
+    const bool omm = mesh.ommKeys.size() == mesh.triangle_count();
+    thread_local std::vector<float> centroids;
+    thread_local std::vector<uint32_t> order, cells, idx, mat;
+    thread_local std::vector<uint64_t> ommKeys;
+    uint32_t r[5];
+    mesh_ranges(mesh, r);
+    for (int range = 0; range < 4; ++range) {
+        const uint32_t b = r[range], e = r[range + 1];
+        if (b == e) continue;
+        if (e - b < 4 || ((e - b) & 1u)) { cuts.push_back(b); continue; }
+        const uint32_t quads = (e - b) / 2u;
+        centroids.assign(3ull * quads, 0.0f);
+        for (uint32_t q = 0; q < quads; ++q)
+            for (uint32_t k = 0; k < 6; ++k) {
+                const MeshVertex& v = mesh.vertices[mesh.indices[3ull * (b + 2u * q) + k]];
+                centroids[3ull * q + 0] += v.px / 6.0f;
+                centroids[3ull * q + 1] += v.py / 6.0f;
+                centroids[3ull * q + 2] += v.pz / 6.0f;
+            }
+        clusters::morton_cells(centroids.data(), quads, 2, maxTris, order, cells);
+        idx.assign(mesh.indices.begin() + 3ull * b, mesh.indices.begin() + 3ull * e);
+        mat.assign(mesh.materials.begin() + b, mesh.materials.begin() + e);
+        if (omm) ommKeys.assign(mesh.ommKeys.begin() + b, mesh.ommKeys.begin() + e);
+        uint32_t dst = b;
+        for (uint32_t q : order)
+            for (uint32_t s = 0; s < 2; ++s, ++dst) {
+                const uint32_t src = 2u * q + s;
+                for (uint32_t k = 0; k < 3; ++k) mesh.indices[3ull * dst + k] = idx[3ull * src + k];
+                mesh.materials[dst] = mat[src];
+                if (omm) mesh.ommKeys[dst] = ommKeys[src];
+            }
+        for (uint32_t c : cells) cuts.push_back(b + 2u * c);
+    }
+}
+#endif
 }
 
 void SpanAllocator::init(uint64_t capacity, uint64_t granularity) {
@@ -77,7 +128,8 @@ VoxelStreamer::~VoxelStreamer() {
     if (m_staging && m_stagingMapped) m_staging->Unmap(0, nullptr);
 }
 
-void VoxelStreamer::init(ID3D12Device5* device, DeviceContext* ctx, World* world, const StreamerConfig& cfg) {
+void VoxelStreamer::init(ID3D12Device5* device, DeviceContext* ctx, World* world, const StreamerConfig& cfg,
+                         clusters::ClusterGeometry* geometry) {
     m_device = device;
     m_ctx = ctx;
     m_world = world;
@@ -87,13 +139,18 @@ void VoxelStreamer::init(ID3D12Device5* device, DeviceContext* ctx, World* world
     m_workers = std::make_unique<planet::WorkerPool>();
     m_lodPool = std::make_unique<planet::WorkerPool>(std::max(2u, std::thread::hardware_concurrency() / 2u));
 
+    m_geometry = geometry;
+    m_clustered = cfg.clusters && geometry && geometry->enabled();
+    // Cluster objects are not compacted but moved; the build pool holds them meanwhile.
+    if (m_clustered) m_cfg.blasCompaction = false;
+
     m_blasPool = planet::create_buffer(device, cfg.blasPoolBytes,
                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                        D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, planet::HEAP_DEFAULT);
     m_blasPool->SetName(L"MinecraftBlasPool");
     m_blasPoolVa = m_blasPool->GetGPUVirtualAddress();
     m_blasAlloc.init(cfg.blasPoolBytes, BLAS_ALIGN);
-    if (cfg.blasCompaction) {
+    if (m_cfg.blasCompaction || m_clustered) {
         m_buildPool = planet::create_buffer(device, cfg.blasBuildPoolBytes,
                                             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                             D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, planet::HEAP_DEFAULT);
@@ -127,7 +184,7 @@ void VoxelStreamer::init(ID3D12Device5* device, DeviceContext* ctx, World* world
                                              D3D12_RESOURCE_STATE_COMMON, planet::HEAP_DEFAULT);
         m_scratch[i]->SetName(L"MinecraftBlasScratch");
     }
-    if (cfg.blasCompaction) {
+    if (m_cfg.blasCompaction) {
         m_compactInfo.resize(frames); m_compactReadback.resize(frames);
         m_compactMapped.assign(frames, nullptr); m_compactCount.assign(frames, 0); m_compactInfoCopyState.assign(frames, 0);
         for (uint32_t i = 0; i < frames; ++i) {
@@ -145,7 +202,7 @@ void VoxelStreamer::init(ID3D12Device5* device, DeviceContext* ctx, World* world
     }
     std::printf("[mc] streamer: %u mesh workers + %u LOD workers, BLAS pool %llu MB%s, staging %llu MB, scratch %u x %llu MB, budget %.1fM tris\n",
                 m_workers->thread_count(), m_lodPool->thread_count(), (unsigned long long)(cfg.blasPoolBytes >> 20),
-                cfg.blasCompaction ? (" compacted (+" + std::to_string(cfg.blasBuildPoolBytes >> 20) + " MB build pool)").c_str() : "",
+                m_clustered ? " clustered" : m_cfg.blasCompaction ? (" compacted (+" + std::to_string(cfg.blasBuildPoolBytes >> 20) + " MB build pool)").c_str() : "",
                 (unsigned long long)(stagingBytes >> 20), frames, (unsigned long long)(cfg.scratchBytesPerFrame >> 20),
                 (double)cfg.triangleBudget / 1.0e6);
 }
@@ -311,10 +368,11 @@ DirectX::XMMATRIX VoxelStreamer::placement_matrix(float tx, float ty, float tz) 
 }
 
 bool VoxelStreamer::allocate_gpu(GpuChunk& g, uint32_t vtxCount, uint32_t idxCount, uint32_t triCount, uint64_t blasSize,
+                                 uint64_t clasSize, uint32_t clusterCount,
                                  uint32_t lightRecs, uint32_t lightNodes, bool* buildPoolFull) {
     std::lock_guard<std::mutex> lk(m_poolMutex);
     if (buildPoolFull) *buildPoolFull = false;
-    uint64_t v = 0, i = 0, m = 0, b = 0;
+    uint64_t v = 0, i = 0, m = 0, b = 0, c = 0;
     if (!m_vtxAlloc.allocate(vtxCount, v)) return false;
     if (!m_idxAlloc.allocate(idxCount, i)) { m_vtxAlloc.free(v, vtxCount); return false; }
     if (!m_matAlloc.allocate(triCount, m)) { m_vtxAlloc.free(v, vtxCount); m_idxAlloc.free(i, idxCount); return false; }
@@ -324,11 +382,29 @@ bool VoxelStreamer::allocate_gpu(GpuChunk& g, uint32_t vtxCount, uint32_t idxCou
         if (buildPoolFull) *buildPoolFull = m_cfg.blasCompaction;
         return false;
     }
+    auto undo = [&] {
+        m_vtxAlloc.free(v, vtxCount); m_idxAlloc.free(i, idxCount); m_matAlloc.free(m, triCount);
+        blasAlloc.free(b, blasSize);
+    };
+    // Clustered: the CLAS build region, sized by the prebuild query; the move gives them a tight one later.
+    if (clasSize && !m_buildAlloc.allocate(clasSize, c)) {
+        undo();
+        if (buildPoolFull) *buildPoolFull = true;
+        return false;
+    }
+    uint32_t ids = 0;
+    if (clusterCount && !m_geometry->allocate_ids(clusterCount, ids)) {
+        if (clasSize) m_buildAlloc.free(c, clasSize);
+        undo();
+        return false;
+    }
+    g.clusterBase = ids; g.clusterCount = clusterCount;
     g.vtxOff = m_vertexBase + v; g.vtxCount = vtxCount;
     g.idxOff = m_indexBase + i;  g.idxCount = idxCount;
     g.matOff = m_matIdBase + m;  g.matCount = triCount;
     if (m_cfg.blasCompaction) { g.buildOff = b; g.buildSize = blasSize; g.buildVa = m_buildPoolVa + b; g.blasOff = g.blasSize = 0; g.blasVa = 0; }
     else                      { g.blasOff = b;  g.blasSize = blasSize;  g.blasVa = m_blasPoolVa + b; }
+    if (clasSize) { g.buildOff = c; g.buildSize = clasSize; g.buildVa = m_buildPoolVa + c; }
     g.triCount = triCount;
     g.light = LightData{};
     if (lightRecs && lightNodes && m_lightsBound) {
@@ -360,6 +436,8 @@ void VoxelStreamer::free_gpu(const GpuChunk& g) {
     m_matAlloc.free(g.matOff - m_matIdBase, g.matCount);
     if (g.blasSize)  m_blasAlloc.free(g.blasOff, g.blasSize);
     if (g.buildSize) m_buildAlloc.free(g.buildOff, g.buildSize);
+    if (g.clasSize)  m_blasAlloc.free(g.clasOff, g.clasSize);
+    if (g.clusterCount) m_geometry->free_ids(g.clusterBase, g.clusterCount);
     if (g.ommCount) m_ommAlloc.free(g.ommOff, g.ommCount);
     free_light(g.light);
 }
@@ -447,6 +525,39 @@ bool VoxelStreamer::build_lights(const ChunkMesh& mesh, MeshJob& job, std::vecto
     return true;
 }
 
+#if RDN_CLUSTER_API
+// Each of sort_for_clusters' cells becomes one cluster, or several where it exceeds the CLAS limits; cells never span two
+// mesh ranges, so each cluster has one geometry index. One batch per chunk, micromap-enabled when any of its triangles
+// has one. ALLOW_OMM makes every CLAS ~65% larger (19.3 vs 11.7 bytes/triangle), but building the opaque clusters in a
+// batch of their own without it traced ~45% slower than one batch (RTX 5090, driver 621.01).
+bool VoxelStreamer::cluster_prebuild(const ChunkMesh& mesh, const std::vector<uint32_t>& cuts, bool omm, MeshJob& job,
+                                     uint64_t& blasSize, uint64_t& clasSize) const {
+    job.clusters.clear();
+    clusters::split(mesh.indices.data(), (uint32_t)mesh.vertices.size(), cuts, mesh.triangle_count(), job.clusters);
+    job.clusterLimits = clusters::limits(job.clusters.data(), (uint32_t)job.clusters.size(),
+                                         (mesh.opaqueTriCount && mesh.alphaTriCount) ? 1u : 0u, omm);
+    clusters::ClusterGeometry::Sizes sizes;
+    if (!m_geometry->prebuild(job.clusterLimits, omm, sizes)) return false;
+    clasSize = sizes.clas;
+    blasSize = sizes.blas;
+    job.scratchSize = sizes.clasScratch;
+    return true;
+}
+
+// Moves the chunk's built CLAS into their tight region (clasOff) and builds the cluster BLAS over the moved ones.
+bool VoxelStreamer::queue_cluster_finish(Chunk& c, uint32_t slot, uint64_t& scratchUsed) {
+    const GpuChunk& g = c.next;
+    const bool omm = g.ommCount != 0;
+    if (!m_geometry->can_queue(g.clusterCount, true)) return false;
+    const uint64_t scratch = m_geometry->finish_scratch(g.clusterCount, g.clasSize, omm);
+    if (scratchUsed + scratch > m_cfg.scratchBytesPerFrame) return false;
+    c.sizes = m_geometry->queue_finish(g.clusterBase, g.clusterCount, omm, m_blasPoolVa + g.clasOff, g.clasSize, g.blasVa,
+                                       m_scratch[slot]->GetGPUVirtualAddress() + scratchUsed);
+    scratchUsed += scratch;
+    return true;
+}
+#endif
+
 ChunkMesher& VoxelStreamer::thread_mesher() {
     thread_local std::unique_ptr<ChunkMesher> mesher;
     thread_local const World* mesherWorld = nullptr;
@@ -467,6 +578,10 @@ void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
         job->state.store(3, std::memory_order_release);
         return;
     }
+    std::vector<uint32_t> clusterCuts;
+#if RDN_CLUSTER_API
+    if (m_clustered) sort_for_clusters(mesh, m_cfg.clusterTargetTriangles, clusterCuts);
+#endif
 
     std::vector<LightTriangle> records;
     lt::LightTreeBuilder::SingleBLAS blas;
@@ -485,43 +600,54 @@ void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
         }
     }
 
-    D3D12_RAYTRACING_GEOMETRY_DESC gd[2] = {};
-    D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC ommTri = {};
-    D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC ommLink = {};
-    uint32_t geomCount = 0;
-    auto geom = [&](uint32_t triCount, bool opaque, bool omm) {
-        D3D12_RAYTRACING_GEOMETRY_DESC& g = gd[geomCount++];
-        D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC& tri = omm ? ommTri : g.Triangles;
-        g.Type  = omm ? D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES : D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-        g.Flags = opaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
-        tri.VertexBuffer.StrideInBytes = sizeof(MeshVertex);
-        tri.VertexCount  = m_combinedVertexCount;
-        tri.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-        tri.IndexCount   = triCount * 3;
-        tri.IndexFormat  = DXGI_FORMAT_R32_UINT;
-        if (omm) {
-            ommLink.OpacityMicromapIndexBuffer.StrideInBytes = sizeof(int32_t);
-            ommLink.OpacityMicromapIndexFormat = DXGI_FORMAT_R32_UINT;
-            ommLink.OpacityMicromapArray = m_ommArrayVa;
-            g.OmmTriangles.pTriangles  = &ommTri;
-            g.OmmTriangles.pOmmLinkage = &ommLink;
-        }
-    };
-    if (mesh.opaqueTriCount) geom(mesh.opaqueTriCount, true, false);
-    if (mesh.alphaTriCount)  geom(mesh.alphaTriCount, false, ommCount != 0);
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in = {};
-    in.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    in.DescsLayout    = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    in.Flags          = build_flags();
-    in.NumDescs       = geomCount;
-    in.pGeometryDescs = gd;
-    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
-    m_device->GetRaytracingAccelerationStructurePrebuildInfo(&in, &info);
+    uint64_t blasSize = 0, clasSize = 0;
+    bool prebuilt = true;
+    if (m_clustered) {
+#if RDN_CLUSTER_API
+        prebuilt = cluster_prebuild(mesh, clusterCuts, ommCount != 0, *job, blasSize, clasSize);
+#endif
+    } else {
+        D3D12_RAYTRACING_GEOMETRY_DESC gd[2] = {};
+        D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC ommTri = {};
+        D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC ommLink = {};
+        uint32_t geomCount = 0;
+        auto geom = [&](uint32_t triCount, bool opaque, bool omm) {
+            D3D12_RAYTRACING_GEOMETRY_DESC& g = gd[geomCount++];
+            D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC& tri = omm ? ommTri : g.Triangles;
+            g.Type  = omm ? D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES : D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            g.Flags = opaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+            tri.VertexBuffer.StrideInBytes = sizeof(MeshVertex);
+            tri.VertexCount  = m_combinedVertexCount;
+            tri.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            tri.IndexCount   = triCount * 3;
+            tri.IndexFormat  = DXGI_FORMAT_R32_UINT;
+            if (omm) {
+                ommLink.OpacityMicromapIndexBuffer.StrideInBytes = sizeof(int32_t);
+                ommLink.OpacityMicromapIndexFormat = DXGI_FORMAT_R32_UINT;
+                ommLink.OpacityMicromapArray = m_ommArrayVa;
+                g.OmmTriangles.pTriangles  = &ommTri;
+                g.OmmTriangles.pOmmLinkage = &ommLink;
+            }
+        };
+        if (mesh.opaqueTriCount) geom(mesh.opaqueTriCount, true, false);
+        if (mesh.alphaTriCount)  geom(mesh.alphaTriCount, false, ommCount != 0);
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in = {};
+        in.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        in.DescsLayout    = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        in.Flags          = build_flags();
+        in.NumDescs       = geomCount;
+        in.pGeometryDescs = gd;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+        m_device->GetRaytracingAccelerationStructurePrebuildInfo(&in, &info);
+        blasSize = align_up_u64(info.ResultDataMaxSizeInBytes, BLAS_ALIGN);
+        job->scratchSize = align_up_u64(info.ScratchDataSizeInBytes, BLAS_ALIGN);
+    }
 
     GpuChunk g;
     bool buildPoolFull = false;
-    if (!allocate_gpu(g, (uint32_t)mesh.vertices.size(), (uint32_t)mesh.indices.size(), mesh.triangle_count(),
-                      align_up_u64(info.ResultDataMaxSizeInBytes, BLAS_ALIGN),
+    if (!prebuilt ||
+        !allocate_gpu(g, (uint32_t)mesh.vertices.size(), (uint32_t)mesh.indices.size(), mesh.triangle_count(),
+                      blasSize, clasSize, (uint32_t)job->clusters.size(),
                       haveLights ? (uint32_t)records.size() : 0u, haveLights ? (uint32_t)blas.nodes.size() : 0u, &buildPoolFull)) {
         if (ommCount) { std::lock_guard<std::mutex> lk(m_poolMutex); m_ommAlloc.free(ommOff, ommCount); }
         job->buildPoolFull = buildPoolFull;
@@ -545,7 +671,6 @@ void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
     }
     job->gpu = g;
     job->lightGen = g.light.gen;
-    job->scratchSize = align_up_u64(info.ScratchDataSizeInBytes, BLAS_ALIGN);
 
     job->vtxBytes = (uint32_t)(mesh.vertices.size() * sizeof(MeshVertex));
     job->idxBytes = (uint32_t)(mesh.indices.size() * sizeof(uint32_t));
@@ -606,6 +731,7 @@ void VoxelStreamer::run_job(const std::shared_ptr<MeshJob>& job) {
         std::memcpy(dst + offTrail, blas.trails.data(), job->trailBytes);
     }
     std::memcpy(m_materialIdsMapped + g.matOff * sizeof(uint32_t), mesh.materials.data(), mesh.materials.size() * sizeof(uint32_t));
+    if (g.clusterCount) m_geometry->write_records(g.clusterBase, job->clusters.data(), g.clusterCount);
     if (g.ommCount) {
         int32_t* omm = reinterpret_cast<int32_t*>(m_ommIndicesMapped + g.ommOff * sizeof(int32_t));
         const int32_t unknown = D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_UNKNOWN_OPAQUE;
@@ -652,11 +778,56 @@ void VoxelStreamer::reclaim() {
                 ++i;
                 continue;
             }
+#if RDN_CLUSTER_API
+            // Built: a tight region for the CLAS move, sized by what the builds reported.
+            if (m_clustered && c.next.buildSize) {
+                if (!c.compactQueued) {
+                    if (c.sizes.valid()) {
+                        // A later frame on the same slot may have overwritten the sizes; then keep the whole build region.
+                        thread_local std::vector<uint64_t> sizes;
+                        sizes.resize(c.next.clusterCount);
+                        uint64_t built = c.next.buildSize;
+                        if (m_geometry->sizes(c.sizes, c.next.clusterCount, sizes.data())) {
+                            built = 0;
+                            for (uint64_t s : sizes) built += s;
+                        }
+                        c.next.clasBuilt = built;
+                        c.sizes = {};
+                    }
+                    if (c.next.clasBuilt == 0 || c.next.clasBuilt > c.next.buildSize) {
+                        std::printf("[mc] chunk CLAS built size %llu outside (0, %llu] - rebuilding\n",
+                                    (unsigned long long)c.next.clasBuilt, (unsigned long long)c.next.buildSize);
+                        free_gpu(c.next);
+                        c.next = GpuChunk{};
+                        c.state = State::Pending;
+                        c.retryFrame = m_frame + 20;
+                        m_uploading[i] = m_uploading.back(); m_uploading.pop_back();
+                        continue;
+                    }
+                    const uint64_t aligned = align_up_u64(c.next.clasBuilt, BLAS_ALIGN);
+                    uint64_t off = 0;
+                    bool ok = false;
+                    { std::lock_guard<std::mutex> lk(m_poolMutex); ok = m_blasAlloc.allocate(aligned, off); }
+                    if (!ok) { ++i; continue; }
+                    c.next.clasOff = off; c.next.clasSize = aligned;
+                    c.compactQueued = true;
+                    m_toCompact.push_back(m_uploading[i]);
+                }
+                ++i;
+                continue;
+            }
+#endif
         } else {
             if (c.compactFence == 0 || c.compactFence > computeDone) { ++i; continue; }
             { std::lock_guard<std::mutex> lk(m_poolMutex); m_buildAlloc.free(c.next.buildOff, c.next.buildSize); }
             c.next.buildOff = c.next.buildSize = 0; c.next.buildVa = 0;
             c.compactQueued = false;
+#if RDN_CLUSTER_API
+            if (c.sizes.valid()) {
+                if (!m_geometry->sizes(c.sizes, 1, &c.next.blasBuilt)) c.next.blasBuilt = c.next.blasSize;
+                c.sizes = {};
+            }
+#endif
         }
         if (c.rebuilding) {
             retire_gpu(c.gpu, exclude_light_slot(c));
@@ -1195,6 +1366,7 @@ void VoxelStreamer::update_stats() {
         uint32_t byState[7] = {};
         uint64_t resident = 0, lightResident = 0, lightNodesResident = 0;
         uint32_t residentBlas = 0, dropped = 0;
+        uint64_t clusters = 0, clasAlloc = 0, clasBuilt = 0, blasAlloc = 0, blasBuilt = 0;
     };
     std::vector<Census> parts(piece_count((uint32_t)m_chunks.bucket_count(), 512));
     parallel_buckets([&](uint64_t, const Chunk& c, uint32_t piece) {
@@ -1203,6 +1375,11 @@ void VoxelStreamer::update_stats() {
         if (c.resident) {
             cs.resident += c.gpu.triCount;
             if (c.gpu.valid()) ++cs.residentBlas;
+            cs.clusters += c.gpu.clusterCount;
+            cs.clasAlloc += c.gpu.clasSize;
+            cs.clasBuilt += c.gpu.clasBuilt;
+            cs.blasAlloc += c.gpu.blasSize;
+            cs.blasBuilt += c.gpu.blasBuilt;
             cs.lightResident += c.gpu.light.recCount;
             cs.lightNodesResident += c.gpu.light.nodeCount;
         }
@@ -1216,7 +1393,18 @@ void VoxelStreamer::update_stats() {
         total.lightNodesResident += cs.lightNodesResident;
         total.residentBlas += cs.residentBlas;
         total.dropped += cs.dropped;
+        total.clusters += cs.clusters;
+        total.clasAlloc += cs.clasAlloc;
+        total.clasBuilt += cs.clasBuilt;
+        total.blasAlloc += cs.blasAlloc;
+        total.blasBuilt += cs.blasBuilt;
     }
+    s.clustered = m_clustered;
+    s.clustersResident = total.clusters;
+    s.clasBytesAllocated = total.clasAlloc;
+    s.clasBytesBuilt = total.clasBuilt;
+    s.clusterBlasBytesAllocated = m_clustered ? total.blasAlloc : 0;
+    s.clusterBlasBytesBuilt = total.blasBuilt;
     s.pending = total.byState[(int)State::Pending];   s.meshing = total.byState[(int)State::Meshing];
     s.meshed = total.byState[(int)State::Meshed];     s.uploading = total.byState[(int)State::Uploading] + total.byState[(int)State::Compacting];
     s.ready = total.byState[(int)State::Ready];       s.empty = total.byState[(int)State::Empty];
@@ -1284,14 +1472,37 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
             m_compactInfoCopyState[slot] = 0;
         }
     }
+    m_stats.compactionsThisFrame = 0;
+#if RDN_CLUSTER_API
+    if (m_clustered) {
+        // Finishing built chunks first: it frees their build-pool regions.
+        std::vector<uint64_t> deferred;
+        for (uint64_t k : m_toCompact) {
+            auto it = m_chunks.find(k);
+            if (it == m_chunks.end() || it->second.state != State::Uploading || !it->second.compactQueued) continue;
+            Chunk& c = it->second;
+            if (!queue_cluster_finish(c, slot, scratchUsed)) { deferred.push_back(k); continue; }
+            c.state = State::Compacting;
+            c.compactFence = 0;
+            m_compactingThisFrame.push_back(k);
+            ++m_stats.compactionsThisFrame;
+        }
+        m_toCompact.swap(deferred);
+    }
+#endif
     const bool behind = m_cutReadyFraction < 0.9;
-    const uint32_t budget = m_unlimitedBudget ? 0xFFFFFFFFu : (behind ? std::max(m_cfg.buildBudget, m_cfg.buildBudgetBurst) : m_cfg.buildBudget);
+    const uint32_t base = m_clustered ? m_cfg.clusterBuildBudget : m_cfg.buildBudget;
+    const uint32_t burst = m_clustered ? m_cfg.clusterBuildBudgetBurst : m_cfg.buildBudgetBurst;
+    const uint32_t budget = m_unlimitedBudget ? 0xFFFFFFFFu : (behind ? std::max(base, burst) : base);
 
     for (const auto& [prio, k] : ready) {
         if (m_stats.buildsThisFrame >= budget) break;
         if (m_cfg.blasCompaction && m_compactCount[slot] >= COMPACT_INFO_ENTRIES) break;
         Chunk& c = m_chunks[k];
         MeshJob& job = *c.job;
+#if RDN_CLUSTER_API
+        if (m_clustered && !m_geometry->can_queue(job.gpu.clusterCount, false)) break;
+#endif
         if (scratchUsed + job.scratchSize > m_cfg.scratchBytesPerFrame) {
             if (scratchUsed == 0) {
                 std::printf("[mc] chunk needs %llu MB of BLAS scratch, over the %llu MB ring - skipped\n",
@@ -1325,56 +1536,76 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
             }
         }
 
-        D3D12_RAYTRACING_GEOMETRY_DESC gd[2] = {};
-        D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC ommTri = {};
-        D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC ommLink = {};
-        uint32_t geomCount = 0;
-        uint64_t idxElem = job.gpu.idxOff;
-        auto geom = [&](uint32_t triCount, bool opaque, bool omm) {
-            D3D12_RAYTRACING_GEOMETRY_DESC& g = gd[geomCount++];
-            D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC& tri = omm ? ommTri : g.Triangles;
-            g.Type  = omm ? D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES : D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-            g.Flags = opaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
-            tri.VertexBuffer.StartAddress  = m_vertexVa;
-            tri.VertexBuffer.StrideInBytes = sizeof(MeshVertex);
-            tri.VertexCount  = m_combinedVertexCount;
-            tri.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-            tri.IndexBuffer  = m_indexVa + idxElem * sizeof(uint32_t);
-            tri.IndexCount   = triCount * 3;
-            tri.IndexFormat  = DXGI_FORMAT_R32_UINT;
-            if (omm) {
-                ommLink.OpacityMicromapIndexBuffer.StartAddress  = m_ommIndexVa + job.gpu.ommOff * sizeof(int32_t);
-                ommLink.OpacityMicromapIndexBuffer.StrideInBytes = sizeof(int32_t);
-                ommLink.OpacityMicromapIndexFormat  = DXGI_FORMAT_R32_UINT;
-                ommLink.OpacityMicromapBaseLocation = 0;
-                ommLink.OpacityMicromapArray        = m_ommArrayVa;
-                g.OmmTriangles.pTriangles  = &ommTri;
-                g.OmmTriangles.pOmmLinkage = &ommLink;
+#if RDN_CLUSTER_API
+        if (m_clustered) {
+            clusters::Mesh mesh;
+            mesh.vertices = m_vertexVa;
+            mesh.vertexStride = sizeof(MeshVertex);
+            mesh.indices = m_indexVa + job.gpu.idxOff * sizeof(uint32_t);
+            mesh.spans = job.clusters.data();
+            mesh.clusterCount = job.gpu.clusterCount;
+            mesh.clusterBase = job.gpu.clusterBase;
+            mesh.opaqueTriCount = job.gpu.opaqueTriCount;
+            if (job.gpu.ommCount) {
+                mesh.ommArray = m_ommArrayVa;
+                mesh.ommIndices = m_ommIndexVa + job.gpu.ommOff * sizeof(int32_t);
             }
-            idxElem += (uint64_t)triCount * 3;
-        };
-        if (job.gpu.opaqueTriCount) geom(job.gpu.opaqueTriCount, true, false);
-        const uint32_t alphaTris = job.gpu.triCount - job.gpu.opaqueTriCount;
-        if (alphaTris) geom(alphaTris, false, job.gpu.ommCount != 0);
+            mesh.limits = job.clusterLimits;
+            c.sizes = m_geometry->queue_build(mesh, job.gpu.buildVa, scratchVa + scratchUsed);
+        } else
+#endif
+        {
+            D3D12_RAYTRACING_GEOMETRY_DESC gd[2] = {};
+            D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC ommTri = {};
+            D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC ommLink = {};
+            uint32_t geomCount = 0;
+            uint64_t idxElem = job.gpu.idxOff;
+            auto geom = [&](uint32_t triCount, bool opaque, bool omm) {
+                D3D12_RAYTRACING_GEOMETRY_DESC& g = gd[geomCount++];
+                D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC& tri = omm ? ommTri : g.Triangles;
+                g.Type  = omm ? D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES : D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                g.Flags = opaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+                tri.VertexBuffer.StartAddress  = m_vertexVa;
+                tri.VertexBuffer.StrideInBytes = sizeof(MeshVertex);
+                tri.VertexCount  = m_combinedVertexCount;
+                tri.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+                tri.IndexBuffer  = m_indexVa + idxElem * sizeof(uint32_t);
+                tri.IndexCount   = triCount * 3;
+                tri.IndexFormat  = DXGI_FORMAT_R32_UINT;
+                if (omm) {
+                    ommLink.OpacityMicromapIndexBuffer.StartAddress  = m_ommIndexVa + job.gpu.ommOff * sizeof(int32_t);
+                    ommLink.OpacityMicromapIndexBuffer.StrideInBytes = sizeof(int32_t);
+                    ommLink.OpacityMicromapIndexFormat  = DXGI_FORMAT_R32_UINT;
+                    ommLink.OpacityMicromapBaseLocation = 0;
+                    ommLink.OpacityMicromapArray        = m_ommArrayVa;
+                    g.OmmTriangles.pTriangles  = &ommTri;
+                    g.OmmTriangles.pOmmLinkage = &ommLink;
+                }
+                idxElem += (uint64_t)triCount * 3;
+            };
+            if (job.gpu.opaqueTriCount) geom(job.gpu.opaqueTriCount, true, false);
+            const uint32_t alphaTris = job.gpu.triCount - job.gpu.opaqueTriCount;
+            if (alphaTris) geom(alphaTris, false, job.gpu.ommCount != 0);
 
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
-        desc.Inputs.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-        desc.Inputs.DescsLayout    = D3D12_ELEMENTS_LAYOUT_ARRAY;
-        desc.Inputs.Flags          = build_flags();
-        desc.Inputs.NumDescs       = geomCount;
-        desc.Inputs.pGeometryDescs = gd;
-        desc.DestAccelerationStructureData    = m_cfg.blasCompaction ? job.gpu.buildVa : job.gpu.blasVa;
-        desc.ScratchAccelerationStructureData = scratchVa + scratchUsed;
-        if (m_cfg.blasCompaction) {
-            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC pb = {};
-            pb.DestBuffer = m_compactInfo[slot]->GetGPUVirtualAddress() + (uint64_t)m_compactCount[slot] * sizeof(uint64_t);
-            pb.InfoType   = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
-            computeList->BuildRaytracingAccelerationStructure(&desc, 1, &pb);
-            c.compactSlot = slot;
-            c.compactIndex = m_compactCount[slot]++;
-            c.compactQueued = false;
-        } else {
-            computeList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
+            desc.Inputs.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            desc.Inputs.DescsLayout    = D3D12_ELEMENTS_LAYOUT_ARRAY;
+            desc.Inputs.Flags          = build_flags();
+            desc.Inputs.NumDescs       = geomCount;
+            desc.Inputs.pGeometryDescs = gd;
+            desc.DestAccelerationStructureData    = m_cfg.blasCompaction ? job.gpu.buildVa : job.gpu.blasVa;
+            desc.ScratchAccelerationStructureData = scratchVa + scratchUsed;
+            if (m_cfg.blasCompaction) {
+                D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC pb = {};
+                pb.DestBuffer = m_compactInfo[slot]->GetGPUVirtualAddress() + (uint64_t)m_compactCount[slot] * sizeof(uint64_t);
+                pb.InfoType   = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+                computeList->BuildRaytracingAccelerationStructure(&desc, 1, &pb);
+                c.compactSlot = slot;
+                c.compactIndex = m_compactCount[slot]++;
+                c.compactQueued = false;
+            } else {
+                computeList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
+            }
         }
         scratchUsed += job.scratchSize;
 
@@ -1385,7 +1616,7 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
         m_uploading.push_back(k);
         ++m_stats.buildsThisFrame;
     }
-    if (m_stats.buildsThisFrame) {
+    if (m_stats.buildsThisFrame && !m_clustered) {
         D3D12_RESOURCE_BARRIER uav = {};
         uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         uav.UAV.pResource = m_cfg.blasCompaction ? m_buildPool.Get() : m_blasPool.Get();
@@ -1403,24 +1634,25 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
             m_compactInfoCopyState[slot] = 1;
         }
     }
-    m_stats.compactionsThisFrame = 0;
-    for (uint64_t k : m_toCompact) {
-        auto it = m_chunks.find(k);
-        if (it == m_chunks.end() || it->second.state != State::Uploading || !it->second.compactQueued) continue;
-        Chunk& c = it->second;
-        computeList->CopyRaytracingAccelerationStructure(c.next.blasVa, c.next.buildVa,
-                                                         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
-        c.state = State::Compacting;
-        c.compactFence = 0;
-        m_compactingThisFrame.push_back(k);
-        ++m_stats.compactionsThisFrame;
-    }
-    m_toCompact.clear();
-    if (m_stats.compactionsThisFrame) {
-        D3D12_RESOURCE_BARRIER uav = {};
-        uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        uav.UAV.pResource = m_blasPool.Get();
-        computeList->ResourceBarrier(1, &uav);
+    if (!m_clustered) {
+        for (uint64_t k : m_toCompact) {
+            auto it = m_chunks.find(k);
+            if (it == m_chunks.end() || it->second.state != State::Uploading || !it->second.compactQueued) continue;
+            Chunk& c = it->second;
+            computeList->CopyRaytracingAccelerationStructure(c.next.blasVa, c.next.buildVa,
+                                                             D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+            c.state = State::Compacting;
+            c.compactFence = 0;
+            m_compactingThisFrame.push_back(k);
+            ++m_stats.compactionsThisFrame;
+        }
+        m_toCompact.clear();
+        if (m_stats.compactionsThisFrame) {
+            D3D12_RESOURCE_BARRIER uav = {};
+            uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            uav.UAV.pResource = m_blasPool.Get();
+            computeList->ResourceBarrier(1, &uav);
+        }
     }
     m_stats.recordMs = (float)std::chrono::duration<double, std::milli>(clock::now() - t0).count();
 }
@@ -1650,7 +1882,10 @@ void VoxelStreamer::warm_up(const double camWorld[3]) {
     for (int iter = 0; ; ++iter) {
         begin_frame(camWorld);
         m_ctx->ResetPlanetLists();
+        const uint32_t slot = m_ctx->FrameIndex() % (uint32_t)m_scratch.size();
+        if (m_clustered) m_geometry->begin(slot, m_ctx->ComputeList()); // no orchestrator during warm-up
         record_gpu_work(m_ctx->CopyList(), m_ctx->ComputeList());
+        if (m_clustered) m_geometry->record(m_ctx->ComputeList());
         const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
         const uint64_t cv = m_ctx->SubmitPlanetCompute(copyVal);
         on_submitted(copyVal, cv);

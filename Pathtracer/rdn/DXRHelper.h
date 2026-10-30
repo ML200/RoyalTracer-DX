@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -59,11 +60,26 @@ static const D3D12_HEAP_PROPERTIES kDefaultHeapProps = {D3D12_HEAP_TYPE_DEFAULT,
 
 static const CD3DX12_HEAP_PROPERTIES kReadbackHeapProps(D3D12_HEAP_TYPE_READBACK);
 
-// On-disk DXIL cache in ShaderCache/ (next to the exe). An entry is reused only when the compiler version,
-// arguments, source and every included file are byte-identical to the compile that produced it.
+// Where shader sources live. Empty: relative to the working directory (the standalone app runs from its exe folder).
+// A host process sets an absolute folder, since its working directory is its own.
+namespace shader_paths {
+inline std::wstring& SourceDir() {
+    static std::wstring dir;
+    return dir;
+}
+inline std::wstring Resolve(LPCWSTR file) {
+    return SourceDir().empty() ? std::wstring(file) : SourceDir() + L"\\" + file;
+}
+} // namespace shader_paths
+
+// On-disk DXIL cache in ShaderCache/ (next to the exe, or a host-chosen folder). An entry is reused only when the
+// compiler version, arguments, source and every included file are byte-identical to the compile that produced it.
 namespace shader_cache {
 inline constexpr uint32_t kMagic = 0x32435344; // "DSC2"; bump when the entry layout changes
-inline constexpr wchar_t kDir[] = L"ShaderCache";
+inline std::wstring& Dir() {
+    static std::wstring dir = L"ShaderCache";
+    return dir;
+}
 
 inline uint64_t Hash(const void* data, size_t size, uint64_t h = 14695981039346656037ull) {
     const auto* bytes = static_cast<const uint8_t*>(data);
@@ -161,7 +177,8 @@ inline ComPtr<IDxcBlob> Load(const std::wstring& entryPath, uint64_t sourceHash,
 
 inline void Store(const std::wstring& entryPath, uint64_t sourceHash, const std::vector<Dependency>& deps,
                   IDxcBlob* blob) {
-    CreateDirectoryW(kDir, nullptr);
+    std::error_code ec;
+    std::filesystem::create_directories(Dir(), ec);
     std::ofstream out(entryPath, std::ios::binary | std::ios::trunc);
     if (!out)
         return;
@@ -180,6 +197,9 @@ inline void Store(const std::wstring& entryPath, uint64_t sourceHash, const std:
     out.write(static_cast<const char*>(blob->GetBufferPointer()), (std::streamsize)blobSize);
 }
 } // namespace shader_cache
+
+// Set by DeviceContext before the first compile: shaders build as SM 6.10 with RDN_CLUSTERS=1.
+inline bool g_clusteredGeometry = false;
 
 inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR targetProfile,
                                          const std::vector<std::wstring>& extraDefines = {}) {
@@ -210,9 +230,24 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
                 CoTaskMemFree(commit);
             }
         }
+        ~CompilerContext() {
+            // The main thread's context dies at process exit; in a host that loaded dxcompiler.dll after this
+            // module, DXC is already torn down by then and aborts on Release.
+            using ShutdownInProgress = BOOLEAN(NTAPI*)();
+            static const auto shuttingDown =
+                (ShutdownInProgress)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlDllShutdownInProgress");
+            if (shuttingDown && shuttingDown()) {
+                compiler.Detach();
+                utils.Detach();
+                includes.Detach();
+            }
+        }
     };
     // DXC objects are not thread-safe; shaders compile on several threads at once.
     static thread_local const CompilerContext context;
+
+    const std::wstring resolvedName = shader_paths::Resolve(fileName);
+    fileName = resolvedName.c_str();
 
     ComPtr<IDxcBlobEncoding> pSourceBlob;
     HRESULT hr = context.utils->LoadFile(fileName, nullptr, &pSourceBlob);
@@ -247,6 +282,10 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
     args.push_back(L"MAX_REGS=96");
     args.push_back(L"-HV");
     args.push_back(L"2021");
+    if (g_clusteredGeometry) {
+        args.push_back(L"-D");
+        args.push_back(L"RDN_CLUSTERS=1");
+    }
 
     for (const auto& d : extraDefines) {
         args.push_back(L"-D");
@@ -279,7 +318,7 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
         argsHash = shader_cache::Hash(arg, (wcslen(arg) + 1) * sizeof(wchar_t), argsHash);
     wchar_t argsHex[17];
     swprintf_s(argsHex, L"%016llX", argsHash);
-    const std::wstring cachePath = std::wstring(shader_cache::kDir) + L"/" + shaderName + L"-" +
+    const std::wstring cachePath = shader_cache::Dir() + L"/" + shaderName + L"-" +
                                    (*entryPoint ? entryPoint : L"lib") + L"-" + argsHex + L".bin";
     const uint64_t sourceHash = shader_cache::Hash(sourceBuffer.Ptr, sourceBuffer.Size);
 
@@ -317,9 +356,11 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
                 errMsg.assign(pErrors->GetStringPointer(), pErrors->GetStringLength());
             }
             // An error in a shared include fails every concurrent compile; one dialog is enough.
+#ifndef RT_HOSTED
             static std::atomic<bool> errorShown{false};
             if (!errorShown.exchange(true))
                 MessageBoxA(nullptr, errMsg.c_str(), "Shader Compilation Failed", MB_OK | MB_ICONERROR);
+#endif
             throw std::runtime_error(errMsg);
         }
 
@@ -347,11 +388,11 @@ inline ComPtr<IDxcBlob> CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, L
 }
 
 inline ComPtr<IDxcBlob> CompileShaderLibrary(LPCWSTR fileName, const std::vector<std::wstring>& extraDefines = {}) {
-    return CompileShaderNew(fileName, L"", L"lib_6_9", extraDefines);
+    return CompileShaderNew(fileName, L"", g_clusteredGeometry ? L"lib_6_10" : L"lib_6_9", extraDefines);
 }
 
 inline Microsoft::WRL::ComPtr<IDxcBlob> CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main") {
-    return CompileShaderNew(fileName, entryPoint, L"cs_6_9");
+    return CompileShaderNew(fileName, entryPoint, g_clusteredGeometry ? L"cs_6_10" : L"cs_6_9");
 }
 
 inline ComPtr<ID3D12DescriptorHeap> CreateDescriptorHeap(ID3D12Device* device, uint32_t count,

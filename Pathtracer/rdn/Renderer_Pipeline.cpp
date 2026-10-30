@@ -134,6 +134,207 @@ Renderer::CreateBottomLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>
     return buffers;
 }
 
+// Loaded meshes' cluster BLAS, synchronously, in pieces of at most PIECE_CLUSTERS clusters: a batch of pieces builds its
+// CLAS into a temporary arena (sized by the prebuild query), reads back what they took and moves each piece into a tight
+// buffer of its own (mesh.clas); a mesh's cluster BLAS follows its last piece's move. A mesh with a cluster LOD hierarchy
+// builds every level's CLAS, its BLAS over the full-detail cut, and gets their addresses for the per-instance cuts.
+void Renderer::BuildClusterBlas(const std::vector<MeshGPU*>& meshes) {
+#if RDN_CLUSTER_API
+    constexpr uint32_t PIECE_CLUSTERS = 16384;
+    constexpr uint64_t ARENA_BYTES = 1ull << 30;
+    using clusters::ClusterGeometry;
+    using nv_helpers_dx12::CreateBuffer;
+    auto* dev = m_ctx.Device();
+    const uint32_t slot = m_clusters.sync_slot();
+    auto asBuffer = [&](uint64_t bytes, const wchar_t* name) {
+        auto b = CreateBuffer(dev, std::max<uint64_t>(bytes, 256), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                              D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nv_helpers_dx12::kDefaultHeapProps);
+        b->SetName(name);
+        return b;
+    };
+    auto scratchBuffer = [&](uint64_t bytes) {
+        return CreateBuffer(dev, std::max<uint64_t>(bytes, 256), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nv_helpers_dx12::kDefaultHeapProps);
+    };
+
+    struct MeshState {
+        MeshGPU* mesh;
+        std::vector<clusters::Span> spans;
+        uint32_t built = 0; // clusters whose pieces are moved
+    };
+    struct Piece {
+        MeshState* m;
+        uint32_t first, count;
+        D3D12_RTAS_CLUSTER_LIMITS limits;
+        ClusterGeometry::Sizes sizes;
+        uint64_t arenaOff = 0, scratchOff = 0;
+        ClusterGeometry::Ticket ticket;
+    };
+    std::vector<MeshState> states;
+    states.reserve(meshes.size());
+    std::vector<Piece> pieces;
+    uint64_t tris = 0;
+    for (MeshGPU* mesh : meshes) {
+        MeshState& s = states.emplace_back(MeshState{ mesh });
+        const UINT triCount = mesh->indexCount / 3;
+        if (!mesh->clusterSpans.empty()) {
+            s.spans = mesh->clusterSpans;
+        } else {
+            std::vector<UINT> cuts = mesh->clusterCuts;
+            if (cuts.empty()) {
+                cuts.push_back(0);
+                if (mesh->opaqueTriCount && mesh->opaqueTriCount < triCount) cuts.push_back(mesh->opaqueTriCount);
+            }
+            clusters::split(mesh->cpuIndices.data(), mesh->vertexCount, cuts, triCount, s.spans);
+        }
+        mesh->clusterCount = (UINT)s.spans.size();
+        if (!m_clusters.allocate_ids(mesh->clusterCount, mesh->clusterBase))
+            throw std::runtime_error("clusters: out of cluster IDs for the scene");
+        m_clusters.write_records(mesh->clusterBase, s.spans.data(), mesh->clusterCount);
+        mesh->clas.clear();
+        tris += triCount;
+        const UINT maxGeometry = (mesh->opaqueTriCount && mesh->alphaTriCount) ? 1u : 0u;
+        for (uint32_t first = 0; first < mesh->clusterCount; first += PIECE_CLUSTERS) {
+            Piece p{ &s, first, std::min(PIECE_CLUSTERS, mesh->clusterCount - first) };
+            p.limits = clusters::limits(s.spans.data() + first, p.count, maxGeometry, mesh->hasOmm);
+            if (!m_clusters.prebuild(p.limits, mesh->hasOmm, p.sizes))
+                throw std::runtime_error("clusters: CLAS prebuild query failed");
+            pieces.push_back(p);
+        }
+    }
+
+    // A hierarchy's mesh BLAS is its full-detail cut, the first clusters.
+    auto blas_clusters = [](const MeshGPU& mesh) {
+        return mesh.lod.empty() || mesh.lod.paged ? mesh.clusterCount : mesh.lod.base;
+    };
+    uint64_t prebuilt = 0, built = 0, blasBytes = 0;
+    for (size_t next = 0; next < pieces.size();) {
+        // A batch: pieces until the arena or the slot's queues are full.
+        m_clusters.begin(slot, m_ctx.CmdList());
+        size_t end = next;
+        uint64_t arena = 0, scratch = 0, clusterSum = 0;
+        while (end < pieces.size()) {
+            Piece& p = pieces[end];
+            const bool fits = arena + p.sizes.clas <= ARENA_BYTES && m_clusters.can_queue((uint32_t)(clusterSum + p.count), false);
+            if (!fits && end > next) break;
+            p.arenaOff = arena;
+            p.scratchOff = scratch;
+            arena += p.sizes.clas;
+            scratch += p.sizes.clasScratch;
+            clusterSum += p.count;
+            ++end;
+        }
+        ComPtr<ID3D12Resource> arenaBuf = asBuffer(arena, L"ClusterBuildArena"), scratchBuf = scratchBuffer(scratch);
+        for (size_t i = next; i < end; ++i) {
+            Piece& p = pieces[i];
+            MeshGPU* mesh = p.m->mesh;
+            clusters::Mesh desc;
+            desc.vertices = mesh->vertexBuffer->GetGPUVirtualAddress();
+            desc.vertexStride = sizeof(Vertex);
+            desc.indices = mesh->indexBuffer->GetGPUVirtualAddress();
+            desc.spans = p.m->spans.data() + p.first;
+            desc.clusterCount = p.count;
+            desc.clusterBase = mesh->clusterBase + p.first;
+            desc.opaqueTriCount = mesh->opaqueTriCount;
+            if (mesh->hasOmm) {
+                desc.ommArray = mesh->ommArray ? mesh->ommArray->GetGPUVirtualAddress() : 0;
+                desc.ommIndices = mesh->ommIndexBuffer->GetGPUVirtualAddress();
+            }
+            desc.limits = p.limits;
+            p.ticket = m_clusters.queue_build(desc, arenaBuf->GetGPUVirtualAddress() + p.arenaOff,
+                                              scratchBuf->GetGPUVirtualAddress() + p.scratchOff);
+        }
+        m_clusters.record(m_ctx.CmdList());
+        m_ctx.FlushAndReset();
+
+        // Each piece into its own tight buffer; a mesh's BLAS once its last piece moved.
+        std::vector<uint64_t> sizes;
+        std::vector<std::pair<MeshGPU*, uint64_t>> blasScratch;
+        uint64_t moveScratch = 0;
+        std::vector<uint64_t> moveOff(end - next);
+        std::vector<uint64_t> clasBytes(end - next);
+        for (size_t i = next; i < end; ++i) {
+            Piece& p = pieces[i];
+            sizes.resize(p.count);
+            uint64_t bytes = p.sizes.clas;
+            if (m_clusters.sizes(p.ticket, p.count, sizes.data())) {
+                bytes = 0;
+                for (uint64_t s : sizes) bytes += s;
+            }
+            prebuilt += p.sizes.clas;
+            built += bytes;
+            clasBytes[i - next] = bytes;
+            moveOff[i - next] = moveScratch;
+            moveScratch += m_clusters.move_scratch(p.count, bytes, p.m->mesh->hasOmm);
+        }
+        uint64_t finishScratch = moveScratch;
+        std::vector<uint64_t> blasOff;
+        for (size_t i = next; i < end; ++i) {
+            MeshState& s = *pieces[i].m;
+            s.built += pieces[i].count;
+            if (s.built != s.mesh->clusterCount) continue;
+            uint64_t size = 0, sc = 0;
+            m_clusters.blas_prebuild(blas_clusters(*s.mesh), s.mesh->hasOmm, size, sc);
+            s.mesh->blas = asBuffer(size, L"ClusterBLAS");
+            blasBytes += size;
+            blasScratch.emplace_back(s.mesh, finishScratch);
+            finishScratch += sc;
+        }
+        scratchBuf = scratchBuffer(finishScratch);
+        m_clusters.begin(slot, m_ctx.CmdList());
+        for (size_t i = next; i < end; ++i) {
+            Piece& p = pieces[i];
+            MeshGPU* mesh = p.m->mesh;
+            mesh->clas.push_back(asBuffer(clasBytes[i - next], L"ClusterCLAS"));
+            m_clusters.queue_move(mesh->clusterBase + p.first, p.count, mesh->hasOmm, mesh->clas.back()->GetGPUVirtualAddress(),
+                                  clasBytes[i - next], scratchBuf->GetGPUVirtualAddress() + moveOff[i - next]);
+        }
+        for (const auto& [mesh, off] : blasScratch)
+            m_clusters.queue_blas(mesh->clusterBase, blas_clusters(*mesh), mesh->hasOmm, mesh->blas->GetGPUVirtualAddress(),
+                                  scratchBuf->GetGPUVirtualAddress() + off);
+        m_clusters.record(m_ctx.CmdList());
+        m_ctx.FlushAndReset();
+        next = end;
+    }
+    std::printf("[AS] cluster BLAS: %zu meshes, %.2fM triangles, %llu clusters; CLAS %.1f MB (%.1f MB before the move), "
+                "cluster BLAS %.1f MB\n", meshes.size(), (double)tris / 1e6,
+                (unsigned long long)m_clusters.ids_used(), (double)built / 1048576.0, (double)prebuilt / 1048576.0,
+                (double)blasBytes / 1048576.0);
+
+    // The hierarchies' CLAS addresses; moved once, they stay.
+    uint64_t lodClusters = 0;
+    for (MeshGPU* mesh : meshes)
+        if (!mesh->lod.empty()) lodClusters += mesh->clusterCount;
+    if (lodClusters) {
+        ComPtr<ID3D12Resource> readback = CreateBuffer(dev, lodClusters * sizeof(uint64_t), D3D12_RESOURCE_FLAG_NONE,
+                                                       D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kReadbackHeapProps);
+        uint64_t off = 0;
+        for (MeshGPU* mesh : meshes) {
+            if (mesh->lod.empty()) continue;
+            m_clusters.copy_addresses(m_ctx.CmdList(), mesh->clusterBase, mesh->clusterCount, readback.Get(), off);
+            off += (uint64_t)mesh->clusterCount * sizeof(uint64_t);
+        }
+        m_ctx.FlushAndReset();
+        const uint64_t* mapped = nullptr;
+        ThrowIfFailed(readback->Map(0, nullptr, (void**)&mapped));
+        uint32_t lodMeshes = 0;
+        uint64_t fullDetail = 0;
+        for (MeshGPU* mesh : meshes) {
+            if (mesh->lod.empty()) continue;
+            mesh->lod.clas.assign(mapped, mapped + mesh->clusterCount);
+            mapped += mesh->clusterCount;
+            ++lodMeshes;
+            fullDetail += mesh->lod.base;
+        }
+        readback->Unmap(0, nullptr);
+        std::printf("[AS] cluster LOD: %u meshes, %llu clusters over all levels, %llu at full detail\n", lodMeshes,
+                    (unsigned long long)lodClusters, (unsigned long long)fullDetail);
+    }
+#else
+    (void)meshes;
+#endif
+}
+
 void Renderer::CreateTopLevelAS(const std::vector<Scene::TLASInstance>& instances, bool updateOnly) {
     std::wcout << L"[TLAS] CreateTopLevelAS ENTER: instances=" << instances.size() << L" updateOnly="
                << (updateOnly ? L"yes" : L"no") << std::endl;
@@ -178,6 +379,8 @@ void Renderer::CreateAccelerationStructures() {
     // Retain the source allocation until its compaction copy completes.
     ComPtr<ID3D12Resource> pendingCompactionSource;
 
+    std::vector<MeshGPU*> clustered;
+    std::vector<OmmGpuData> ommBuilds;
     for (size_t m = 0; m < m_scene.meshes.size(); ++m) {
         auto& mesh = m_scene.meshes[m];
         std::wcout << L"[AS] mesh[" << m << L"/" << m_scene.meshes.size() << L"] " << L"verts=" << mesh.vertexCount
@@ -187,6 +390,8 @@ void Renderer::CreateAccelerationStructures() {
             std::wcout << L"[AS]   already has BLAS, skipping" << std::endl;
             continue;
         }
+        if (mesh.paged && !mesh.indexCount)
+            continue; // all of it streams: the pager builds its BLAS
         mesh.CreateBlasBuildInputs(m_ctx.Device());
 
         OmmGpuData ommGpu;
@@ -199,6 +404,11 @@ void Renderer::CreateAccelerationStructures() {
             }
         }
 
+        if (m_clusters.enabled() && mesh.indexCount) {
+            clustered.push_back(&mesh);
+            ommBuilds.push_back(std::move(ommGpu)); // its build buffers, until BuildClusterBlas executes the list
+            continue;
+        }
         MeshGPU* ommPtr = mesh.hasOmm ? &mesh : nullptr;
         auto buffers = CreateBottomLevelAS({{mesh.vertexBuffer.Get(), mesh.vertexCount}},
                                            {{mesh.indexBuffer.Get(), mesh.indexCount}}, mesh.opaqueTriCount,
@@ -213,6 +423,14 @@ void Renderer::CreateAccelerationStructures() {
         mesh.vertexBuffer.Reset();
         mesh.indexBuffer.Reset();
         std::wcout << L"[AS]   mesh[" << m << L"] BLAS=" << mesh.blas.Get() << std::endl;
+    }
+    if (!clustered.empty()) {
+        BuildClusterBlas(clustered);
+        ommBuilds.clear();
+        for (MeshGPU* mesh : clustered) {
+            mesh->vertexBuffer.Reset();
+            mesh->indexBuffer.Reset();
+        }
     }
     std::wcout << L"[AS] All BLAS built. Rebuilding TLAS instance list..." << std::endl;
 
@@ -339,6 +557,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 59, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 60, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
 
@@ -520,7 +739,12 @@ void Renderer::CreateRaytracingPipeline() {
 
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
     pipeline.SetMaxRecursionDepth(1);
-    pipeline.SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS);
+    D3D12_RAYTRACING_PIPELINE_FLAGS pipelineFlags = D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS;
+#if RDN_CLUSTER_API
+    if (m_ctx.ClusteredGeometry())
+        pipelineFlags |= D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_CLUSTERED_GEOMETRY;
+#endif
+    pipeline.SetPipelineFlags(pipelineFlags);
 
     // The driver compiles each collection and each compute PSO single-threaded, so they all run side by side,
     // largest first (ray-generation collections, then compute shaders by DXIL size).
@@ -1065,6 +1289,26 @@ void Renderer::CreateShaderResourceHeap() {
         d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         d.Texture2D.MipLevels = 1;
         dev->CreateShaderResourceView(m_blueNoiseTexture.Get(), &d, handle);
+        next();
+    }
+
+    {
+        ID3D12Resource* records = m_clusters.records();
+        if (!records) {
+            if (!m_clusterRecords) {
+                const ClusterRecord none{};
+                m_clusterRecords = ResourceFactory(dev).CreateUploadBufferWithData(&none, sizeof(none));
+                m_clusterRecords->SetName(L"ClusterRecords");
+            }
+            records = m_clusterRecords.Get();
+        }
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Buffer.NumElements = (UINT)(records->GetDesc().Width / sizeof(ClusterRecord));
+        d.Buffer.StructureByteStride = sizeof(ClusterRecord);
+        dev->CreateShaderResourceView(records, &d, handle);
         next();
     }
 

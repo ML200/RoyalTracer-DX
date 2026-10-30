@@ -12,8 +12,41 @@
 
 #include "../planet/queue_sync.h"
 
+// A device for a host process (the Unity plugin): no window or swap chain of its own, its own D3D12Core loaded side by
+// side through ID3D12DeviceFactory, Streamline in manual-hooking mode with DLSS-RR, and DLSS frame generation and Reflex
+// for when it presents through a window of the host's (AttachWindow).
+struct HeadlessDeviceDesc {
+    LUID adapterLuid{};      // the host device's adapter; zero picks the first hardware adapter
+    UINT sdkVersion = 619;   // Agility SDK version of the D3D12Core.dll in sdkPath
+    std::string sdkPath;     // folder holding that D3D12Core.dll, with a trailing separator
+    std::wstring pluginDir;  // folder holding sl.interposer.dll and the Streamline plugins
+    UINT width = 0;
+    UINT height = 0;
+    sl::PFun_LogMessageCallback* slLog = nullptr;
+};
+
+// What InitHeadless found on the adapter; filled as far as it got, also when it throws.
+struct AdapterReport {
+    std::wstring name;
+    UINT vendorId = 0;
+    UINT64 dedicatedVideoMemory = 0;
+    D3D_SHADER_MODEL shaderModel = {};
+    D3D12_RAYTRACING_TIER raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+    bool serReorders = false;
+    bool dlssRayReconstruction = false;
+};
+
 struct DeviceContext {
     void Init(HWND hwnd, UINT width, UINT height, bool useWarp = false);
+    void InitHeadless(const HeadlessDeviceDesc& desc);
+    bool IsHeadless() const { return headless; }
+    // Headless: presents through this window (a child of the host's) instead of the hidden swap chain, so Streamline can
+    // generate frames there. Throws on failure.
+    void AttachWindow(HWND hwnd, UINT width, UINT height);
+    void DetachWindow();
+    IDXGISwapChain3* WindowSwapChain() const { return windowSwapChain.Get(); }
+    UINT WindowBufferCount() const { return 3; }
+    bool WindowTearing() const { return windowTearing; }
     void Shutdown();
 
     void BeginFrame();
@@ -52,10 +85,13 @@ struct DeviceContext {
     UINT BufferCount() const { return bufferCount; }
     UINT Width() const { return width; }
     UINT Height() const { return height; }
+    // Clustered geometry and partitioned TLAS (Agility 1.722 preview, SM 6.10); windowed path only.
+    bool ClusteredGeometry() const { return clusteredGeometry; }
 
     sl::FrameToken* frameToken = nullptr;
     sl::ViewportHandle viewportHandle = sl::ViewportHandle(0);
     HINSTANCE__* slModule = nullptr;
+    AdapterReport adapterReport; // headless only
 
     ComPtr<ID3D12Device10> device;
 
@@ -68,11 +104,22 @@ struct DeviceContext {
     void CreateRTVsAndDepth();
     void InitStreamline();
     void InitPlanetStreaming();
+    void CreateFrameObjects();
+    void CreatePresentHook();
+    template <class T> ComPtr<T> UpgradeSwapChain(T* native);
 
     UINT width = 0;
     UINT height = 0;
+    bool headless = false;
+    bool clusteredGeometry = false;
 
     ComPtr<IDXGISwapChain3> swapChain;
+    // Headless: a tiny composition swap chain that is never shown. Presenting it through Streamline's proxy runs
+    // the per-frame bookkeeping Streamline otherwise does in the app's Present.
+    ComPtr<IDXGISwapChain1> slPresentHook;
+    ComPtr<IDXGIFactory4> headlessFactory;
+    ComPtr<IDXGISwapChain3> windowSwapChain; // Streamline's proxy
+    bool windowTearing = false;
     ComPtr<ID3D12CommandAllocator> cmdAllocators[MAX_BACK_BUFFERS];
     ComPtr<ID3D12Resource> renderTargets[MAX_BACK_BUFFERS];
 

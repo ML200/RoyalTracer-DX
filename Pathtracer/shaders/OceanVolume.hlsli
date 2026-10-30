@@ -4,6 +4,7 @@ struct OceanPathHit {
     bool hit;
     float distance;
     uint instance;
+    uint cluster;
     uint geometry;
     uint primitive;
     float2 barycentrics;
@@ -11,12 +12,14 @@ struct OceanPathHit {
 OceanPathHit OceanPathHitOf(dx::HitObject hit, RayDesc ray) {
     OceanPathHit result = (OceanPathHit)0;
     result.distance = ray.TMax;
+    result.cluster = CLUSTER_ID_INVALID;
     if (hit.IsHit()) {
         BuiltInTriangleIntersectionAttributes attr;
         hit.GetAttributes(attr);
         result.hit = true;
         result.distance = hit.GetRayTCurrent();
         result.instance = hit.GetInstanceID();
+        result.cluster = HITOBJ_CLUSTER_ID(hit);
         result.geometry = hit.GetGeometryIndex();
         result.primitive = hit.GetPrimitiveIndex();
         result.barycentrics = attr.barycentrics;
@@ -31,7 +34,7 @@ OceanPathHit OceanTracePathHit(RayDesc ray) {
 bool OceanFacetPassed(OceanPathHit h, RayDesc ray, bool inWater) {
     if (!h.hit || !IS_OCEAN_INSTANCE(h.instance) || h.distance + 1e-3f >= ray.TMax)
         return false;
-    const float3 n = CandidateGeoNormalW(h.instance, FlatPrimID(h.instance, h.geometry, h.primitive));
+    const float3 n = CandidateGeoNormalW(h.instance, FlatPrimID(h.instance, h.cluster, h.geometry, h.primitive));
     return (dot(ray.Direction, n) > 0.0f) != inWater;
 }
 
@@ -71,13 +74,13 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
     r.Direction = toSurface;
     r.TMin = 1e-4f;
     r.TMax = RAY_TMAX_PLANET;
-    RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+    RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS | RQ_ALLOW_CLUSTERS> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
     [loop]
     for (uint it = 0u; q.Proceed() && it < 32u; ++it) {
         if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
         const uint ci = q.CandidateInstanceID();
-        const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+        const uint cp = FlatPrimID(ci, RQ_CANDIDATE_CLUSTER_ID(q), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
         const uint cm = GetMatIDFast(ci, cp);
         if (LoadIsOceanMaterial(cm) || LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON ||
             AlphaCandidateOccludes(ci, cp, q.CandidateTriangleBarycentrics()))
@@ -91,7 +94,7 @@ float3 OceanSunReach(float3 pos, float3 sunDir, float3 t, float eta, float caust
     }
     const float d = q.CommittedRayT();
     const uint hi = q.CommittedInstanceID();
-    const uint hp = FlatPrimID(hi, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+    const uint hp = FlatPrimID(hi, RQ_COMMITTED_CLUSTER_ID(q), q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
     // Foam at a 0.25 m footprint, from the step's Kd_w (WriteMaterialSlot).
     float3 n = CandidateGeoNormalW(hi, hp);
     float foam = 0.0f;

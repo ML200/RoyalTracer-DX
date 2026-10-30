@@ -124,7 +124,7 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
                 << (streamer.vertexCapacity >> 20) << L"M vertices / " << (streamer.indexCapacity >> 20)
                 << L"M indices");
         }
-        m_voxels.init(m_ctx.Device(), &m_ctx, m_mcWorld.get(), streamer);
+        m_voxels.init(m_ctx.Device(), &m_ctx, m_mcWorld.get(), streamer, &m_clusters);
 
         // Sea only where the world holds water.
         if (m_ocean.Enabled()) {
@@ -179,11 +179,13 @@ bool Renderer::LoadMinecraftWorld(const mc::MinecraftWorldConfig& cfg, const Dir
 }
 
 // Streamed lights follow the scene's light records.
+// The static scene's light buffers, extended by a region for streamed lights (the voxel world's or the host's).
 void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
-    if (!m_voxels.enabled())
+    IDynamicLights* dl = DynamicLights();
+    if (!dl)
         return;
     auto* dev = m_ctx.Device();
-    const mc::StreamerConfig& sc = m_voxels.config();
+    const UINT regionRecords = dl->light_record_capacity(), regionNodes = dl->light_node_capacity();
     const auto& gpu = m_lightTree.GetGpu();
     auto elems = [](ID3D12Resource* r, UINT64 stride) -> UINT { return r ? (UINT)(r->GetDesc().Width / stride) : 0u; };
     ID3D12Resource* srcRecords = m_ownedEmissiveGpu ? m_ownedEmissiveGpu.Get() : m_scene.emissiveTrianglesBuffer.Get();
@@ -210,24 +212,26 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
                                                        nullptr, IID_PPV_ARGS(&res)));
             res->SetName(name);
         };
-        const UINT64 recElems = (UINT64)m_vxSceneRecordCap + sc.lightRecordCapacity;
+        const UINT64 recElems = (UINT64)m_vxSceneRecordCap + regionRecords;
         make(m_vxLightRecords, recElems * sizeof(LightTriangle), L"MinecraftLightRecords");
-        make(m_vxLightNodes, ((UINT64)m_vxSceneNodeCap + sc.lightNodeCapacity) * nodeStride,
+        make(m_vxLightNodes, ((UINT64)m_vxSceneNodeCap + regionNodes) * nodeStride,
              L"MinecraftLightNodes");
         make(m_vxLightLeaf, recElems * sizeof(uint32_t), L"MinecraftLightLeafIndex");
         make(m_vxLightTrails, recElems * sizeof(lt::LightTreeTrail), L"MinecraftLightTrails");
         LOG(L"[mc] light buffers: scene part " << m_vxSceneRecordCap << L" records / " << m_vxSceneNodeCap
-                                               << L" nodes, voxel regions " << sc.lightRecordCapacity << L" records / "
-                                               << sc.lightNodeCapacity << L" nodes");
+                                               << L" nodes, streamed regions " << regionRecords << L" records / "
+                                               << regionNodes << L" nodes");
     }
 
+    // Every buffer ends in NON_PIXEL_SHADER_RESOURCE, copied into or not: streams transition from there.
     auto copy = [&](ID3D12Resource* dst, ID3D12Resource* src, UINT64 bytes) {
-        if (!src || !bytes)
-            return;
-        cmdList->CopyBufferRegion(dst, 0, src, 0, bytes);
-        auto b = CD3DX12_RESOURCE_BARRIER::Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST,
+        const bool copied = src && bytes;
+        if (copied)
+            cmdList->CopyBufferRegion(dst, 0, src, 0, bytes);
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(dst, copied ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_COMMON,
                                                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        cmdList->ResourceBarrier(1, &b);
+        if (copied || recreate)
+            cmdList->ResourceBarrier(1, &b);
     };
     copy(m_vxLightRecords.Get(), srcRecords, (UINT64)sceneRecords * sizeof(LightTriangle));
     copy(m_vxLightNodes.Get(), gpu.BLASNodes.Get(), (UINT64)sceneNodes * nodeStride);
@@ -248,9 +252,9 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
             sd.Format = fmt;
         dev->CreateShaderResourceView(res, &sd, h);
     };
-    const UINT recCount = m_vxSceneRecordCap + sc.lightRecordCapacity;
+    const UINT recCount = m_vxSceneRecordCap + regionRecords;
     srv(EMISSIVE_TRI_SRV_SLOT, m_vxLightRecords.Get(), recCount, sizeof(LightTriangle), DXGI_FORMAT_UNKNOWN);
-    srv(21u, m_vxLightNodes.Get(), (UINT)(((UINT64)m_vxSceneNodeCap + sc.lightNodeCapacity) * nodeStride / 16u), 16u,
+    srv(21u, m_vxLightNodes.Get(), (UINT)(((UINT64)m_vxSceneNodeCap + regionNodes) * nodeStride / 16u), 16u,
         DXGI_FORMAT_UNKNOWN);
     srv(23u, m_vxLightLeaf.Get(), recCount, 0u, DXGI_FORMAT_R32_UINT);
     srv(26u, m_vxLightTrails.Get(), recCount, 0u, DXGI_FORMAT_R32G32_UINT);
@@ -259,16 +263,16 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
         mc::LightBinding lb;
         lb.records = m_vxLightRecords.Get();
         lb.recordBase = m_vxSceneRecordCap;
-        lb.recordCapacity = sc.lightRecordCapacity;
+        lb.recordCapacity = regionRecords;
         lb.nodes = m_vxLightNodes.Get();
         lb.nodeBase = m_vxSceneNodeCap;
-        lb.nodeCapacity = sc.lightNodeCapacity;
+        lb.nodeCapacity = regionNodes;
         lb.leafIndex = m_vxLightLeaf.Get();
         lb.trails = m_vxLightTrails.Get();
         lb.slotBase = (uint32_t)m_scene.lightInstances.size();
-        m_voxels.bind_lights(sc.lights ? lb : mc::LightBinding{});
+        dl->bind_lights(dl->lights_wanted() ? lb : DynamicLightBinding{});
     } else {
-        m_voxels.set_light_slot_base((uint32_t)m_scene.lightInstances.size());
+        dl->set_light_slot_base((uint32_t)m_scene.lightInstances.size());
     }
     m_liveVoxelLightLeaves = 0;
 }

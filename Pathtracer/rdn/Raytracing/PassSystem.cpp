@@ -20,6 +20,8 @@ uint32_t PassSystem::RequiredFeatures(const std::wstring& file) {
         return MeshLights | LightLearning;
     if (file == L"Pass_sharc_debug_v8.hlsl")
         return Sharc | SharcDebug;
+    if (file == L"Pass_host_output_v8.hlsl")
+        return HostOutput;
     if (file.rfind(L"Pass_sharc_", 0) == 0)
         return Sharc;
     if (file.rfind(L"Pass_lite_", 0) == 0)

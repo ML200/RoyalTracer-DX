@@ -5,7 +5,7 @@ project(Pathtracer)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(D3D12_AGILITY_ROOT "${CMAKE_SOURCE_DIR}/microsoft.direct3D.d3d12.1.719.0-preview/build/native")
+set(D3D12_AGILITY_ROOT "${CMAKE_SOURCE_DIR}/microsoft.direct3d.d3d12.1.722.0-preview/build/native")
 set(D3D12_AGILITY_INCLUDE "${D3D12_AGILITY_ROOT}/include")
 set(D3D12_AGILITY_LIB "${D3D12_AGILITY_ROOT}/bin/x64")
 
@@ -57,6 +57,13 @@ target_include_directories(DirectXTex PUBLIC
 )
 target_compile_features(DirectXTex PUBLIC cxx_std_17)
 target_link_libraries(DirectXTex PUBLIC dxguid ole32)
+
+# meshoptimizer 1.1 (MIT): clustering and simplification for the cluster LOD hierarchy; demo/clusterlod.h builds it.
+set(MESHOPT_ROOT "${CMAKE_SOURCE_DIR}/third_party/meshoptimizer-1.1")
+file(GLOB MESHOPT_SOURCES "${MESHOPT_ROOT}/src/*.cpp")
+add_library(meshoptimizer STATIC ${MESHOPT_SOURCES})
+target_include_directories(meshoptimizer PUBLIC "${MESHOPT_ROOT}/src" "${MESHOPT_ROOT}/demo")
+target_compile_features(meshoptimizer PUBLIC cxx_std_17)
 
 add_executable(Pathtracer WIN32
         rdn/Main.cpp
@@ -187,6 +194,12 @@ add_executable(Pathtracer WIN32
         rdn/minecraft/mc_world.cpp
         rdn/minecraft/voxel_streamer.h
         rdn/minecraft/voxel_streamer.cpp
+        rdn/Clusters/ClusterGeometry.h
+        rdn/Clusters/ClusterGeometry.cpp
+        rdn/Clusters/ClusterLod.h
+        rdn/Clusters/ClusterLod.cpp
+        rdn/Clusters/ClusterPages.h
+        rdn/Clusters/ClusterPages.cpp
         rdn/Renderer_Minecraft.cpp
 
         engine/Core/Transform.h
@@ -242,6 +255,7 @@ set_target_properties(omm_xxhash PROPERTIES
 
 target_link_libraries(Pathtracer PRIVATE
         DirectXTex
+        meshoptimizer
         sl_interposer
         omm_sdk omm_lz4 omm_xxhash
         d3d12.lib
@@ -312,6 +326,65 @@ add_custom_command(TARGET Pathtracer POST_BUILD
         "$<TARGET_FILE_DIR:Pathtracer>"
         COMMENT "Copying Agility D3D12Core.dll to output folder."
 )
+
+# Unity plugin: the renderer without the app shell, hosted by the HDRP package in ../unity. It loads
+# Agility 1.619 side by side through ID3D12DeviceFactory, so it is built against that version's headers.
+set(D3D12_AGILITY_619_ROOT "${CMAKE_SOURCE_DIR}/microsoft.direct3d.d3d12.1.619.0/build/native")
+get_target_property(RT_UNITY_SOURCES Pathtracer SOURCES)
+list(FILTER RT_UNITY_SOURCES EXCLUDE REGEX "rdn/(Main|Win32Application|DXSample|CrashHandler)\\.cpp$|engine/(EngineApp|Scene/)")
+add_library(RoyalTracerUnity SHARED EXCLUDE_FROM_ALL ${RT_UNITY_SOURCES}
+        unity/RoyalTracerApi.h
+        unity/SceneBridge.h
+        unity/SceneBridge.cpp
+        unity/HostStream.h
+        unity/HostStream.cpp
+        unity/UnityPlugin.cpp)
+target_include_directories(RoyalTracerUnity BEFORE PRIVATE "${D3D12_AGILITY_619_ROOT}/include")
+target_include_directories(RoyalTracerUnity PRIVATE
+        ${SL_INCLUDE_DIR}
+        ${OMM_SDK_ROOT}/include
+        ${CMAKE_SOURCE_DIR}/lib/imgui)
+target_compile_definitions(RoyalTracerUnity PRIVATE NOMINMAX RT_HOSTED RT_UNITY_BUILD PATHTRACER_DLSSNR_NATIVE=0)
+# d3d12/dxgi before sl_interposer: the interposer also exports D3D12 and DXGI entry points, and the plugin must
+# reach the real ones (no proxies; the interposer is not loaded yet when the device is created).
+target_link_libraries(RoyalTracerUnity PRIVATE
+        d3d12.lib dxgi.lib
+        DirectXTex
+        meshoptimizer
+        sl_interposer
+        omm_sdk omm_lz4 omm_xxhash
+        dxguid.lib dxcompiler.lib d3dcompiler.lib windowsapp wintrust.lib version.lib delayimp.lib)
+# Streamline and DXC load from the plugin's data folder (RT_Init), not from the host's search path.
+target_link_options(RoyalTracerUnity PRIVATE /FORCE:MULTIPLE /DELAYLOAD:sl.interposer.dll /DELAYLOAD:dxcompiler.dll)
+
+set(RT_UNITY_DATA_DIR "$<TARGET_FILE_DIR:RoyalTracerUnity>/RoyalTracerData")
+# Streamline: what DLSS-RR and frame generation load (the other plugins would be loaded and ignored, and weigh ~70 MB).
+set(RT_UNITY_SL_FILES sl.interposer.dll sl.common.dll sl.pcl.dll sl.dlss_d.dll nvngx_dlssd.dll nvngx_dlss.license.txt
+    sl.reflex.dll sl.dlss_g.dll nvngx_dlssg.dll)
+list(TRANSFORM RT_UNITY_SL_FILES PREPEND "${SL_BIN_DIR}/")
+add_custom_command(TARGET RoyalTracerUnity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${RT_UNITY_DATA_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${RT_UNITY_DATA_DIR}/D3D12" "${RT_UNITY_DATA_DIR}/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${D3D12_AGILITY_619_ROOT}/bin/x64/D3D12Core.dll"
+        "${RT_UNITY_DATA_DIR}/D3D12"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${SHADERS_DIR}" "${RT_UNITY_DATA_DIR}/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${RT_UNITY_SL_FILES} "${INCLUDES_DIR}/dxcompiler.dll"
+        "${INCLUDES_DIR}/dxil.dll" "${RT_UNITY_DATA_DIR}"
+        COMMENT "Staging the Unity plugin's runtime data")
+
+set(RT_UNITY_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/../unity/com.ml200.royaltracer" CACHE PATH
+    "Unity package folder to stage the plugin into (empty: do not stage)")
+if(RT_UNITY_PACKAGE_DIR)
+    add_custom_command(TARGET RoyalTracerUnity POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:RoyalTracerUnity>"
+            "${RT_UNITY_PACKAGE_DIR}/Runtime/Plugins/x86_64/RoyalTracerUnity.dll"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${RT_UNITY_PACKAGE_DIR}/RoyalTracerData~"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${RT_UNITY_DATA_DIR}" "${RT_UNITY_PACKAGE_DIR}/RoyalTracerData~"
+            COMMENT "Staging the plugin into the Unity package")
+endif()
+
+add_executable(RoyalTracerUnitySmoke EXCLUDE_FROM_ALL unity/SmokeTest.cpp)
+target_link_libraries(RoyalTracerUnitySmoke PRIVATE RoyalTracerUnity)
 
 add_executable(PlanetTests
         rdn/planet/coordinate_system.h

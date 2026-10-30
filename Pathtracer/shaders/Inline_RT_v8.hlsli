@@ -212,8 +212,8 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
     if (!IsRayDescValid(ray)) return 0.0.xxx;
 
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS | RQ_ALLOW_CLUSTERS> q;
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, INSTANCE_MASK_SURFACE, ray);
 
     float3 tr = explicitWater || !waterAttenuation ? 1.0f.xxx : OceanShadowTransmittance(oA, oB);
     // Candidates are rare but their handling set the callers' register peak: one candidate normal
@@ -223,7 +223,7 @@ inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB,
     {
         if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
         const uint cInstID = q.CandidateInstanceID();
-        const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+        const uint cPrimID = FlatPrimID(cInstID, RQ_CANDIDATE_CLUSTER_ID(q), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
         const uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
 
         if (explicitWater && LoadIsOceanMaterial(cMatID)) continue;
@@ -429,6 +429,9 @@ inline uint LightRecordOf(uint instID, uint primID)
 {
     const uint base = instanceProps[instID].triToLightBase;
     if (base == 0xFFFFFFFFu) return 0xFFFFFFFFu;
+    // Ranged (paged meshes): only the instance's own triangles have records; streamed ones count on past them.
+    if ((base & 0xC0000000u) == 0x40000000u)
+        return primID < instanceProps[instID]._pad[1] ? gTriToLightId[(base & 0x3FFFFFFFu) + primID] : 0xFFFFFFFFu;
     if (base & 0x80000000u)
     {
         const uint records = base & 0x7FFFFFFFu;
@@ -655,11 +658,11 @@ HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir,
     return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, footprint);
 }
 
-inline float3 GetEmissionFast(in uint instID, in uint primID)
+inline float3 GetEmissionFast(in uint instID, in uint primID, float cosOut)
 {
     const uint lightID = LightRecordOf(instID, primID);
     if (lightID == 0xFFFFFFFF) return float3(0.0f, 0.0f, 0.0f);
-    return g_EmissiveTriangles[lightID].emission * GLOBAL_EMISSION_STRENGTH;
+    return LightRecordRadiance(lightID, cosOut);
 }
 
 inline uint GetMatIDFast(in uint instID, in uint primID){

@@ -1,4 +1,5 @@
 #include "../stdafx.h"
+#include <chrono>
 #include <fstream>
 #include <algorithm>
 #include <iterator>
@@ -201,6 +202,9 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
                              ID3D12GraphicsCommandList* cmdList, const FlushFn& flushAndReset) {
     std::map<std::string, uint32_t> textureMap;
     std::vector<TextureData> albedoTextures, normalTextures, rmaTextures;
+    // Streamed cluster hierarchies need the page pool in front of all mesh geometry.
+    if (clusters::paging_enabled() && !scene.pagePoolTris && !scene.ReservePagePool())
+        std::printf("[pager] meshes loaded before; this load keeps every hierarchy level resident\n");
 
     for (const auto& entry : modelEntries) {
         const auto& modelPath = entry.path;
@@ -250,6 +254,9 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
         scene.materials.append(loaded.materials);
         scene.materialNames.insert(scene.materialNames.end(), loaded.materialNames.begin(), loaded.materialNames.end());
 
+        uint32_t lodMeshes = 0;
+        uint64_t lodTrisBefore = 0, lodTrisAfter = 0;
+        double lodMs = 0.0;
         auto finalizeMesh = [&](std::vector<Vertex> verts, std::vector<UINT> idxOpaqueFirst,
                                 std::vector<UINT> matOpaqueFirst, UINT opaqueTris, UINT alphaTris) -> UINT {
             MeshGPU gpu{};
@@ -261,8 +268,47 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             gpu.opaqueTriCount = opaqueTris;
             gpu.alphaTriCount = alphaTris;
             gpu.materialIDBase = (UINT)scene.materialIDs.size();
+            if (clusters::lod_enabled()) {
+                // A hierarchy per material over the opaque triangles that emit nothing; emitters stay as they are, as
+                // the lights are their triangles.
+                const auto t0 = std::chrono::steady_clock::now();
+                std::vector<uint32_t> regions(opaqueTris, clusters::NO_REGION);
+                for (UINT t = 0; t < opaqueTris; ++t) {
+                    const UINT m = gpu.cpuMaterialIDs[t];
+                    const XMFLOAT3& ke = scene.materials.Ke[m];
+                    if (ke.x + ke.y + ke.z <= 0.0f) regions[t] = m;
+                }
+                const UINT before = gpu.indexCount / 3;
+                if (scene.pagePoolTris && clusters::paging_enabled()) {
+                    if (gpu.BuildPagedLod(std::move(regions), globalMatBase)) {
+                        ++lodMeshes;
+                        lodTrisBefore += before;
+                        lodTrisAfter += gpu.indexCount / 3;
+                    }
+                } else if (gpu.BuildClusterLod(std::move(regions))) {
+                    ++lodMeshes;
+                    lodTrisBefore += before;
+                    lodTrisAfter += gpu.indexCount / 3;
+                }
+                lodMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            } else {
+                gpu.OrderForClusters();
+            }
 
-            scene.materialIDs.insert(scene.materialIDs.end(), gpu.cpuMaterialIDs.begin(), gpu.cpuMaterialIDs.end());
+            if (gpu.paged) {
+                // Its own range of the page pool; its material IDs at the same triangle positions as its indices.
+                uint64_t v = 0, t = 0;
+                if (!scene.pagePoolVertexAlloc.allocate(gpu.vertexCount, v) ||
+                    !scene.pagePoolTriAlloc.allocate(gpu.indexCount / 3, t))
+                    throw std::runtime_error("The page pool cannot hold the streamed meshes' fixed triangles; raise "
+                                             "RDN_PAGE_POOL_VERTS / RDN_PAGE_POOL_TRIS");
+                gpu.poolVertexBase = (UINT)v;
+                gpu.poolTriBase = (UINT)t;
+                gpu.materialIDBase = (UINT)t;
+                std::copy(gpu.cpuMaterialIDs.begin(), gpu.cpuMaterialIDs.end(), scene.materialIDs.begin() + (ptrdiff_t)t);
+            } else {
+                scene.materialIDs.insert(scene.materialIDs.end(), gpu.cpuMaterialIDs.begin(), gpu.cpuMaterialIDs.end());
+            }
 
             const UINT idx = (UINT)scene.meshes.size();
             scene.meshes.push_back(std::move(gpu));
@@ -393,6 +439,11 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
         }
         flushMerged();
 
+        if (lodMeshes)
+            std::printf(scene.pagePoolTris ? "[lod] %s: %u meshes paged, %.2fM triangles -> %.2fM kept in memory, %.0f ms\n"
+                                           : "[lod] %s: %u meshes with a cluster hierarchy, %.2fM triangles -> %.2fM over all levels, %.0f ms\n",
+                        model.name.c_str(), lodMeshes, (double)lodTrisBefore / 1e6, (double)lodTrisAfter / 1e6, lodMs);
+
         model.meshCount = (UINT)scene.meshes.size() - model.meshStart;
         model.instanceCount = (UINT)scene.instances.size() - model.instanceStart;
         std::vector<bvh::Bounds> meshBounds(model.meshCount);
@@ -436,6 +487,10 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
 
         scene.models.push_back(std::move(model));
     }
+
+    if (scene.pagePoolTris &&
+        std::none_of(scene.meshes.begin(), scene.meshes.end(), [](const MeshGPU& m) { return m.paged; }))
+        scene.ReleasePagePool();
 
     {
         SCOPE_TIMER("OMM Bake");

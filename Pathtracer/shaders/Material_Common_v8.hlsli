@@ -146,8 +146,10 @@ inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint seed)
     return SampleVNDF_H_Aniso(alpha, alpha, V, N, T1, T2, seed);
 }
 
-inline uint FlatPrimID(uint instID, uint geomIdx, uint primIdx)
+inline uint FlatPrimID(uint instID, uint clusterID, uint geomIdx, uint primIdx)
 {
+    if (RDN_CLUSTERS && clusterID != CLUSTER_ID_INVALID)
+        return clusterRecords[clusterID].triBase + primIdx;
     return (geomIdx == 0) ? primIdx : (instanceProps[instID].opaqueTriCount + primIdx);
 }
 

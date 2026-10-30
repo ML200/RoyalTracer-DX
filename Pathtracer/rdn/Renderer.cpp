@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Renderer.h"
 #include "../shaders/DlssGuideLayout.h"
+#include "../shaders/HostOutputLayout.h"
 #include "ReuseTextureGen.h"
 #include "Diagnostics.h"
 #include "Core/PerformanceCapture.h"
@@ -16,8 +17,10 @@
         }                                                                                                              \
     } while (0)
 
-Renderer::Renderer(UINT width, UINT height)
-    : m_width(width), m_height(height), m_aspectRatio(static_cast<float>(width) / static_cast<float>(height)) {
+Renderer::Renderer(DeviceContext& ctx, const RendererConfig& config)
+    : m_width(config.width), m_height(config.height),
+      m_aspectRatio(static_cast<float>(config.width) / static_cast<float>(config.height)), m_headless(config.headless),
+      m_ctx(ctx) {
     m_passes.Build({
         L"Pass_camera_v8.hlsl|rg",
         L"barrier",
@@ -57,6 +60,8 @@ Renderer::Renderer(UINT width, UINT height)
         L"barrier",
         L"dlss",
         L"barrier",
+        L"Pass_host_output_v8.hlsl|cs:8x8",
+        L"barrier",
         L"Pass_autoexpose_reduce_v8.hlsl|cs:8x8",
         L"barrier",
         L"Pass_autoexpose_finalize_v8.hlsl|fx:1",
@@ -66,9 +71,11 @@ Renderer::Renderer(UINT width, UINT height)
     });
 }
 
-void Renderer::InitDevice() {
+void Renderer::InitDevice(HWND hwnd) {
+    m_hwnd = hwnd;
     try {
-        m_ctx.Init(Win32Application::GetHwnd(), GetWidth(), GetHeight());
+        if (!m_headless)
+            m_ctx.Init(hwnd, GetWidth(), GetHeight());
 
         {
             planet::StreamConfig cfg;
@@ -80,7 +87,16 @@ void Renderer::InitDevice() {
             cfg.max_lod = 16;
             cfg.max_triangles = 3000000u;
 
+            m_clusters.init(&m_ctx, std::max(1u, m_ctx.BufferCount()), {});
             m_planet.init(m_ctx.Device(), &m_ctx, cfg);
+            m_planet.set_clusters(&m_clusters);
+#if RDN_CLUSTER_API
+            if (m_clusters.enabled()) {
+                m_lod.init(&m_clusters, m_ctx.Device(), {});
+                m_lodClient.renderer = this;
+                m_planet.set_cluster_client(&m_lodClient);
+            }
+#endif
 
             m_camera.planetCenter =
                 glm::vec3((float)cfg.planet.center.x, (float)cfg.planet.center.y, (float)cfg.planet.center.z);
@@ -89,8 +105,10 @@ void Renderer::InitDevice() {
             m_camera.terrainHeightFrequency = 0.0f;
         }
 
-        m_simulator.PromptUserConfiguration();
-        m_recorder.Initialize();
+        if (!m_headless) {
+            m_simulator.PromptUserConfiguration();
+            m_recorder.Initialize();
+        }
         m_camera.Init(m_ctx.Device(), GetWidth(), GetHeight());
 
         GenerateLutTextures();
@@ -103,7 +121,8 @@ void Renderer::InitDevice() {
         if (opts5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
             throw std::runtime_error("Raytracing not supported on device");
 
-        {
+        // Reflex and frame generation hook the swap chain, which a host owns.
+        if (!m_headless) {
             sl::ReflexState state{};
             sl::Result rr = slReflexGetState(state);
             if (rr == sl::Result::eOk) {
@@ -117,7 +136,7 @@ void Renderer::InitDevice() {
             SL_CHECK(slReflexSetOptions(options));
         }
 
-        {
+        if (!m_headless) {
             LUID luid = m_ctx.Device()->GetAdapterLuid();
             sl::AdapterInfo ai;
             ai.deviceLUID = (uint8_t*)&luid;
@@ -138,6 +157,8 @@ void Renderer::InitDevice() {
             }
         }
     } catch (const std::exception& e) {
+        if (m_headless)
+            throw;
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
         MessageBoxW(NULL, wMsg, L"Fatal Init Error", MB_OK | MB_ICONERROR);
@@ -151,6 +172,8 @@ void Renderer::LoadScene(const std::vector<ModelEntry>& models) {
         AssetLoader::LoadModels(models, m_scene, m_ctx.Device(), m_ctx.CmdList(), flushFn);
         m_ctx.FlushAndReset();
     } catch (const std::exception& e) {
+        if (m_headless)
+            throw;
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
         MessageBoxW(NULL, wMsg, L"Fatal Init Error", MB_OK | MB_ICONERROR);
@@ -160,6 +183,17 @@ void Renderer::LoadScene(const std::vector<ModelEntry>& models) {
 
 void Renderer::InitSceneGPU() {
     try {
+        // A host's water is not traced yet; the tracer's own ocean at y = 0 would cut through the host's scene.
+        // A host brings its own ocean simulation, if any; until it does, the ocean stays hidden.
+        if (m_headless && m_ocean.Enabled()) {
+            ocean::Params hosted = m_ocean.GetParams();
+            hosted.external = true;
+            m_ocean.Configure(hosted);
+        }
+        // A host's lights come and go; learned light cuts favour the lights they saw early and starve new or small
+        // ones, so light picks use the tree's own importance.
+        if (m_headless)
+            m_integratorSettings.lightTreeLearning = false;
         m_rockMeshIndices.clear();
         if (m_planet.enabled()) {
             const auto rockVariants = planet::generate_rock_variants(6, 2, 0xB0DECA11u);
@@ -183,7 +217,9 @@ void Renderer::InitSceneGPU() {
             }
         }
         // Attach external streams before sizing the TLAS.
-        m_planet.set_external(m_voxels.enabled() ? &m_voxels : nullptr);
+        if (m_host && m_voxels.enabled())
+            throw std::runtime_error("A host stream and a Minecraft world cannot share the external stream slot");
+        m_planet.set_external(m_voxels.enabled() ? &m_voxels : static_cast<planet::IExternalStream*>(m_host));
         m_planet.set_external2(m_ocean.Enabled() ? &m_ocean : nullptr);
         m_planet.reserve_scene_instances((uint32_t)m_scene.instances.size());
         CreateAccelerationStructures();
@@ -203,6 +239,25 @@ void Renderer::InitSceneGPU() {
                     "Minecraft world: more than 4096 scene instances are not supported alongside it");
             const mc::StreamerConfig& sc = m_voxels.config();
             m_scene.ReserveVoxels(sc.vertexCapacity, sc.indexCapacity, sc.matIdCapacity, sc.maxInstances, 4096u);
+        }
+
+        UINT hostMaterialBase = 0;
+        if (m_host) {
+            const IHostStream::Reservation r = m_host->reservation();
+            m_scene.ReserveVoxels(r.vertexElems, r.indexElems, r.matIdElems, r.instanceSlots,
+                                  std::max<UINT>(64u, (UINT)m_scene.instances.size()));
+            m_scene.hostWritesGeometry = true;
+            hostMaterialBase = (UINT)m_scene.materials.size();
+            Material blank;
+            blank.Kd = DirectX::XMFLOAT4(0.5f, 0.5f, 0.5f, 1.0f);
+            blank.Ke = DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f);
+            blank.Ni = 1.5f;
+            blank.Pr_Pm_Ps_Pc = DirectX::XMFLOAT4(0.5f, 0.0f, 0.0f, 0.0f);
+            blank.albedoTexID = blank.normalTexID = blank.rmaTexID = -1;
+            blank.alphaThreshold = 1.0f;
+            for (uint32_t i = 0; i < r.materials; ++i)
+                m_scene.materials.push_back(blank);
+            m_scene.materialNames.resize(m_scene.materials.size());
         }
 
         if (m_ocean.Enabled()) {
@@ -245,13 +300,16 @@ void Renderer::InitSceneGPU() {
         m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
 
         m_scene.UploadMaterials(m_ctx.Device());
+#if RDN_CLUSTER_API
+        LoadPagedRoots();
+#endif
 
         if (m_ocean.Enabled()) {
             // Before Init: AS sizing needs the vertex span.
             m_ocean.BindScene(m_scene.vertexGlobal.Get(), m_scene.indexGlobal.Get(), m_scene.oceanVertexBase,
                               m_scene.oceanIndexBase, m_scene.oceanMatIDBase, m_scene.oceanPropsBase,
                               m_scene.oceanMatIndex);
-            m_ocean.Init(m_ctx.Device(), &m_ctx);
+            m_ocean.Init(m_ctx.Device(), &m_ctx, &m_clusters);
             // External streams write their own instance records here.
             m_planet.bind_instance_properties(m_scene.instanceProperties.Get());
             m_camera.oceanInstanceBase = m_scene.oceanPropsBase;
@@ -263,10 +321,35 @@ void Renderer::InitSceneGPU() {
         m_dlssNR.Initialize(GetWidth(), GetHeight());
         CreateShaderResourceHeap();
         CreateShaderBindingTable();
+        if (m_headless)
+            SetHostOutputs(nullptr, nullptr);
 
-        if (m_voxels.enabled()) {
+        if (DynamicLights()) {
             BindVoxelLights(m_ctx.CmdList());
             m_ctx.FlushAndReset();
+        }
+
+        if (m_host) {
+            IHostStream::Binding b;
+            b.device = m_ctx.Device();
+            b.ctx = &m_ctx;
+            b.vertexGlobal = m_scene.vertexGlobal.Get();
+            b.indexGlobal = m_scene.indexGlobal.Get();
+            b.combinedVertexCount = m_scene.combinedVertexCount();
+            b.vertexBase = m_scene.voxelVertexBase;
+            b.indexBase = m_scene.voxelIndexBase;
+            b.materialIds = m_scene.materialIndexBuffer.Get();
+            b.matIdBase = m_scene.voxelMatIDBase;
+            b.propsBase = m_scene.voxelPropsBase;
+            b.materials = &m_scene.materials;
+            b.materialBuffer = m_scene.materialBuffer.Get();
+            b.materialBase = hostMaterialBase;
+            b.heap = m_srvUavHeap.Get();
+            // Material texture IDs are packed as int16.
+            b.textureBase = BINDLESS_HEAP_START + (UINT)m_scene.bindlessGpuTextures.size();
+            b.textureCount = 32768u - b.textureBase;
+            m_host->bind(b);
+            m_planet.bind_instance_properties(m_scene.instanceProperties.Get());
         }
 
         if (m_planet.enabled()) {
@@ -299,18 +382,19 @@ void Renderer::InitSceneGPU() {
 
         m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
 
-        {
+        if (!m_headless) {
             const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             CD3DX12_CPU_DESCRIPTOR_HANDLE fontCpu(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
                                                   IMGUI_FONT_HEAP_SLOT, inc);
             CD3DX12_GPU_DESCRIPTOR_HANDLE fontGpu(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(),
                                                   IMGUI_FONT_HEAP_SLOT, inc);
-            m_editor.Init(Win32Application::GetHwnd(), m_ctx.Device(), m_ctx.BufferCount(), m_srvUavHeap.Get(), fontCpu,
-                          fontGpu);
+            m_editor.Init(m_hwnd, m_ctx.Device(), m_ctx.BufferCount(), m_srvUavHeap.Get(), fontCpu, fontGpu);
         }
 
         dxdiag::DumpNewMessages();
     } catch (const std::exception& e) {
+        if (m_headless)
+            throw;
         dxdiag::CheckDeviceRemoved(m_ctx.Device(), 1000);
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
@@ -324,9 +408,10 @@ void Renderer::UpdateRenderer(float dt) {
     using hrc = std::chrono::high_resolution_clock;
 
     // Every frame, regardless of mode.
-    slReflexSleep(*m_ctx.frameToken);
-
-    slPCLSetMarker(sl::PCLMarker::eSimulationStart, *m_ctx.frameToken);
+    if (!m_headless) {
+        slReflexSleep(*m_ctx.frameToken);
+        slPCLSetMarker(sl::PCLMarker::eSimulationStart, *m_ctx.frameToken);
+    }
 
     if (m_simulator.IsActive()) {
         bool shouldCapture = false;
@@ -371,9 +456,9 @@ void Renderer::UpdateRenderer(float dt) {
     }
 
     bool voxelLightsDue = false;
-    if (m_voxels.enabled() && m_voxels.lights_bound()) {
+    if (IDynamicLights* dl = DynamicLights(); dl && dl->lights_bound()) {
         const double nowS = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        voxelLightsDue = m_voxels.light_version() != m_voxelLightKickedVersion && nowS - m_lastVoxelLightKick >= 0.1;
+        voxelLightsDue = dl->light_version() != m_voxelLightKickedVersion && nowS - m_lastVoxelLightKick >= 0.1;
     }
     // Keep retired buffers until in-flight frames finish.
     for (size_t i = 0; i < m_vxLightRetired.size();) {
@@ -412,7 +497,7 @@ void Renderer::UpdateRenderer(float dt) {
 
         LOG(L"[LightTree] Async TLAS refit ready: "
             << m_pendingTLASUpload.size() << L" nodes" << (m_pendingTlasIncremental ? L" (incremental)" : L" (rebuilt)")
-            << (m_voxels.enabled() ? L", voxel light chunks " + std::to_wstring(m_pendingVoxelLeafCount) : L""));
+            << (DynamicLights() ? L", streamed light slots " + std::to_wstring(m_pendingVoxelLeafCount) : L""));
     }
 
     auto& lightStats = m_frameStats.lightBvh;
@@ -427,9 +512,10 @@ void Renderer::UpdateRenderer(float dt) {
         bytes(m_ltBlasBitTrailGpu ? m_ltBlasBitTrailGpu.Get() : baseLightBuffers.BLASBitTrail.Get());
 
     static FlyCamController dummyFlyCam;
-    m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam, m_passes, m_dlss, m_dlssNR, m_dlssG,
-                  m_integratorSettings, m_fps, m_frameStats, m_planet.stats(),
-                  m_voxels.enabled() ? &m_voxels : nullptr, &m_ocean);
+    if (!m_headless)
+        m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam, m_passes, m_dlss, m_dlssNR, m_dlssG,
+                      m_integratorSettings, m_fps, m_frameStats, m_planet.stats(),
+                      m_voxels.enabled() ? &m_voxels : nullptr, &m_ocean);
     // Transport changes reset reconstruction and learning history.
     if (m_ocean.Enabled() && m_scene.oceanInstanceSlots && !m_scene.oceanMaterialEdited) {
         const Material water = ocean::OceanSystem::MakeMaterial(m_ocean.GetParams());
@@ -512,7 +598,8 @@ void Renderer::UpdateRenderer(float dt) {
     m_frameStats.instanceCount = (UINT)m_scene.instances.size();
     m_frameStats.meshCount = (UINT)m_scene.meshes.size();
 
-    slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *m_ctx.frameToken);
+    if (!m_headless)
+        slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *m_ctx.frameToken);
 
     // Upload reuse and timestamp reads need the fence.
     auto t_waitStart = hrc::now();
@@ -575,9 +662,9 @@ void Renderer::KickLightTreeRefit() {
 
     std::vector<lt::TLASExtraLeaf> extra;
     uint32_t extraVersion = 0, slotCount = 0;
-    if (m_voxels.enabled() && m_voxels.lights_bound()) {
+    if (IDynamicLights* dl = DynamicLights(); dl && dl->lights_bound()) {
         const planet::DVec3 origin{m_scene.sceneOriginWorld.x, m_scene.sceneOriginWorld.y, m_scene.sceneOriginWorld.z};
-        m_voxels.light_snapshot(origin, extra, extraVersion, slotCount);
+        dl->light_snapshot(origin, extra, extraVersion, slotCount);
         m_voxelLightKickedVersion = extraVersion;
         m_lastVoxelLightKick =
             std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -874,7 +961,7 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
 
     LOG(L"[Emissive] GPU buffers updated: " << tris.size() << L" tris, " << triMap.size() << L" triToLightId");
 
-    if (m_voxels.enabled()) {
+    if (DynamicLights()) {
         m_voxelLightKickedVersion = 0xFFFFFFFFu;
         BindVoxelLights(cmdList);
     }
@@ -1084,6 +1171,114 @@ planet::CameraView Renderer::MakePlanetCamera() const {
     return cv;
 }
 
+#if RDN_CLUSTER_API
+// Hands the paged meshes to the pager, which loads their roots; each mesh's BLAS becomes its coarsest cut.
+void Renderer::LoadPagedRoots() {
+    m_pagedMeshes.clear();
+    for (UINT m = 0; m < (UINT)m_scene.meshes.size(); ++m)
+        if (m_scene.meshes[m].paged)
+            m_pagedMeshes.push_back(m);
+    if (m_pagedMeshes.empty() || !m_clusters.enabled())
+        return;
+    clusters::Pager::Geometry g;
+    g.vertices = m_scene.vertexGlobal.Get();
+    g.indices = m_scene.indexGlobal.Get();
+    g.readState = m_scene.globalReadState;
+    g.vertexAlloc = &m_scene.pagePoolVertexAlloc;
+    g.triAlloc = &m_scene.pagePoolTriAlloc;
+    g.materialIds = &m_scene.materialIDs;
+    g.materialIdBuffer = std::addressof(m_scene.materialIndexBuffer); // ComPtr's operator& would release it
+    clusters::Pager::Config cfg;
+    cfg.clasPoolBytes = clusters::pool_sizes().clasBytes;
+    m_pager.init(&m_ctx, &m_clusters, g, cfg);
+    for (UINT m : m_pagedMeshes) {
+        MeshGPU& mesh = m_scene.meshes[m];
+        m_pager.add_mesh(&mesh.lod, std::move(*mesh.pagedSource), mesh.poolTriBase, mesh.hasOmm);
+        mesh.pagedSource.reset();
+    }
+    m_pager.load_roots(m_ctx.CmdList(), [this] { m_ctx.FlushAndReset(); },
+                       [this](uint32_t pagerMesh, ComPtr<ID3D12Resource> blas) {
+                           m_scene.meshes[m_pagedMeshes[pagerMesh]].blas = std::move(blas);
+                       });
+    m_scene.RebuildTLASInstanceList();
+    m_scene.tlasFullRebuild = true;
+}
+
+void Renderer::UpdateSceneLod() {
+    const auto& inst = m_scene.instances;
+    bool changed = m_lodMeshOf.size() != inst.size() || m_lodMeshes != m_scene.meshes.data();
+    for (size_t i = 0; i < inst.size() && !changed; ++i)
+        changed = m_lodMeshOf[i] != inst[i].meshIndex;
+    if (changed && m_pager.active() && m_lodMeshes != m_scene.meshes.data())
+        for (uint32_t i = 0; i < (uint32_t)m_pagedMeshes.size(); ++i)
+            m_pager.rebind(i, &m_scene.meshes[m_pagedMeshes[i]].lod);
+    // Pages whose builds finished become resident before the cuts see them.
+    if (m_pager.active())
+        m_pager.moves(m_planetFrame);
+    if (changed) {
+        std::vector<clusters::LodInstances::Instance> set(inst.size());
+        m_lodMeshOf.resize(inst.size());
+        for (size_t i = 0; i < inst.size(); ++i) {
+            m_lodMeshOf[i] = inst[i].meshIndex;
+            MeshGPU& mesh = m_scene.meshes[inst[i].meshIndex];
+            if (!mesh.lod.empty())
+                set[i] = {&mesh.lod, mesh.hasOmm};
+        }
+        m_lodMeshes = m_scene.meshes.data();
+        m_lod.reset(set, m_planetFrame);
+    }
+    if (!m_lod.active())
+        return;
+
+    // The error budget in pixels at the output resolution; RDN_LOD_ERROR overrides it.
+    static const float threshold = [] {
+        char v[32] = {};
+        return GetEnvironmentVariableA("RDN_LOD_ERROR", v, sizeof(v)) > 0 ? std::max(0.01f, (float)atof(v)) : 1.0f;
+    }();
+    const XMVECTOR camera = XMMatrixInverse(nullptr, m_camera.ViewMatrix()).r[3];
+    const float pixelsPerUnit = 0.5f * (float)m_height / std::tan(0.5f * m_camera.fovDegrees * 0.01745329252f);
+    const size_t n = std::min(inst.size(), m_scene.tlasInstances.size());
+    m_lodViews.resize(inst.size());
+    for (size_t i = 0; i < n; ++i) {
+        if (m_scene.meshes[inst[i].meshIndex].lod.empty())
+            continue;
+        const XMMATRIX& m = m_scene.tlasInstances[i].transform;
+        const XMVECTOR local = XMVector3TransformCoord(camera, XMMatrixInverse(nullptr, m));
+        const float scale = std::max({XMVectorGetX(XMVector3Length(m.r[0])), XMVectorGetX(XMVector3Length(m.r[1])),
+                                      XMVectorGetX(XMVector3Length(m.r[2])), 1e-6f});
+        clusters::LodView& v = m_lodViews[i];
+        XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(v.camera), local);
+        v.pixelsPerUnit = pixelsPerUnit;
+        v.threshold = threshold;
+        v.znear = m_camera.nearPlane / scale;
+    }
+    m_lodRequests.clear();
+    m_lod.update(m_lodViews.data(), m_planetFrame, m_pager.active() ? &m_lodRequests : nullptr);
+    if (m_pager.active())
+        m_pager.installs(m_lodRequests, m_ctx.CopyList());
+    for (size_t i = 0; i < n && i < m_planetSceneInstances.size(); ++i)
+        if (const D3D12_GPU_VIRTUAL_ADDRESS va = m_lod.blas((uint32_t)i))
+            m_planetSceneInstances[i].blas = va;
+
+    const auto& st = m_lod.stats();
+    if (m_pager.active() && m_planetFrame % 120 == 0) {
+        const auto& ps = m_pager.stats();
+        std::printf("[pager] %u of %u pages resident (%.2fM triangles), %u reading, %u building; pool %.1f/%.1fM "
+                    "triangles, CLAS %.0f/%.0f MB; %.1f MB read; %llu installed, %llu retired, %llu evicted, %llu dropped\n",
+                    ps.resident, ps.pages, (double)ps.residentTris / 1e6, ps.reading, ps.building,
+                    (double)ps.trisUsed / 1e6, (double)ps.trisCapacity / 1e6, (double)ps.clasUsed / 1048576.0,
+                    (double)ps.clasCapacity / 1048576.0, (double)ps.readBytes / 1048576.0,
+                    (unsigned long long)ps.installedTotal, (unsigned long long)ps.retiredTotal,
+                    (unsigned long long)ps.evictedTotal,
+                    (unsigned long long)ps.droppedTotal);
+    }
+    if (m_planetFrame % 120 == 0)
+        std::printf("[lod] cut %llu clusters (meshes' own BLAS: %llu), %u builds, %u deferred (%.1f px)\n",
+                    (unsigned long long)st.cutClusters, (unsigned long long)st.fullClusters, st.builds, st.deferred,
+                    threshold);
+}
+#endif
+
 // Copies dirty instances into the streamer's TLAS input.
 void Renderer::BuildPlanetSceneInstances() {
     const auto& src = m_scene.tlasInstances;
@@ -1124,7 +1319,8 @@ void Renderer::RenderFrame() {
     if (m_ocean.Enabled())
         m_ocean.BeginFrame(m_lastDt, MakePlanetCamera(), m_planetFrame);
 
-    slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *m_ctx.frameToken);
+    if (!m_headless)
+        slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *m_ctx.frameToken);
 
     try {
         if (m_scene.tlasFullRebuild || m_scene.tlasInstances.size() != m_scene.instances.size())
@@ -1142,14 +1338,16 @@ void Renderer::RenderFrame() {
             m_planet.set_rock_instances(m_rockScatter.live().data(), (uint32_t)m_rockScatter.live().size());
         }
 
-        if (m_voxels.enabled()) {
+        if (IDynamicLights* dl = DynamicLights()) {
             if (m_emissiveGpuDirty) {
-                m_voxels.on_light_tlas_published(0u, false);
+                dl->on_light_tlas_published(0u, false);
                 m_liveVoxelLightLeaves = 0;
             } else if (!m_pendingTLASUpload.empty()) {
-                m_voxels.on_light_tlas_published(m_pendingVoxelLightVersion, m_pendingVoxelLeafCount > 0);
+                dl->on_light_tlas_published(m_pendingVoxelLightVersion, m_pendingVoxelLeafCount > 0);
                 m_liveVoxelLightLeaves = m_pendingVoxelLeafCount;
             }
+        }
+        if (m_voxels.enabled()) {
             const planet::CameraView pcam = MakePlanetCamera();
             const double camPos[3] = {pcam.position_world.x, pcam.position_world.y, pcam.position_world.z};
             m_voxels.begin_frame(camPos);
@@ -1177,6 +1375,12 @@ void Renderer::RenderFrame() {
         PopulateCommandList();
         auto t_popEnd = hrc::now();
         m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
+
+        if (m_headless) {
+            m_ctx.ExecuteAndPresent(); // no swap chain: executes and signals the frame fence
+            m_planet.end_frame();
+            return;
+        }
 
         slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
 
@@ -1244,7 +1448,7 @@ void Renderer::RenderFrame() {
         } else {
             ss << L"Frame Time: " << 1000.0f / m_fps << L" ms (" << m_fps << L" fps)";
         }
-        SetWindowTextW(Win32Application::GetHwnd(), ss.str().c_str());
+        SetWindowTextW(m_hwnd, ss.str().c_str());
 
         if (m_ocean.Enabled()) {
             const auto& os = m_ocean.GetStats();
@@ -1292,6 +1496,18 @@ void Renderer::RenderFrame() {
                 vs.allocFailures, vs.evicted, vs.chunksTracked, (double)vs.lightTrisInTree / 1.0e6,
                 vc.maxLightTris / 1000u, vs.lightChunksInTree, (double)vs.lightTrisResident / 1.0e6,
                 vs.lightChunksDropped, vs.lightVersion, vs.lightLiveVersion, m_voxels.has_live_lights() ? "" : " none");
+            const planet::TlasBuilder& tlas = m_planet.tlas();
+            std::printf("[mc] as: %s build_gpu=%.3fms pool=%lluMB tlas=%s %.3fms writes=%u partitions=%u",
+                        vs.clustered ? "clustered" : "classic", ps.external_blas_gpu_ms,
+                        (unsigned long long)(vs.blasUsed >> 20), tlas.partitioned() ? "partitioned" : "classic",
+                        ps.tlas_gpu_ms, tlas.writes(), tlas.partitions_used());
+            if (vs.clustered)
+                std::printf(" clusters=%.2fM (%.0f tris each) clas=%.0f/%.0fMB built/alloc cblas=%.1f/%.1fMB",
+                            (double)vs.clustersResident / 1.0e6,
+                            vs.clustersResident ? (double)vs.trianglesResident / (double)vs.clustersResident : 0.0,
+                            (double)vs.clasBytesBuilt / 1048576.0, (double)vs.clasBytesAllocated / 1048576.0,
+                            (double)vs.clusterBlasBytesBuilt / 1048576.0, (double)vs.clusterBlasBytesAllocated / 1048576.0);
+            std::printf("\n");
         }
 
         s_frameCount = 0;
@@ -1301,6 +1517,12 @@ void Renderer::RenderFrame() {
 
 void Renderer::DestroyRenderer() {
     m_ctx.WaitForGPU();
+    // The host keeps its DeviceContext (and Streamline) for the next renderer.
+    if (m_headless) {
+        slFreeResources(sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
+        m_dlssNR.Shutdown(m_ctx.Device());
+        return;
+    }
     if (m_dlssG.enabled) {
         sl::DLSSGOptions gOpts{};
         gOpts.mode = sl::DLSSGMode::eOff;
@@ -1333,31 +1555,17 @@ UINT Renderer::CreateProceduralMesh(const std::vector<Vertex>& vertices, const s
     mesh.opaqueTriCount = triCount;
     mesh.alphaTriCount = 0;
     mesh.materialIDBase = materialIDBase;
-    {
-        UINT bytes = mesh.vertexCount * sizeof(Vertex);
-        mesh.vertexBuffer =
-            nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes, D3D12_RESOURCE_FLAG_NONE,
-                                          D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-        void* p = nullptr;
-        mesh.vertexBuffer->Map(0, nullptr, &p);
-        memcpy(p, vertices.data(), bytes);
-        mesh.vertexBuffer->Unmap(0, nullptr);
-    }
-    {
-        UINT bytes = mesh.indexCount * sizeof(UINT);
-        mesh.indexBuffer =
-            nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes, D3D12_RESOURCE_FLAG_NONE,
-                                          D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-        void* p = nullptr;
-        mesh.indexBuffer->Map(0, nullptr, &p);
-        memcpy(p, indices.data(), bytes);
-        mesh.indexBuffer->Unmap(0, nullptr);
-    }
+    mesh.OrderForClusters();
+    mesh.CreateBlasBuildInputs(m_ctx.Device());
 
-    auto blasBuf = CreateBottomLevelAS({{mesh.vertexBuffer, mesh.vertexCount}}, {{mesh.indexBuffer, mesh.indexCount}},
-                                       mesh.opaqueTriCount, mesh.alphaTriCount);
-    mesh.blas = blasBuf.pResult;
-    m_ctx.FlushAndReset();
+    if (m_clusters.enabled()) {
+        BuildClusterBlas({&mesh});
+    } else {
+        auto blasBuf = CreateBottomLevelAS({{mesh.vertexBuffer, mesh.vertexCount}}, {{mesh.indexBuffer, mesh.indexCount}},
+                                           mesh.opaqueTriCount, mesh.alphaTriCount);
+        mesh.blas = blasBuf.pResult;
+        m_ctx.FlushAndReset();
+    }
 
     mesh.vertexBuffer.Reset();
     mesh.indexBuffer.Reset();
@@ -1391,6 +1599,15 @@ UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material
     mesh.vertexBuffer = src.vertexBuffer;
     mesh.indexBuffer = src.indexBuffer;
     mesh.blas = src.blas;
+    // Same triangles, so the same clusters and records (whose triBase is order, not material).
+    mesh.clusterCuts = src.clusterCuts;
+    mesh.clas = src.clas;
+    mesh.clusterBase = src.clusterBase;
+    mesh.clusterCount = src.clusterCount;
+    if (src.paged)
+        throw std::runtime_error("CreateMeshInstance: streamed meshes cannot be copied");
+    mesh.clusterSpans = src.clusterSpans;
+    mesh.lod = src.lod;
 
     UINT meshIndex = (UINT)m_scene.meshes.size();
     m_scene.meshes.push_back(std::move(mesh));
@@ -1433,6 +1650,34 @@ void Renderer::HandleSceneStructuralChange() {
     m_scene.lightTreeDirty = true;
 }
 
+void Renderer::SetHostOutputs(ID3D12Resource* color, ID3D12Resource* depth) {
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    auto writeUAV = [&](UINT slot, ID3D12Resource* res, DXGI_FORMAT fmt) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        ud.Format = fmt;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        dev->CreateUnorderedAccessView(res, nullptr, &ud, h);
+    };
+    writeUAV(HOST_COLOR_UAV_SLOT, color, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    writeUAV(HOST_DEPTH_UAV_SLOT, depth, DXGI_FORMAT_R32_FLOAT);
+}
+
+void Renderer::SetHostSky(ID3D12Resource* sky) {
+    static_assert(OCEAN_HEAP_BASE + OCEAN_HEAP_COUNT <= HOST_COLOR_UAV_SLOT, "Ocean descriptors overlap the host slots");
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
+    s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    s.Format = sky ? sky->GetDesc().Format : DXGI_FORMAT_R16G16B16A16_FLOAT;
+    s.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    s.Texture2D.MipLevels = 1;
+    dev->CreateShaderResourceView(sky, &s,
+                                  CD3DX12_CPU_DESCRIPTOR_HANDLE(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
+                                                                HOST_SKY_SRV_SLOT, inc));
+}
+
 bool Renderer::WantsKeyboard() const {
     return m_editor.IsVisible() && ImGui::GetIO().WantCaptureKeyboard;
 }
@@ -1461,15 +1706,15 @@ void Renderer::PopulateCommandList() {
         m_dlssModeChangedFrames--;
     }
 
-    {
+    if (!m_headless) {
         auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_PRESENT,
                                                       D3D12_RESOURCE_STATE_RENDER_TARGET);
         cmdList->ResourceBarrier(1, &b);
-    }
 
-    auto rtv = m_ctx.CurrentRTV();
-    auto dsv = m_ctx.DSV();
-    cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        auto rtv = m_ctx.CurrentRTV();
+        auto dsv = m_ctx.DSV();
+        cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    }
 
     RecordSkyLUTBake(cmdList);
 
@@ -1556,6 +1801,8 @@ void Renderer::PopulateCommandList() {
         baseFlags |= RS_FLAG_CLAMP_EMITTERS;
     if (rs.forceDiffuseMats)
         baseFlags |= RS_FLAG_FORCE_DIFFUSE;
+    if (m_headless)
+        baseFlags |= RS_FLAG_HOST_COMPOSITE;
     baseFlags |= m_dlss.GuideOffFlags();
 
     const bool useSharc = rs.sharcEnabled;
@@ -1700,6 +1947,8 @@ void Renderer::PopulateCommandList() {
         activeFeatures |= pass_feature::SpatialReuse;
     if (MeshLightsActive())
         activeFeatures |= pass_feature::MeshLights;
+    if (m_headless)
+        activeFeatures |= pass_feature::HostOutput;
     for (auto& pass : m_passes.Passes())
         pass.executedLastFrame = false;
     bool dlssEvaluatedThisFrame = false;
@@ -1937,6 +2186,12 @@ void Renderer::PopulateCommandList() {
         auto toSrc = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                                           D3D12_RESOURCE_STATE_COPY_SOURCE);
         cmdList->ResourceBarrier(1, &toSrc);
+    }
+
+    // The host reads the HDR result from its own textures; there is no back buffer.
+    if (m_headless) {
+        m_gpuProfiler.EndFrame(cmdList);
+        return;
     }
 
     const bool inspectBuffers =

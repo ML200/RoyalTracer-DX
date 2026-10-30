@@ -5,10 +5,10 @@
 #include "Windowsx.h"
 
 EngineApp::EngineApp(UINT width, UINT height, std::wstring name, std::unique_ptr<SceneDefinition> scene)
-    : DXSample(width, height, name), m_sceneDef(std::move(scene)), m_renderer(width, height) {}
+    : DXSample(width, height, name), m_sceneDef(std::move(scene)), m_renderer(m_ctx, RendererConfig{width, height}) {}
 
 void EngineApp::OnInit() {
-    m_renderer.InitDevice();
+    m_renderer.InitDevice(Win32Application::GetHwnd());
 
     auto meshes = m_sceneDef->GetMeshes();
     char surveyWorld[32768]{};

@@ -31,10 +31,11 @@ class AssetLoader {
 
     static constexpr UINT MAX_TRIS_PER_MESH = 25'000'000;
 
-  private:
+    // Opaque triangles first, then alpha-tested and transmissive ones (BLAS geometry 0 and 1).
     static MeshSplitResult SplitOpaqueAlpha(const std::vector<UINT>& indices, const std::vector<UINT>& perTriMatIDs,
                                             const MaterialSoA& allMaterials);
 
+  private:
     static std::vector<LoadedMesh> SplitMeshSpatial(LoadedMesh mesh, UINT maxTris);
 
     static void SplitOversizedMeshes(LoadedScene& scene, UINT maxTris);

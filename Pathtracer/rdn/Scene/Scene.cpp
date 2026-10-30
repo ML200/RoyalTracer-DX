@@ -1,5 +1,9 @@
 #include "../stdafx.h"
+#include <cstddef>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <unordered_map>
 #include "Scene.h"
 #include "../ocean/OceanCommon.h"
 #include "../DXRHelper.h"
@@ -19,6 +23,199 @@ void MeshGPU::CreateBlasBuildInputs(ID3D12Device* device) {
     };
     upload(cpuVertices.data(), cpuVertices.size() * sizeof(Vertex), vertexBuffer);
     upload(cpuIndices.data(), cpuIndices.size() * sizeof(UINT), indexBuffer);
+}
+
+namespace {
+// Reorders triangles [b, e) into compact octree cells, appending each cell's first triangle to cuts.
+void order_cells(const std::vector<Vertex>& vertices, std::vector<UINT>& indices, std::vector<UINT>& materials, UINT b,
+                 UINT e, std::vector<UINT>& cuts) {
+    if (b == e) return;
+    std::vector<float> centroids(3ull * (e - b), 0.0f);
+    std::vector<uint32_t> order, cells;
+    for (UINT t = b; t < e; ++t)
+        for (int k = 0; k < 3; ++k) {
+            const XMFLOAT3& p = vertices[indices[3ull * t + k]].position;
+            centroids[3ull * (t - b) + 0] += p.x / 3.0f;
+            centroids[3ull * (t - b) + 1] += p.y / 3.0f;
+            centroids[3ull * (t - b) + 2] += p.z / 3.0f;
+        }
+    clusters::morton_cells(centroids.data(), e - b, 1, clusters::MAX_TRIS, order, cells);
+    const std::vector<UINT> idx(indices.begin() + 3ull * b, indices.begin() + 3ull * e);
+    const std::vector<UINT> mat(materials.begin() + b, materials.begin() + e);
+    for (UINT i = 0; i < e - b; ++i) {
+        for (int k = 0; k < 3; ++k) indices[3ull * (b + i) + k] = idx[3ull * order[i] + k];
+        materials[b + i] = mat[order[i]];
+    }
+    for (uint32_t c : cells) cuts.push_back(b + c);
+}
+} // namespace
+
+bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase) {
+    using clusters::NO_REGION;
+    const UINT triCount = (UINT)(cpuIndices.size() / 3);
+    regions.resize(triCount, NO_REGION);
+    std::fill(regions.begin() + opaqueTriCount, regions.end(), NO_REGION);
+    std::unordered_map<uint32_t, uint32_t> regionTris;
+    for (UINT t = 0; t < opaqueTriCount; ++t)
+        if (regions[t] != NO_REGION) ++regionTris[regions[t]];
+    UINT lodSourceTris = 0;
+    for (UINT t = 0; t < opaqueTriCount; ++t) {
+        if (regions[t] != NO_REGION && regionTris[regions[t]] < clusters::MIN_LOD_TRIS) regions[t] = NO_REGION;
+        lodSourceTris += regions[t] != NO_REGION ? 1u : 0u;
+    }
+    if (!lodSourceTris) {
+        OrderForClusters();
+        return false;
+    }
+
+    // The page file is named after what it is built from: vertices, triangles and their model-relative regions.
+    uint64_t key = 0xcbf29ce484222325ull ^ 1u; // FNV-1a over words; the xor is the bake's version
+    auto mix = [&](const void* data, size_t bytes) {
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        for (; bytes >= 8; bytes -= 8, p += 8) {
+            uint64_t w;
+            std::memcpy(&w, p, 8);
+            key = (key ^ w) * 0x100000001b3ull;
+        }
+        for (; bytes; --bytes, ++p) key = (key ^ *p) * 0x100000001b3ull;
+    };
+    mix(cpuVertices.data(), cpuVertices.size() * sizeof(Vertex));
+    mix(cpuIndices.data(), cpuIndices.size() * sizeof(UINT));
+    std::vector<uint32_t> relative(regions);
+    for (uint32_t& r : relative)
+        if (r != NO_REGION) r -= materialBase;
+    mix(relative.data(), relative.size() * sizeof(uint32_t));
+    char name[32];
+    std::snprintf(name, sizeof(name), "%016llx.rdnpages", (unsigned long long)key);
+    const std::string path = clusters::cache_dir() + "\\" + name;
+
+    clusters::LodSource src;
+    src.vertices = reinterpret_cast<const uint8_t*>(cpuVertices.data());
+    src.stride = sizeof(Vertex);
+    src.normalOffset = offsetof(Vertex, normal_material);
+    src.uvOffset = offsetof(Vertex, texCoord);
+    src.vertexCount = (uint32_t)cpuVertices.size();
+    src.indices = cpuIndices.data();
+    src.regions = regions.data();
+    src.triCount = triCount;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        clusters::LodBuild b;
+        clusters::build_lod(src, b);
+        if (b.clusters.empty()) {
+            OrderForClusters();
+            return false;
+        }
+        const clusters::BakeMesh bake{ src.vertices, src.stride, src.normalOffset, src.uvOffset, materialBase };
+        if (!clusters::write_pages(path, b, bake)) {
+            std::printf("[pager] cannot write %s; this mesh keeps every level resident\n", path.c_str());
+            return BuildClusterLod(std::move(regions));
+        }
+    }
+
+    // The mesh keeps the triangles outside the hierarchy, on the vertices they use: opaque, then alpha, in cells.
+    std::vector<UINT> remap(cpuVertices.size(), ~0u), idx, mat;
+    std::vector<Vertex> verts;
+    UINT fixedOpaque = 0;
+    for (UINT t = 0; t < triCount; ++t) {
+        if (regions[t] != NO_REGION) continue;
+        for (int k = 0; k < 3; ++k) {
+            UINT& r = remap[cpuIndices[3ull * t + k]];
+            if (r == ~0u) {
+                r = (UINT)verts.size();
+                verts.push_back(cpuVertices[cpuIndices[3ull * t + k]]);
+            }
+            idx.push_back(r);
+        }
+        mat.push_back(cpuMaterialIDs[t]);
+        fixedOpaque += t < opaqueTriCount ? 1u : 0u;
+    }
+    cpuVertices = std::move(verts);
+    cpuIndices = std::move(idx);
+    cpuMaterialIDs = std::move(mat);
+    vertexCount = (UINT)cpuVertices.size();
+    indexCount = (UINT)cpuIndices.size();
+    opaqueTriCount = fixedOpaque;
+    clusterCuts.clear();
+    std::vector<UINT> cuts;
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, 0, opaqueTriCount, cuts);
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, opaqueTriCount, indexCount / 3, cuts);
+    clusterSpans.clear();
+    if (!cuts.empty()) clusters::split(cpuIndices.data(), vertexCount, cuts, indexCount / 3, clusterSpans);
+    lod = clusters::Lod{};
+    lod.fixed = (uint32_t)clusterSpans.size();
+    pagedSource = std::make_shared<clusters::PagedSource>();
+    if (!clusters::read_pages(path, lod, *pagedSource)) throw std::runtime_error("cannot read page file " + path);
+    pagedSource->materialBase = materialBase;
+    paged = true;
+    return true;
+}
+
+void MeshGPU::OrderForClusters() {
+    clusterCuts.clear();
+    const UINT triCount = (UINT)(cpuIndices.size() / 3);
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, 0, opaqueTriCount, clusterCuts);
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, opaqueTriCount, triCount, clusterCuts);
+}
+
+bool MeshGPU::BuildClusterLod(std::vector<uint32_t> regions) {
+    using clusters::NO_REGION;
+    const UINT triCount = (UINT)(cpuIndices.size() / 3);
+    regions.resize(triCount, NO_REGION);
+    std::fill(regions.begin() + opaqueTriCount, regions.end(), NO_REGION);
+    std::unordered_map<uint32_t, uint32_t> regionTris;
+    for (UINT t = 0; t < opaqueTriCount; ++t)
+        if (regions[t] != NO_REGION) ++regionTris[regions[t]];
+    UINT lodSourceTris = 0;
+    for (UINT t = 0; t < opaqueTriCount; ++t) {
+        if (regions[t] != NO_REGION && regionTris[regions[t]] < clusters::MIN_LOD_TRIS) regions[t] = NO_REGION;
+        lodSourceTris += regions[t] != NO_REGION ? 1u : 0u;
+    }
+    clusters::LodBuild b;
+    if (lodSourceTris) {
+        clusters::LodSource src;
+        src.vertices = reinterpret_cast<const uint8_t*>(cpuVertices.data());
+        src.stride = sizeof(Vertex);
+        src.normalOffset = offsetof(Vertex, normal_material);
+        src.uvOffset = offsetof(Vertex, texCoord);
+        src.vertexCount = (uint32_t)cpuVertices.size();
+        src.indices = cpuIndices.data();
+        src.regions = regions.data();
+        src.triCount = triCount;
+        clusters::build_lod(src, b);
+    }
+    if (b.clusters.empty()) {
+        OrderForClusters();
+        return false;
+    }
+    // The hierarchy's triangles, then the opaque ones outside it, then the alpha ones; the latter two in octree cells.
+    std::vector<UINT> idx = std::move(b.indices), mat = std::move(b.regions);
+    const UINT lodTris = (UINT)(idx.size() / 3);
+    for (UINT t = 0; t < triCount; ++t) {
+        if (regions[t] != NO_REGION) continue;
+        idx.insert(idx.end(), cpuIndices.begin() + 3ull * t, cpuIndices.begin() + 3ull * (t + 1));
+        mat.push_back(cpuMaterialIDs[t]);
+    }
+    cpuIndices = std::move(idx);
+    cpuMaterialIDs = std::move(mat);
+    const UINT total = (UINT)(cpuIndices.size() / 3);
+    opaqueTriCount = lodTris + (opaqueTriCount - lodSourceTris);
+    indexCount = (UINT)cpuIndices.size();
+    clusterCuts.clear();
+    std::vector<UINT> cuts;
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, lodTris, opaqueTriCount, cuts);
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, opaqueTriCount, total, cuts);
+    clusterSpans.clear();
+    if (!cuts.empty()) clusters::split(cpuIndices.data(), vertexCount, cuts, total, clusterSpans);
+    lod.fixed = (uint32_t)clusterSpans.size();
+    lod.base = lod.fixed + b.originalClusters;
+    lod.coarseTriBase = b.originalClusters ? b.spans[b.originalClusters - 1].firstTri + b.spans[b.originalClusters - 1].triCount : 0;
+    lod.coarseTriCount = lodTris - lod.coarseTriBase;
+    clusterSpans.insert(clusterSpans.end(), b.spans.begin(), b.spans.end()); // the hierarchy's triangles come first
+    lod.clusters = std::move(b.clusters);
+    lod.groups = std::move(b.groups);
+    lod.clas.clear();
+    return true;
 }
 
 void Scene::MarkModelMoved(UINT modelIndex) {
@@ -112,14 +309,43 @@ void Scene::ReserveVoxels(UINT vertexElems, UINT indexElems, UINT matIDElems, UI
     voxelPropsBase = std::max(minPropsBase, afterRocks);
 }
 
+bool Scene::ReservePagePool() {
+    if (!meshes.empty() || !materialIDs.empty())
+        return false;
+    const clusters::PoolSizes s = clusters::pool_sizes();
+    pagePoolVertices = s.vertices;
+    pagePoolTris = s.tris;
+    pagePoolVertexAlloc.init(s.vertices);
+    pagePoolTriAlloc.init(s.tris);
+    materialIDs.assign(s.tris, 0u);
+    return true;
+}
+
+void Scene::ReleasePagePool() {
+    if (!pagePoolTris)
+        return;
+    materialIDs.erase(materialIDs.begin(), materialIDs.begin() + pagePoolTris);
+    for (MeshGPU& m : meshes)
+        m.materialIDBase -= pagePoolTris;
+    pagePoolVertices = pagePoolTris = 0;
+    pagePoolVertexAlloc.init(0);
+    pagePoolTriAlloc.init(0);
+}
+
 void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
     SCOPE_TIMER("BuildGlobalMeshBuffers");
 
-    // All geometry shares one buffer.
+    // All geometry shares one buffer, after the page pool; paged meshes live in the pool.
     geoOffsets.resize(meshes.size());
-    size_t totalV = 0, totalI = 0;
+    size_t totalV = pagePoolVertices, totalI = 3ull * pagePoolTris;
 
     for (size_t m = 0; m < meshes.size(); ++m) {
+        if (meshes[m].paged) {
+            meshes[m].globalVertexBase = meshes[m].poolVertexBase;
+            meshes[m].globalIndexBase = 3u * meshes[m].poolTriBase;
+            geoOffsets[m] = {meshes[m].globalVertexBase, meshes[m].globalIndexBase, meshes[m].materialIDBase};
+            continue;
+        }
         meshes[m].globalVertexBase = (UINT)totalV;
         meshes[m].globalIndexBase = (UINT)totalI;
         geoOffsets[m] = {(UINT)totalV, (UINT)totalI, meshes[m].materialIDBase};
@@ -162,13 +388,15 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
 
     // Ocean writes vertices via UAV; upload heaps can't be UAVs.
     const bool hasOcean = oceanVertexElems > 0;
-    if (hasTerrain && hasOcean)
-        throw std::runtime_error("Streamed terrain and the ocean cannot share the global vertex buffer");
+    if (hasTerrain && (hasOcean || hostWritesGeometry))
+        throw std::runtime_error("Streamed terrain cannot share the global vertex buffer with the ocean or a host");
+    const bool computeWrites = hasOcean || hostWritesGeometry;
     const D3D12_RESOURCE_FLAGS vbFlags =
-        hasOcean ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
-    // The ocean's compute queue rejects GENERIC_READ.
+        computeWrites ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
+    // The compute queue rejects GENERIC_READ.
     const D3D12_RESOURCE_STATES vbReadState =
-        hasOcean ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_GENERIC_READ;
+        computeWrites ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_GENERIC_READ;
+    globalReadState = hasTerrain ? D3D12_RESOURCE_STATE_GENERIC_READ : vbReadState;
 
     uint8_t* dstVertsRaw;
     uint8_t* dstIdxRaw;
@@ -359,6 +587,11 @@ void Scene::PrepareInstanceProperties() {
         const bool lit = lightClassEnabled[MeshLightClass(si.meshIndex)];
         dst.triToLightBase = (lit && si.meshIndex < meshLightBase.size()) ? meshLightBase[si.meshIndex] : 0xFFFFFFFFu;
         dst.lightSlot = (lit && idx < instanceLightSlot.size()) ? instanceLightSlot[idx] : 0xFFFFFFFFu;
+        // A paged mesh's streamed triangles count on from its own, which alone have light records: ranged lookup.
+        if (mesh.paged && dst.triToLightBase != 0xFFFFFFFFu) {
+            dst.triToLightBase |= 0x40000000u;
+            dst._pad[1] = mesh.indexCount / 3;
+        }
 
         if (idx < tlasInstances.size())
             tlasInstances[idx].transform = M;
@@ -435,8 +668,11 @@ void Scene::CollectEmissiveTriangles() {
     for (size_t m = 0; m < meshes.size(); ++m) {
         const auto& mesh = meshes[m];
         const UINT tris = mesh.indexCount / 3;
+        const auto coarse = [&](UINT t) { return t - mesh.lod.coarseTriBase < mesh.lod.coarseTriCount; };
         bool anyEmissive = false;
         for (UINT t = 0; t < tris && !anyEmissive; ++t) {
+            if (coarse(t))
+                continue;
             const XMFLOAT3& Ke = materials.Ke[mesh.cpuMaterialIDs[t]];
             anyEmissive = Ke.x + Ke.y + Ke.z > 0.0f;
         }
@@ -448,7 +684,7 @@ void Scene::CollectEmissiveTriangles() {
         triToLightId.resize(triToLightId.size() + tris, 0xFFFFFFFFu);
         for (UINT t = 0; t < tris; ++t) {
             const XMFLOAT3& Ke = materials.Ke[mesh.cpuMaterialIDs[t]];
-            if (Ke.x + Ke.y + Ke.z <= 0.0f)
+            if (Ke.x + Ke.y + Ke.z <= 0.0f || coarse(t))
                 continue;
 
             LightTriangle lt{};

@@ -17,6 +17,12 @@
 #include <filesystem>
 #include <Windows.h>
 
+// Inside a host process (Unity plugin) the hooks below are process-wide and would terminate the host.
+#ifdef RT_HOSTED
+#undef ENABLE_D3D12_DIAGNOSTICS
+#define ENABLE_D3D12_DIAGNOSTICS 0
+#endif
+
 // Every TU must agree on this, or the linker may keep the stubs.
 #ifndef ENABLE_D3D12_DIAGNOSTICS
 #define ENABLE_D3D12_DIAGNOSTICS 1

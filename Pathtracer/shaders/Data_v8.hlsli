@@ -20,6 +20,12 @@ struct InstanceProperties
     float3x4 prevObjectToWorld;
 };
 
+// Indexed by a hit's cluster ID; must match the host-side ClusterRecord.
+struct ClusterRecord
+{
+    uint triBase; // the cluster's first triangle among its instance's flat triangles
+};
+
 struct LightTriangle {
     float3 x;
     float cdf;
@@ -30,7 +36,9 @@ struct LightTriangle {
     float3 emission;
     uint triCount;
     float total_weight;
-    float3 pad0;
+    float coneScale;  // > 0: a spot's cone, attenuation saturate(cos * coneScale + coneOffset)^2; 0 = Lambertian
+    float coneOffset;
+    float pad0;
 };
 
 struct MatPacked {

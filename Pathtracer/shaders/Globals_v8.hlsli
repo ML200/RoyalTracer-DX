@@ -124,6 +124,10 @@ cbuffer CameraParams : register(b0)
     float atmos_multiScatterFactor;
     float atmos_earthShadowSoftness;
     float atmos_haloDistanceKm;
+    float sunDirX;
+    float sunDirY;
+    float sunDirZ;
+    float sunDirOverride;
     float planetCenterX;
     float planetCenterY;
     float planetCenterZ;
@@ -136,6 +140,7 @@ cbuffer CameraParams : register(b0)
     float dlssResponsivityRough;  // at roughness 1
     float dlssResponsivityMirror; // at roughness 0
     float dlssWaterResponsivity;
+    float hostSkyScale; // > 0: the host's sky (HostSkyRadiance) in place of the atmosphere model
 }
 
 // HitLean_v8.hlsl: Pass_pt_trace sends it no ocean hit and no in-water path, so the sea compiles out.
@@ -216,10 +221,42 @@ StructuredBuffer<int>                indices             : register(t1);
 RaytracingAccelerationStructure      SceneBVH            : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps       : register(t3);
 StructuredBuffer<uint>               materialIDs         : register(t4);
+StructuredBuffer<ClusterRecord>      clusterRecords      : register(t60);
+
+// Clustered geometry (SM 6.10): the host defines RDN_CLUSTERS=1 when the device supports it. Off, every hit
+// reports CLUSTER_ID_INVALID and FlatPrimID keeps the classic per-geometry indexing.
+#ifndef RDN_CLUSTERS
+#define RDN_CLUSTERS 0
+#endif
+#if RDN_CLUSTERS
+#define RQ_ALLOW_CLUSTERS 0x2 // RAYQUERY_FLAG_ALLOW_CLUSTERED_GEOMETRY, not yet named by DXC 1.10.2605
+#define HIT_CLUSTER_ID() ClusterID()
+#define HITOBJ_CLUSTER_ID(h) (h).GetClusterID()
+#define RQ_CANDIDATE_CLUSTER_ID(q) (q).CandidateClusterID()
+#define RQ_COMMITTED_CLUSTER_ID(q) (q).CommittedClusterID()
+#else
+#define RQ_ALLOW_CLUSTERS 0
+#define HIT_CLUSTER_ID() CLUSTER_ID_INVALID
+#define HITOBJ_CLUSTER_ID(h) CLUSTER_ID_INVALID
+#define RQ_CANDIDATE_CLUSTER_ID(q) CLUSTER_ID_INVALID
+#define RQ_COMMITTED_CLUSTER_ID(q) CLUSTER_ID_INVALID
+#endif
 
 StructuredBuffer<MatPacked>          g_mat               : register(t5);
 
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
+
+// Radiance a light record emits at cosine cosOut from its front normal. A spot record fades over its cone with HDRP's
+// angular attenuation and keeps its intensity across it (radiance / cos), as a spot light does.
+float3 LightRecordRadiance(uint lightID, float cosOut)
+{
+    const float3 emission = g_EmissiveTriangles[lightID].emission * GLOBAL_EMISSION_STRENGTH;
+    const float coneScale = g_EmissiveTriangles[lightID].coneScale;
+    if (!(coneScale > 0.0f))
+        return emission;
+    const float a = saturate(cosOut * coneScale + g_EmissiveTriangles[lightID].coneOffset);
+    return emission * (a * a / max(cosOut, 1e-3f));
+}
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
 StructuredBuffer<uint4> gLT_TLAS                  : register(t9);

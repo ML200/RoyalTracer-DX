@@ -4,6 +4,8 @@
 #include "../LightTree.h"
 #include "OmmBuilder.h"
 #include "BvhQuality.h"
+#include <memory>
+#include "../Clusters/ClusterPages.h"
 
 struct MeshGPU {
     ComPtr<ID3D12Resource> blas;
@@ -28,7 +30,33 @@ struct MeshGPU {
     ComPtr<ID3D12Resource> ommIndexBuffer;
     bool hasOmm = false;
 
+    // Clustered geometry: the first triangle of each octree cell OrderForClusters made, the CLAS the cluster BLAS (blas)
+    // references (a buffer per build piece), and the mesh's cluster IDs.
+    std::vector<UINT> clusterCuts;
+    std::vector<ComPtr<ID3D12Resource>> clas;
+    UINT clusterBase = 0, clusterCount = 0;
+    // With a cluster LOD hierarchy: every cluster by ID offset (in place of clusterCuts), and the hierarchy. blas is then
+    // its full-detail cut.
+    std::vector<clusters::Span> clusterSpans;
+    clusters::Lod lod;
+    // Paged: the hierarchy streams from its page file (source, until the pager takes it) and the mesh keeps its fixed
+    // triangles, in its own range of the scene's page pool.
+    bool paged = false;
+    UINT poolVertexBase = 0, poolTriBase = 0;
+    std::shared_ptr<clusters::PagedSource> pagedSource;
+
     void CreateBlasBuildInputs(ID3D12Device* device);
+    // Reorders the opaque and the alpha triangles, each among themselves, into compact octree cells: a cluster is a run
+    // of the triangle order. Before anything derives from that order (material IDs, micromaps, lights).
+    void OrderForClusters();
+    // In place of OrderForClusters: a cluster LOD hierarchy over the opaque triangles with a region (per triangle; their
+    // material, or clusters::NO_REGION), every level's triangles appended to the opaque ones, all of them non-emissive.
+    // Regions below clusters::MIN_LOD_TRIS stay outside. False (and ordered for clusters) when nothing qualified.
+    bool BuildClusterLod(std::vector<uint32_t> regions);
+    // BuildClusterLod's paged form: the hierarchy is baked once into a page file in clusters::cache_dir() (named after
+    // the mesh's content), read back as tables, and the mesh keeps only the triangles outside it. materialBase: the
+    // model's first material, so the file holds model-relative material IDs.
+    bool BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase);
 };
 
 struct SceneInstance {
@@ -89,6 +117,15 @@ struct Scene {
     ComPtr<ID3D12Resource> indexGlobalUpload;
     UINT totalVertexCount = 0;
     UINT totalIndexCount = 0;
+    // The cluster page pool at the front of the vertex, index (3 per triangle) and material-ID arrays, so a triangle
+    // position means the same in the latter two; paged meshes' own ranges and their streamed pages live there.
+    UINT pagePoolVertices = 0, pagePoolTris = 0;
+    clusters::RangeAllocator pagePoolVertexAlloc, pagePoolTriAlloc;
+    D3D12_RESOURCE_STATES globalReadState = D3D12_RESOURCE_STATE_GENERIC_READ;
+    // Before any mesh: false when meshes were loaded already.
+    bool ReservePagePool();
+    // With no paged mesh: before anything but the meshes' material IDs used the positions.
+    void ReleasePagePool();
 
     UINT terrainVertexElems = 0;
     UINT terrainIndexElems = 0;
@@ -115,6 +152,7 @@ struct Scene {
     UINT voxelMatIDBase = 0;
     UINT voxelPropsBase = 0;
     bool voxelMatIDReserved = false;
+    bool hostWritesGeometry = false; // a host stream copies into the global buffers on the compute queue
 
     UINT oceanVertexElems = 0;
     UINT oceanIndexElems = 0;

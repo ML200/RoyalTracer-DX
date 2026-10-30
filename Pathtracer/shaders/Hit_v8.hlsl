@@ -8,6 +8,6 @@
 [shader("closesthit")]
 void ClosestHit(inout PtVertexIO io, in BuiltInTriangleIntersectionAttributes attr)
 {
-    PtShadeHit(io, InstanceID(), GeometryIndex(), PrimitiveIndex(), attr.barycentrics, RayTCurrent(),
+    PtShadeHit(io, InstanceID(), HIT_CLUSTER_ID(), GeometryIndex(), PrimitiveIndex(), attr.barycentrics, RayTCurrent(),
         WorldRayDirection(), DispatchRaysIndex().xy);
 }

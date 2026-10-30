@@ -90,7 +90,9 @@ struct LightTriangle {
     XMFLOAT3 emission;
     UINT triCount;
     float totalWeight;
-    XMFLOAT3 pad0;
+    float coneScale;  // > 0: a spot's cone, attenuation saturate(cos * coneScale + coneOffset)^2; 0 = Lambertian
+    float coneOffset;
+    float pad0;
 };
 
 struct InstanceXformCPU {

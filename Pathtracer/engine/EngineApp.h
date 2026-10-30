@@ -24,6 +24,7 @@ class EngineApp : public DXSample {
 
   private:
     std::unique_ptr<SceneDefinition> m_sceneDef;
+    DeviceContext m_ctx; // before m_renderer, which holds a reference to it
     Renderer m_renderer;
     SceneManager m_sceneManager;
     FlyCamController m_flyCam;

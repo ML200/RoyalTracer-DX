@@ -77,6 +77,9 @@ class Camera {
     float dlssResponsivityMirror = -0.5f;
     float dlssWaterResponsivity = 1.0f;
 
+    // > 0: the sky is a host's (HOST_SKY_SRV_SLOT), its radiance times this, in place of the atmosphere model.
+    float hostSkyScale = 0.0f;
+
   private:
     ComPtr<ID3D12Resource> m_buffer;
     UINT m_bufferSize = 0;

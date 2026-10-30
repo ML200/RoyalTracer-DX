@@ -219,6 +219,29 @@ struct MaterialSoA {
         sssEnable.push_back(m.sssEnable ? 1u : 0u);
     }
 
+    void Set(size_t i, const Material& m)
+    {
+        Kd[i] = m.Kd; Ke[i] = m.Ke; Ni[i] = m.Ni;
+        Pr_Pm_Ps_Pc[i] = m.Pr_Pm_Ps_Pc;
+        diffuseRoughness[i] = m.diffuseRoughness;
+        Pcr_aniso_anisor[i] = m.Pcr_aniso_anisor;
+        Tf[i] = m.Tf;
+        albedoUVScale[i] = m.albedoUVScale;
+        normalUVScale[i] = m.normalUVScale;
+        rmaUVScale[i] = m.rmaUVScale;
+        albedoTexID[i] = m.albedoTexID;
+        normalTexID[i] = m.normalTexID;
+        rmaTexID[i] = m.rmaTexID;
+        alphaThreshold[i] = m.alphaThreshold;
+        invertAlpha[i] = m.invertAlpha ? 1u : 0u;
+        thinGlass[i] = m.thinGlass ? 1u : 0u;
+        sssAlbedo[i] = m.sssAlbedo;
+        sssRadius[i] = m.sssRadius;
+        sssPhaseG[i] = m.sssPhaseG;
+        sssWeight[i] = m.sssWeight;
+        sssEnable[i] = m.sssEnable ? 1u : 0u;
+    }
+
     void append(const std::vector<Material>& src)
     {
         reserve(size() + src.size());

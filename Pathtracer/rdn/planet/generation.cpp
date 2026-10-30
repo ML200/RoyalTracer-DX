@@ -229,9 +229,111 @@ void GenerationBuilder::tess_job_(uint32_t dirty_idx) {
     cb.state.store(CS_Ready, std::memory_order_release);
 }
 
+#if RDN_CLUSTER_API
+namespace {
+// A leaf's clusters, 4 grid rows (256 triangles) each, from its indices as the tessellator writes them.
+const std::vector<clusters::Span>& leaf_spans() {
+    static const std::vector<clusters::Span> spans = [] {
+        std::vector<uint32_t> idx;
+        idx.reserve(MAX_CHUNK_TRIS * 3);
+        for (uint32_t j = 0; j < CHUNK_GRID; ++j)
+            for (uint32_t i = 0; i < CHUNK_GRID; ++i) {
+                const uint32_t v00 = j * CHUNK_EDGE_VERTS + i, v10 = v00 + 1;
+                const uint32_t v01 = v00 + CHUNK_EDGE_VERTS, v11 = v01 + 1;
+                idx.insert(idx.end(), { v00, v10, v11, v00, v11, v01 });
+            }
+        std::vector<clusters::Span> out;
+        clusters::split(idx.data(), MAX_CHUNK_VERTS, { 0u }, MAX_CHUNK_TRIS, out);
+        return out;
+    }();
+    return spans;
+}
+}
+#endif
+
+// A cell's CLAS are built in place (the region its prebuild query sizes) and its cluster BLAS over them; cells rebuild
+// rarely, so they skip the move that packs the voxel and scene CLAS.
+uint32_t GenerationBuilder::record_ready_clusters_(ID3D12GraphicsCommandList4* compute_cl, uint32_t budget,
+                                                   clusters::ClusterGeometry& geometry) {
+#if RDN_CLUSTER_API
+    (void)compute_cl;
+    struct Ready {
+        uint32_t i;
+        std::vector<clusters::Span> spans;
+        D3D12_RTAS_CLUSTER_LIMITS limits{};
+        clusters::ClusterGeometry::Sizes sizes;
+        uint64_t scratchOff = 0;
+    };
+    std::vector<Ready> ready;
+    uint64_t scratchBytes = 0, queued = 0;
+    for (uint32_t i = 0; i < m_cellBuildCount; ++i) {
+        if (budget != 0 && ready.size() >= budget) break;
+        if (m_cellBuilds[i].state.load(std::memory_order_acquire) != CS_Ready) continue;
+        Ready r{ i };
+        const uint32_t K = m_gen.cells[m_dirty[i]].leaf_count;
+        for (uint32_t l = 0; l < K; ++l)
+            for (const clusters::Span& s : leaf_spans())
+                r.spans.push_back({ s.firstTri + l * MAX_CHUNK_TRIS, s.triCount, s.uniqueVerts });
+        const uint32_t n = (uint32_t)r.spans.size();
+        // Each cell: n CLAS and one BLAS, which needs less than a CLAS's arguments and one size entry.
+        if (!geometry.can_queue((uint32_t)(queued + n + 1), false)) break;
+        r.limits = clusters::limits(r.spans.data(), n, 0, false);
+        if (!geometry.prebuild(r.limits, false, r.sizes)) break;
+        uint64_t blasSize = 0, blasScratch = 0;
+        geometry.blas_prebuild(n, false, blasSize, blasScratch);
+        r.scratchOff = scratchBytes;
+        scratchBytes += r.sizes.clasScratch + blasScratch;
+        queued += n + 1;
+        ready.push_back(std::move(r));
+    }
+    if (ready.empty()) return 0;
+
+    ComPtr<ID3D12Resource> scratch = create_buffer(m_device, scratchBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                                   D3D12_RESOURCE_STATE_COMMON, HEAP_DEFAULT);
+    uint32_t recorded = 0;
+    for (Ready& r : ready) {
+        CellInstance& cell = m_gen.cells[m_dirty[r.i]];
+        const uint32_t n = (uint32_t)r.spans.size();
+        uint32_t base = 0;
+        if (!geometry.allocate_ids(n, base)) break;
+        geometry.write_records(base, r.spans.data(), n);
+        clusters::ClusterGeometry* g = &geometry;
+        cell.cluster_ids = std::shared_ptr<void>(nullptr, [g, base, n](void*) { g->free_ids(base, n); });
+        cell.clas = create_buffer(m_device, r.sizes.clas, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, HEAP_DEFAULT);
+        cell.blas = create_buffer(m_device, r.sizes.blas, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, HEAP_DEFAULT);
+        cell.blas_va = cell.blas->GetGPUVirtualAddress();
+
+        clusters::Mesh mesh;
+        mesh.vertices = m_vtxVA;
+        mesh.vertexStride = CHUNK_VERTEX_STRIDE;
+        mesh.indices = m_idxVA + (uint64_t)cell.idx_base_elems * CHUNK_INDEX_STRIDE;
+        mesh.spans = r.spans.data();
+        mesh.clusterCount = n;
+        mesh.clusterBase = base;
+        mesh.opaqueTriCount = cell.leaf_count * MAX_CHUNK_TRIS;
+        mesh.limits = r.limits;
+        const D3D12_GPU_VIRTUAL_ADDRESS sc = scratch->GetGPUVirtualAddress() + r.scratchOff;
+        geometry.queue_build(mesh, cell.clas->GetGPUVirtualAddress(), sc);
+        geometry.queue_blas(base, n, false, cell.blas_va, sc + r.sizes.clasScratch, false);
+
+        m_pending.recordedDirty.push_back(r.i);
+        m_cellBuilds[r.i].state.store(CS_Recorded, std::memory_order_release);
+        ++recorded;
+    }
+    m_pending.transients.push_back(scratch);
+    return recorded;
+#else
+    (void)compute_cl; (void)budget; (void)geometry;
+    return 0;
+#endif
+}
+
 uint32_t GenerationBuilder::record_ready_blas(ID3D12GraphicsCommandList4* compute_cl,
-                                              uint32_t budget) {
+                                              uint32_t budget, clusters::ClusterGeometry* geometry) {
     if (m_state != State::Streaming) return 0;
+    if (geometry && geometry->enabled()) return record_ready_clusters_(compute_cl, budget, *geometry);
 
     ComPtr<ID3D12Resource> scratch;
 

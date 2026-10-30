@@ -10,6 +10,7 @@
 #include "worker_pool.h"
 #include "tlas_builder.h"
 #include "generation.h"
+#include "../Clusters/ClusterGeometry.h"
 #include "rock_scatter.h"
 
 struct DeviceContext;
@@ -25,6 +26,16 @@ struct IExternalStream {
     virtual void append_instances(TlasBuilder& tlas, InstanceProperties* props, const DVec3& sceneOrigin,
                                   uint32_t hitGroup, bool& forceRebuild, bool& forceRefit) = 0;
     virtual void on_submitted(uint64_t copyFence, uint64_t computeFence) = 0;
+};
+
+// Queues cluster operations first in the frame's cluster window, before the streams and the TLAS build; it may still
+// change the scene instances submit_work was given.
+struct IClusterClient {
+    virtual ~IClusterClient() = default;
+    // Before the window opens: its tickets from the slot's last use still hold.
+    virtual void before_cluster_work() {}
+    virtual void queue_cluster_work(ID3D12GraphicsCommandList4* cl) = 0;
+    virtual void on_submitted(uint64_t computeFence) { (void)computeFence; }
 };
 
 constexpr uint32_t MAX_TERRAIN_CELLS = 4096;
@@ -124,6 +135,18 @@ public:
     void set_external(IExternalStream* s) { m_external = s; }
     // Second stream (ocean); same TLAS.
     void set_external2(IExternalStream* s) { m_external2 = s; }
+    // Opened and recorded once a frame around the streams, which queue their cluster operations in between.
+    // With clusters enabled, the TLAS becomes a partitioned one (RDN_PTLAS=0 keeps it classic).
+    void set_clusters(clusters::ClusterGeometry* g) {
+        m_clusters = g;
+#if RDN_CLUSTER_API
+        char off[4] = {};
+        const bool optOut = GetEnvironmentVariableA("RDN_PTLAS", off, sizeof(off)) > 0 && off[0] == '0';
+        if (g && g->enabled() && !optOut) m_tlas.enable_partitioned(g->rtas_device());
+#endif
+    }
+    const TlasBuilder& tlas() const { return m_tlas; }
+    void set_cluster_client(IClusterClient* c) { m_clusterClient = c; }
     void bind_instance_properties(ID3D12Resource* props) { m_instanceProps = props; }
 
     struct RockVariantGPU {
@@ -220,6 +243,8 @@ private:
 
     IExternalStream* m_external = nullptr;
     IExternalStream* m_external2 = nullptr;
+    clusters::ClusterGeometry* m_clusters = nullptr;
+    IClusterClient* m_clusterClient = nullptr;
     DeviceContext*  m_ctx    = nullptr;
     ID3D12Device5*  m_device = nullptr;
     StreamConfig    m_cfg;

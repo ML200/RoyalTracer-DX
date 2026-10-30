@@ -214,7 +214,10 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
             m_builder.poll();
             m_ctx->ResetPlanetLists();
             const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
-            const uint32_t recorded = m_builder.record_ready_blas(m_ctx->ComputeList(), 0u);
+            clusters::ClusterGeometry* geometry = m_clusters && m_clusters->enabled() ? m_clusters : nullptr;
+            if (geometry) geometry->begin(m_ctx->FrameIndex() % geometry->frame_slots(), m_ctx->ComputeList());
+            const uint32_t recorded = m_builder.record_ready_blas(m_ctx->ComputeList(), 0u, geometry);
+            if (geometry) geometry->record(m_ctx->ComputeList());
             const uint64_t cv       = m_ctx->SubmitPlanetCompute(copyVal);
             if (recorded > 0) m_builder.on_submitted(cv);
             m_ctx->PlanetComputeCpuWait(cv);
@@ -293,8 +296,13 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
 
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  slot * TS_PER_SLOT + 0);
+    const bool clustered = m_clusters && m_clusters->enabled();
+    if (clustered && m_clusterClient) m_clusterClient->before_cluster_work();
+    if (clustered) m_clusters->begin(m_ctx->FrameIndex() % m_clusters->frame_slots(), cl);
+    if (clustered && m_clusterClient) m_clusterClient->queue_cluster_work(cl);
     if (m_external) m_external->record_gpu_work(m_ctx->CopyList(), cl);
     if (m_external2) m_external2->record_gpu_work(m_ctx->CopyList(), cl);
+    if (clustered) m_clusters->record(cl);
     const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
 
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
@@ -303,7 +311,8 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     uint32_t recorded = 0;
     if (m_builder.active()) {
         const auto t0 = std::chrono::high_resolution_clock::now();
-        recorded = m_builder.record_ready_blas(cl, m_cfg.build_budget);
+        recorded = m_builder.record_ready_blas(cl, m_cfg.build_budget, clustered ? m_clusters : nullptr);
+        if (clustered) m_clusters->record(cl);
         const auto t1 = std::chrono::high_resolution_clock::now();
         const float blas_rec_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
         m_throughput.on_step(blas_rec_ms);
@@ -330,6 +339,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     if (recorded > 0) m_builder.on_submitted(cv);
     if (m_external) m_external->on_submitted(copyVal, cv);
     if (m_external2) m_external2->on_submitted(copyVal, cv);
+    if (clustered && m_clusterClient) m_clusterClient->on_submitted(cv);
 
     m_tsRing[slot] = TsSlot{ cv, m_frame, m_tlas.instance_count(), m_tlas.last_build_recorded(), true };
     m_tsWrite++;
@@ -440,6 +450,7 @@ void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t sc
     if (props) m_instanceProps->Unmap(0, nullptr);
     m_stats.cells_dropped = dropped;
 
+    m_tlas.set_scene_origin(m_sceneOrigin);
     m_tlas.build(compute_cl, m_cfg.enabled || externalForce, externalRefit);
 }
 

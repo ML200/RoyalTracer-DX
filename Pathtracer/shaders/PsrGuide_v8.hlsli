@@ -104,14 +104,14 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
         r.TMin      = 0.00001f;
         r.TMax      = RAY_TMAX_PLANET;
         if (!IsRayDescValid(r)) break;
-        RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+        RayQuery<RAY_FLAG_NONE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS | RQ_ALLOW_CLUSTERS> q;
         q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
         [loop]
         for (uint it = 0u; q.Proceed() && it < 128u; ++it)
         {
             if (q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
             const uint ci = q.CandidateInstanceID();
-            const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+            const uint cp = FlatPrimID(ci, RQ_CANDIDATE_CLUSTER_ID(q), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
             const uint cm = GetMatIDFast(ci, cp);
             // Chain: path-tracer glass/cutout rule; probe: cheap alpha rule.
             const bool commit = evaluate
@@ -130,7 +130,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
 
         const float  t      = q.CommittedRayT();
         const uint   inst   = q.CommittedInstanceID();
-        const uint   prim   = FlatPrimID(inst, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+        const uint   prim   = FlatPrimID(inst, RQ_COMMITTED_CLUSTER_ID(q), q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
         uint matID = GetMatIDFast(inst, prim);
         const float3 hitPos = origin + dir * t;
         pathLength += t;
@@ -154,7 +154,7 @@ inline PsrChainEnd PsrWalkDeltaChain(float3 origin, float3 dir, uint mediumMatID
         e.Kd = kd; e.Pr = pr; e.Pm = pm;
 
         const float3 emission = (h.lightID != 0xFFFFFFFFu)
-            ? g_EmissiveTriangles[h.lightID].emission * GLOBAL_EMISSION_STRENGTH : 0.0f;
+            ? LightRecordRadiance(h.lightID, abs(dot(h.geometricNormal, dir))) : 0.0f;
         if (any(emission > 0.0f))
         {
             e.Kd = saturate(emission); e.Pr = 1.0f; e.Pm = 0.0f;

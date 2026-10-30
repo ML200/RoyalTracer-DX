@@ -21,6 +21,7 @@ constexpr uint32_t DiffuseReuse = 1u << 2;
 constexpr uint32_t SpatialReuse = 1u << 3;
 constexpr uint32_t MeshLights = 1u << 4;
 constexpr uint32_t LightLearning = 1u << 5;
+constexpr uint32_t HostOutput = 1u << 6; // results for a host process (Unity plugin)
 }
 
 struct PassDesc {

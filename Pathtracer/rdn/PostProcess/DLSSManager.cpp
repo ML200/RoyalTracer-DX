@@ -31,6 +31,10 @@ void DLSSManager::ComputeRenderResolution() {
         scale = 1.0f / 1.5f;
     } else if (mode == sl::DLSSMode::eBalanced) {
         scale = 1.0f / 1.7f;
+    } else if (mode == sl::DLSSMode::eMaxPerformance) {
+        scale = 1.0f / 2.0f;
+    } else if (mode == sl::DLSSMode::eUltraPerformance) {
+        scale = 1.0f / 3.0f;
     } else {
         scale = 1.0f;
     }

@@ -16,6 +16,8 @@
 #include "../planet/stream_orchestrator.h"
 #include "../ocean/OceanCommon.h"
 #include "../Lighting/LightTreeRefit.h"
+#include "../Lighting/DynamicLights.h"
+#include "../Clusters/ClusterGeometry.h"
 
 struct DeviceContext;
 
@@ -44,6 +46,11 @@ struct StreamerConfig {
     uint64_t scratchBytesPerFrame = 128ull << 20;
     uint32_t buildBudget        = 24;
     uint32_t buildBudgetBurst   = 64;
+    // Clustered geometry (CLAS + cluster BLAS, no compaction) where the device supports it.
+    bool     clusters           = true;
+    uint32_t clusterTargetTriangles = 256; // octree cells of at most this many triangles become clusters
+    uint32_t clusterBuildBudget = 64;
+    uint32_t clusterBuildBudgetBurst = 128;
     uint32_t meshJobsInFlight   = 64;
     uint32_t meshJobsInFlightBurst = 128;
     uint32_t retireFrames       = 8;
@@ -93,6 +100,11 @@ struct StreamerStats {
     uint32_t lightChunksInTree = 0, lightSlotsActive = 0, lightChunksDropped = 0;
     uint32_t lightVersion = 0, lightLiveVersion = 0;
     uint32_t censusAgeFrames = 0; // Frames since the last full chunk census.
+    // Clustered geometry, resident chunks: allocated (prebuild) and built sizes.
+    bool     clustered = false;
+    uint64_t clustersResident = 0;
+    uint64_t clasBytesAllocated = 0, clasBytesBuilt = 0;
+    uint64_t clusterBlasBytesAllocated = 0, clusterBlasBytesBuilt = 0;
 };
 
 class SpanAllocator {
@@ -108,22 +120,16 @@ private:
     uint64_t m_capacity = 0, m_granularity = 1, m_used = 0;
 };
 
-struct LightBinding {
-    ID3D12Resource* records   = nullptr;
-    ID3D12Resource* nodes     = nullptr;
-    ID3D12Resource* leafIndex = nullptr;
-    ID3D12Resource* trails    = nullptr;
-    uint32_t recordBase = 0, recordCapacity = 0;
-    uint32_t nodeBase   = 0, nodeCapacity   = 0;
-    uint32_t slotBase   = 0;
-};
+using LightBinding = ::DynamicLightBinding;
 
-class VoxelStreamer final : public planet::IExternalStream {
+class VoxelStreamer final : public planet::IExternalStream, public IDynamicLights {
 public:
     VoxelStreamer();
     ~VoxelStreamer() override;
 
-    void init(ID3D12Device5* device, DeviceContext* ctx, World* world, const StreamerConfig& cfg);
+    // Clustered geometry when cfg.clusters and geometry is enabled.
+    void init(ID3D12Device5* device, DeviceContext* ctx, World* world, const StreamerConfig& cfg,
+              clusters::ClusterGeometry* geometry);
     bool enabled() const { return m_world != nullptr; }
 
     void set_placement(const Placement& p) { m_placement = p; }
@@ -158,14 +164,17 @@ public:
 
     void bind_omm(ID3D12Resource* indexBuffer, D3D12_GPU_VIRTUAL_ADDRESS ommArray, const OmmTable* table);
 
-    void bind_lights(const LightBinding& b);
-    bool lights_bound() const { return m_lightsBound; }
-    void set_light_slot_base(uint32_t base);
-
-    uint32_t light_version() const { return m_lightVersion; }
+    // IDynamicLights
+    bool lights_wanted() const override { return m_cfg.lights; }
+    uint32_t light_record_capacity() const override { return m_cfg.lightRecordCapacity; }
+    uint32_t light_node_capacity() const override { return m_cfg.lightNodeCapacity; }
+    void bind_lights(const LightBinding& b) override;
+    bool lights_bound() const override { return m_lightsBound; }
+    void set_light_slot_base(uint32_t base) override;
+    uint32_t light_version() const override { return m_lightVersion; }
     void light_snapshot(const planet::DVec3& sceneOrigin, std::vector<lt::TLASExtraLeaf>& out,
-                        uint32_t& version, uint32_t& slotCount) const;
-    void on_light_tlas_published(uint32_t version, bool hasVoxelLeaves);
+                        uint32_t& version, uint32_t& slotCount) const override;
+    void on_light_tlas_published(uint32_t version, bool hasVoxelLeaves) override;
     bool has_live_lights() const { return m_lightTlasHasVoxels; }
 
     void begin_frame(const double camWorld[3]);
@@ -183,6 +192,7 @@ public:
     StreamerConfig&       config()       { return m_cfg; }
     const StreamerConfig& config() const { return m_cfg; }
     const StreamerStats&  stats()  const { return m_stats; }
+    bool clustered() const { return m_clustered; }
     const World*          world()  const { return m_world; }
 
 private:
@@ -210,6 +220,10 @@ private:
         D3D12_GPU_VIRTUAL_ADDRESS buildVa = 0;
         uint32_t triCount = 0, opaqueTriCount = 0;
         uint64_t ommOff = 0, ommCount = 0;
+        // Clustered: CLAS are built into the build pool (buildOff), then moved into a tight BLAS-pool region (clasOff).
+        uint64_t clasOff = 0, clasSize = 0;
+        uint32_t clusterBase = 0, clusterCount = 0;
+        uint64_t clasBuilt = 0, blasBuilt = 0;
         LightData light;
         bool valid() const { return triCount > 0; }
     };
@@ -225,6 +239,10 @@ private:
         bool       lightsDropped = false;
         bool       buildPoolFull = false;
         uint64_t   scratchSize = 0;
+        std::vector<clusters::Span> clusters;
+#if RDN_CLUSTER_API
+        D3D12_RTAS_CLUSTER_LIMITS clusterLimits{};
+#endif
         int        stagingSlot = -1;
         ComPtr<ID3D12Resource> privateUpload;
         ID3D12Resource* srcBuffer = nullptr;
@@ -250,6 +268,7 @@ private:
         uint64_t compactFence = 0;
         uint32_t compactSlot = NONE, compactIndex = 0;
         bool     compactQueued = false;
+        clusters::ClusterGeometry::Ticket sizes; // clustered: built sizes, read once the build or move lands
         uint32_t instanceSlot = NONE;
         uint32_t cutNode = NONE;
         uint32_t lightSlot = NONE;
@@ -290,7 +309,11 @@ private:
     bool build_lights(const ChunkMesh& mesh, MeshJob& job, std::vector<LightTriangle>& records,
                       lt::LightTreeBuilder::SingleBLAS& blas);
     bool allocate_gpu(GpuChunk& g, uint32_t vtxCount, uint32_t idxCount, uint32_t triCount, uint64_t blasSize,
+                      uint64_t clasSize, uint32_t clusterCount,
                       uint32_t lightRecs, uint32_t lightNodes, bool* buildPoolFull = nullptr);
+    bool cluster_prebuild(const ChunkMesh& mesh, const std::vector<uint32_t>& cuts, bool omm, MeshJob& job,
+                          uint64_t& blasSize, uint64_t& clasSize) const;
+    bool queue_cluster_finish(Chunk& c, uint32_t slot, uint64_t& scratchUsed);
     void free_gpu(const GpuChunk& g);
     void free_light(const LightData& l);
     void retire_gpu(const GpuChunk& g, uint32_t lightExcludedAt);
@@ -355,6 +378,11 @@ private:
     uint8_t*                  m_ommIndicesMapped = nullptr;
     D3D12_GPU_VIRTUAL_ADDRESS m_ommIndexVa = 0, m_ommArrayVa = 0;
     const OmmTable*           m_ommTable = nullptr;
+
+    // Clustered geometry: each chunk's CLAS are built into the build pool (sized by the conservative prebuild query),
+    // moved into a tight BLAS-pool region once the built sizes are read back, then a cluster BLAS over the moved CLAS.
+    clusters::ClusterGeometry* m_geometry = nullptr;
+    bool                      m_clustered = false;
 
     ComPtr<ID3D12Resource>    m_staging;
     uint8_t*                  m_stagingMapped = nullptr;

@@ -12,6 +12,7 @@
 #include "worker_pool.h"
 #include "blas_pool.h"
 #include "terrain_geo_pool.h"
+#include "../Clusters/ClusterGeometry.h"
 
 namespace planet {
 
@@ -44,6 +45,9 @@ struct CellInstance {
     uint32_t                  geo_tri_count  = 0;
     uint32_t                  leaf_begin     = 0;
     uint32_t                  leaf_count     = 0;
+    // Clustered: the CLAS blas references, and its cluster IDs, returned when the last generation holding them retires.
+    ComPtr<ID3D12Resource>    clas;
+    std::shared_ptr<void>     cluster_ids;
 };
 
 struct Generation {
@@ -73,8 +77,9 @@ public:
 
     void poll();
 
+    // With enabled geometry, cluster BLAS queued there; the caller records geometry's work afterwards.
     uint32_t record_ready_blas(ID3D12GraphicsCommandList4* compute_cl,
-                               uint32_t budget);
+                               uint32_t budget, clusters::ClusterGeometry* geometry = nullptr);
 
     void on_submitted(uint64_t compute_fence);
     void reclaim(uint64_t completed_fence);
@@ -96,6 +101,8 @@ private:
     void plan_job_(GenerationParams params, CameraView cam,
                    const Generation* live);
     void tess_job_(uint32_t dirty_idx);
+    uint32_t record_ready_clusters_(ID3D12GraphicsCommandList4* compute_cl, uint32_t budget,
+                                    clusters::ClusterGeometry& geometry);
 
     State            m_state = State::Idle;
     Generation       m_gen;

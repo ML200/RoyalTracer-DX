@@ -19,6 +19,7 @@ struct ICoverage {
 
 struct Params {
     bool enabled = true;
+    bool external = false; // a host's simulation drives the waves (OceanSystem::SetExternal), hidden until it does
 
     float windSpeed = 11.0f;        // m/s at 10 m
     float fetch = 200000.0f;        // m
@@ -35,6 +36,10 @@ struct Params {
     bool paused = false;
     float fixedTimeStep = 0.0f; // s; 0 uses frame time
     float bodyWeight = 0.0f; // diffuse surface share
+    // A host's water in place of chlorophyll and turbidity: absorption and scattering coefficients per RGB, 1/m.
+    bool customOptics = false;
+    float absorption[3] = {0.0f, 0.0f, 0.0f};
+    float scattering[3] = {0.0f, 0.0f, 0.0f};
     uint32_t debugMode = 0; // OCEAN_DEBUG_*
 
     float turbulence = 1.0f; // short-wave chop and spread: 0 calm, 1 calibrated, 3 storm

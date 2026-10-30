@@ -559,7 +559,7 @@ void Pass_sharc_update_v8()
         {
             hitT_n   = hit.distance;
             instID_n = hit.instance;
-            primID_n = FlatPrimID(instID_n,hit.geometry,hit.primitive);
+            primID_n = FlatPrimID(instID_n, hit.cluster, hit.geometry, hit.primitive);
             matID_n  = GetMatIDFast(instID_n, primID_n);
 
             const float2 bary_n = hit.barycentrics;
@@ -574,7 +574,7 @@ void Pass_sharc_update_v8()
             matID_n = ResolveSurfaceMaterial(matID_n, hinfo_n);
 
             const float3 emission_n = (hinfo_n.lightID != 0xFFFFFFFFu)
-                ? g_EmissiveTriangles[hinfo_n.lightID].emission * GLOBAL_EMISSION_STRENGTH
+                ? LightRecordRadiance(hinfo_n.lightID, abs(dot(hinfo_n.geometricNormal, rayDir)))
                 : float3(0, 0, 0);
             if (any(emission_n > 0.0f))
             {

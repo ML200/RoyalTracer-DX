@@ -522,12 +522,12 @@ void PtPrimaryContext(uint2 pixel, uint pixelIdx, out HitContext ctx, out float3
 }
 
 // Secondary hit context; false if resolved here (emitter or bounce limit).
-bool PtHitContext(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex,
+bool PtHitContext(inout PtVertexIO io, uint instID, uint clusterID, uint geometryIndex, uint primitiveIndex,
     float2 barycentrics, float hitT, float3 rayDir, float3 prevPos, uint prevNPk, uint pixelIdx,
     out HitContext ctx, out float3 geoN, out bool flipIOR, out uint presetOut)
 {
     const uint   depth    = (io.flags >> PV_IN_DEPTH_SHIFT) & 0x7Fu;
-    const uint primID = FlatPrimID(instID, geometryIndex, primitiveIndex);
+    const uint primID = FlatPrimID(instID, clusterID, geometryIndex, primitiveIndex);
 
     ctx       = (HitContext)0;
     geoN      = 0.0f;
@@ -543,7 +543,7 @@ bool PtHitContext(inout PtVertexIO io, uint instID, uint geometryIndex, uint pri
     const HitInfo hinfo = EvalSurfaceStateDir(instID, primID, barycentrics, rayDir, footprint);
     const uint matID = ResolveSurfaceMaterial(GetMatIDFast(instID, primID), hinfo);
     const float3  emission = (hinfo.lightID != 0xFFFFFFFFu)
-        ? g_EmissiveTriangles[hinfo.lightID].emission * GLOBAL_EMISSION_STRENGTH
+        ? LightRecordRadiance(hinfo.lightID, abs(dot(hinfo.geometricNormal, rayDir)))
         : float3(0, 0, 0);
     if (any(emission > 0.0f))
     {
@@ -648,8 +648,8 @@ void PtShadeMiss(inout PtVertexIO io, float3 rayOrigin, float3 rayDir)
 
 // Shader entries (Hit_v8.hlsl, HitLean_v8.hlsl, Miss_v8.hlsl); one PtVertexShade site each.
 // Lean: the water bits are known clear, so the water code compiles out.
-void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primitiveIndex, float2 barycentrics,
-    float hitT, float3 rayDir, uint2 pixel)
+void PtShadeHit(inout PtVertexIO io, uint instID, uint clusterID, uint geometryIndex, uint primitiveIndex,
+    float2 barycentrics, float hitT, float3 rayDir, uint2 pixel)
 {
     if (PT_HIT_LEAN) io.flags &= ~PV_IN_WATER_ANY;
     const uint pixelIdx = MapPixelID(uint2(IMG_W, IMG_H), pixel);
@@ -657,7 +657,7 @@ void PtShadeHit(inout PtVertexIO io, uint instID, uint geometryIndex, uint primi
     float3 geoN;
     bool   flipIOR;
     uint   presetOut;
-    if (PtHitContext(io, instID, geometryIndex, primitiveIndex, barycentrics, hitT, rayDir, io.pos, io.nPk,
+    if (PtHitContext(io, instID, clusterID, geometryIndex, primitiveIndex, barycentrics, hitT, rayDir, io.pos, io.nPk,
             pixelIdx, ctx, geoN, flipIOR, presetOut))
         PtVertexShade(io, ctx, geoN, rayDir, flipIOR, pixel, pixelIdx, presetOut, false);
 }

@@ -101,7 +101,7 @@ inline SSSWalkResult SubsurfaceWalk(
         ray.TMax      = max(dl, 2.0f * ray.TMin);   // keeps TMax > TMin
         if (!IsRayDescValid(ray)) return r;
 
-        RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE, RQ_ALLOW_CLUSTERS> q;
         q.TraceRayInline(SceneBVH, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
         q.Proceed();
 
@@ -110,7 +110,7 @@ inline SSSWalkResult SubsurfaceWalk(
 
             const float tHit  = q.CommittedRayT();
             const uint instID = q.CommittedInstanceID();
-            const uint primID = FlatPrimID(instID, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+            const uint primID = FlatPrimID(instID, RQ_COMMITTED_CLUSTER_ID(q), q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
 
             r.exitPos    = pos + dir * tHit;
             r.exitNormal = SSS_ExitNormal(instID, primID, q.CommittedTriangleBarycentrics(), dir);

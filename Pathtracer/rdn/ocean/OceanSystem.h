@@ -21,6 +21,47 @@ class OceanSystem : public planet::IExternalStream {
     const Params& GetParams() const { return m_params; }
     bool Enabled() const { return m_params.enabled; }
 
+    // A host's simulation in place of the FFT (Params::external): per band a texture on this device (RGBA16F, height
+    // in x, readable without transitions) and its mapping, one band per cascade. No bands hides the ocean. Call before
+    // BeginFrame.
+    struct ExternalBand {
+        ID3D12Resource* texture = nullptr;
+        float invPatch = 0.0f;              // 1 / patch length, m
+        float offsetU = 0.0f, offsetV = 0.0f; // texture offset at the frame's time
+        float amplitude = 0.0f;
+        float fadeA = 0.0f, fadeB = 1.0f;     // distance fade, saturate(d * fadeA + fadeB)
+    };
+    struct External {
+        uint32_t bands = 0;
+        uint32_t resolution = 0; // texture size
+        double seaLevel = 0.0;   // world y of the still surface
+        float maxHeight = 0.0f;  // bound on |height|
+        ExternalBand band[OCEAN_CASCADES];
+    };
+    void SetExternal(const External& e);
+
+    // A host's overlays on the surface, from two atlases on this device (readable without transitions): extra height
+    // (x, times heightScale) and foam (x whitecaps, y bubbles, as optical thickness, times foamScale) over host-world
+    // rectangles. Call before BeginFrame.
+    struct Overlay {
+        float originX = 0.0f, originZ = 0.0f; // the rectangle's corner at u = v = 0, host world (the renderer's -z)
+        float sizeX = 0.0f, sizeZ = 0.0f;
+        float height[4] = {}; // texel region (x, y, w, h) spanning the rectangle; w 0: no height
+        float foam[4] = {};
+        float heightScale = 0.0f, foamScale = 0.0f;
+        float maxHeight = 0.0f; // bound on |height| after the scale
+        float foamMax = 0.0f;   // cap on the whitecap cover, 0: none
+    };
+    struct Overlays {
+        ID3D12Resource* height = nullptr;
+        ID3D12Resource* foam = nullptr;
+        uint32_t count = 0;
+        Overlay overlay[OCEAN_OVERLAYS];
+    };
+    void SetOverlays(const Overlays& o);
+
+    bool Visible() const { return m_params.enabled && (!m_params.external || m_external.bands > 0); }
+
     // Space needed in the scene's shared buffers; query before creating them.
     struct Reservation {
         uint32_t vertexElems = 0;
@@ -30,7 +71,8 @@ class OceanSystem : public planet::IExternalStream {
     };
     Reservation GetReservation() const;
 
-    void Init(ID3D12Device5* device, DeviceContext* ctx);
+    // Clustered tiles (CLAS rebuilt every frame, cluster BLAS over them) when geometry is enabled.
+    void Init(ID3D12Device5* device, DeviceContext* ctx, clusters::ClusterGeometry* geometry);
 
     // propsBase: first instance-property record.
     void BindScene(ID3D12Resource* globalVertex, ID3D12Resource* globalIndex, uint32_t vertexBase,
@@ -168,11 +210,26 @@ class OceanSystem : public planet::IExternalStream {
     ComPtr<ID3D12Resource> m_blasScratch;
     uint64_t m_blasSlotSize = 0;
     uint64_t m_blasScratchSize = 0; // per tile; one range per budget slot
+    // Clustered: each budget slot's CLAS region and cluster IDs; every tile shares the topology, so the spans too.
+    clusters::ClusterGeometry* m_clusters = nullptr;
+    bool m_clustered = false;
+    ComPtr<ID3D12Resource> m_clasBuffer;
+    uint64_t m_clasSlotSize = 0, m_clasScratchSize = 0;
+    std::vector<clusters::Span> m_tileSpans;
+    std::vector<uint32_t> m_tileClusterBase;
+#if RDN_CLUSTER_API
+    D3D12_RTAS_CLUSTER_LIMITS m_tileLimits{};
+#endif
 
     ComPtr<ID3D12RootSignature> m_rootSig;
     ComPtr<ID3D12PipelineState> m_psoFftH;
     ComPtr<ID3D12PipelineState> m_psoFftV;
     ComPtr<ID3D12PipelineState> m_psoMip;
+    ComPtr<ID3D12PipelineState> m_psoImport;
+    External m_external;
+    ID3D12Resource* m_externalViews[OCEAN_CASCADES] = {}; // textures the OCEAN_SRV_EXTERNAL views point at
+    Overlays m_overlays;
+    ID3D12Resource* m_overlayViews[2] = {}; // the atlases the OCEAN_SRV_OVERLAY_* views point at
     ComPtr<ID3D12PipelineState> m_psoTiles;
     ComPtr<ID3D12PipelineState> m_psoFoam;
     ComPtr<ID3D12PipelineState> m_psoFoamMip;

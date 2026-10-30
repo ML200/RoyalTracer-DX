@@ -135,8 +135,10 @@ Material OceanSystem::MakeMaterial(const Params& p) {
     m.Ni = 1.333f; // sea water at visible wavelengths
     m.Pr_Pm_Ps_Pc = {0.0f, 0.0f, 0.0f, 0.0f};
     m.diffuseRoughness = 0.0f;
-    m.Tf = WaterAbsorptionRGB(p.chlorophyll);
-    const auto scatter = WaterScatteringRGB(p.chlorophyll, p.turbidity);
+    m.Tf = p.customOptics ? DirectX::XMFLOAT3{p.absorption[0], p.absorption[1], p.absorption[2]}
+                          : WaterAbsorptionRGB(p.chlorophyll);
+    const auto scatter = p.customOptics ? DirectX::XMFLOAT3{p.scattering[0], p.scattering[1], p.scattering[2]}
+                                        : WaterScatteringRGB(p.chlorophyll, p.turbidity);
     const float peakScatter = std::max({scatter.x, scatter.y, scatter.z, 1e-5f});
     m.sssAlbedo = {scatter.x / peakScatter, scatter.y / peakScatter, scatter.z / peakScatter};
     m.sssRadius = std::clamp(p.subsurfaceRadiusScale / peakScatter, 0.01f, 1000.0f);
@@ -150,7 +152,7 @@ Material OceanSystem::MakeMaterial(const Params& p) {
     return m;
 }
 
-void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
+void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx, clusters::ClusterGeometry* geometry) {
     if (!m_params.enabled)
         return;
     m_device = device;
@@ -211,6 +213,58 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
                                                  D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
     m_bakeUpload->SetName(L"OceanBakeUpload");
 
+#if RDN_CLUSTER_API
+    m_clusters = geometry;
+    m_clustered = geometry && geometry->enabled();
+    // Clusters cannot be refit, so every tile's CLAS are rebuilt in place each frame and its cluster BLAS built over
+    // them; identical topology, so one tile's spans and size queries cover every slot.
+    if (m_clustered) {
+        // One tile's indices as Scene stages them, relative to the tile: 4 grid rows (256 triangles) per cluster.
+        std::vector<uint32_t> local;
+        local.reserve(OCEAN_TILE_INDICES);
+        constexpr uint32_t edge = OCEAN_TILE_EDGE_VERTS;
+        for (uint32_t j = 0; j < OCEAN_TILE_GRID; ++j)
+            for (uint32_t i = 0; i < OCEAN_TILE_GRID; ++i) {
+                const uint32_t v00 = j * edge + i, v10 = v00 + 1, v01 = v00 + edge, v11 = v01 + 1;
+                local.insert(local.end(), { v00, v01, v11, v00, v11, v10 });
+            }
+        clusters::split(local.data(), OCEAN_TILE_VERTS, { 0u }, OCEAN_TILE_TRIS, m_tileSpans);
+        m_tileLimits = clusters::limits(m_tileSpans.data(), (uint32_t)m_tileSpans.size(), 0, false);
+        clusters::ClusterGeometry::Sizes sizes;
+        if (!geometry->prebuild(m_tileLimits, false, sizes))
+            throw std::runtime_error("ocean: CLAS prebuild query failed");
+        uint64_t blasSize = 0, blasScratch = 0;
+        geometry->blas_prebuild((uint32_t)m_tileSpans.size(), false, blasSize, blasScratch);
+        m_clasSlotSize = sizes.clas;
+        m_clasScratchSize = sizes.clasScratch;
+        m_blasSlotSize = blasSize;
+        m_blasScratchSize = sizes.clasScratch + blasScratch;
+
+        m_clasBuffer = planet::create_buffer(device, m_clasSlotSize * TileBudget(), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                             D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, planet::HEAP_DEFAULT);
+        m_clasBuffer->SetName(L"OceanClasPool");
+        m_blasBuffer = planet::create_buffer(device, m_blasSlotSize * TileBudget(), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                             D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, planet::HEAP_DEFAULT);
+        m_blasBuffer->SetName(L"OceanBlasPool");
+        m_blasScratch = planet::create_buffer(device, m_blasScratchSize * TileBudget(), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS, planet::HEAP_DEFAULT);
+        m_blasScratch->SetName(L"OceanBlasScratch");
+        m_tileClusterBase.resize(TileBudget());
+        for (uint32_t& base : m_tileClusterBase) {
+            if (!geometry->allocate_ids((uint32_t)m_tileSpans.size(), base))
+                throw std::runtime_error("ocean: out of cluster IDs");
+            geometry->write_records(base, m_tileSpans.data(), (uint32_t)m_tileSpans.size());
+        }
+
+        m_stats.blasBytes = (m_clasSlotSize + m_blasSlotSize) * TileBudget();
+        LOG(L"[ocean] tiles=" << TileBudget() << L" of " << OCEAN_MAX_TILES << L" tris/tile=" << OCEAN_TILE_TRIS
+                              << L" clustered: " << m_tileSpans.size() << L" clusters, CLAS " << (m_clasSlotSize >> 10)
+                              << L" KiB + BLAS " << (m_blasSlotSize >> 10) << L" KiB each, pool "
+                              << (m_stats.blasBytes >> 20) << L" MiB");
+    } else
+#else
+    (void)geometry;
+#endif
     // BLAS pool; identical topology, so one size query covers every tile.
     {
         D3D12_RAYTRACING_GEOMETRY_DESC g = {};
@@ -293,6 +347,7 @@ void OceanSystem::Init(ID3D12Device5* device, DeviceContext* ctx) {
     makePso(L"Ocean_Sim_v8.hlsl", L"OceanFftH", m_psoFftH);
     makePso(L"Ocean_Sim_v8.hlsl", L"OceanFftV", m_psoFftV);
     makePso(L"Ocean_Sim_v8.hlsl", L"OceanMip", m_psoMip);
+    makePso(L"Ocean_Sim_v8.hlsl", L"OceanImport", m_psoImport);
     makePso(L"Ocean_Tiles_v8.hlsl", L"OceanTiles", m_psoTiles);
     makePso(L"Ocean_Tiles_v8.hlsl", L"OceanFoam", m_psoFoam);
     makePso(L"Ocean_Tiles_v8.hlsl", L"OceanFoamMip", m_psoFoamMip);
@@ -688,6 +743,50 @@ void OceanSystem::Bake() {
     m_h0Dirty = true;
 }
 
+void OceanSystem::SetExternal(const External& e) {
+    m_external = e;
+    if (!m_srvHeap || !m_device)
+        return;
+    // Views follow the textures; a host reallocates them rarely (resolution or band changes).
+    const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+        ID3D12Resource* texture = c < e.bands ? e.band[c].texture : nullptr;
+        if (!texture || texture == m_externalViews[c])
+            continue;
+        D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
+        s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        s.Format = texture->GetDesc().Format;
+        s.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        s.Texture2D.MipLevels = 1;
+        m_device->CreateShaderResourceView(
+            texture, &s,
+            CD3DX12_CPU_DESCRIPTOR_HANDLE(m_srvHeap->GetCPUDescriptorHandleForHeapStart(), (INT)(OCEAN_SRV_EXTERNAL + c), inc));
+        m_externalViews[c] = texture;
+    }
+}
+
+void OceanSystem::SetOverlays(const Overlays& o) {
+    m_overlays = o;
+    m_overlays.count = std::min<uint32_t>(o.count, OCEAN_OVERLAYS);
+    if (!m_srvHeap || !m_device)
+        return;
+    const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    ID3D12Resource* atlases[2] = {o.height, o.foam};
+    for (uint32_t a = 0; a < 2; ++a) {
+        if (!atlases[a] || atlases[a] == m_overlayViews[a])
+            continue;
+        D3D12_SHADER_RESOURCE_VIEW_DESC s = {};
+        s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        s.Format = atlases[a]->GetDesc().Format;
+        s.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        s.Texture2D.MipLevels = 1;
+        m_device->CreateShaderResourceView(
+            atlases[a], &s,
+            CD3DX12_CPU_DESCRIPTOR_HANDLE(m_srvHeap->GetCPUDescriptorHandleForHeapStart(), (INT)(OCEAN_SRV_OVERLAY_HEIGHT + a), inc));
+        m_overlayViews[a] = atlases[a];
+    }
+}
+
 void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t frameIndex) {
     if (!m_initialised || !m_params.enabled)
         return;
@@ -702,10 +801,19 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
         Bake();
     if (m_turbulenceBakePending)
         BakeTurbulence();
+    if (m_params.external) {
+        m_surfaceY = m_external.seaLevel;
+        m_stats.significantWaveHeight = m_external.maxHeight;
+    }
+    if (!Visible()) {
+        m_gpuTiles.clear();
+        m_stats.tiles = 0;
+        return;
+    }
 
     // Fold whole epochs into h0 in double; the modes share no common period.
     const double epoch = std::floor(m_time / 128.0) * 128.0;
-    if (epoch != m_phaseEpoch) {
+    if (epoch != m_phaseEpoch && !m_params.external) {
         const double elapsed = epoch - m_phaseEpoch;
         for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
             for (uint32_t m = 0; m < N; ++m) {
@@ -878,7 +986,7 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
     }
 
     P.turbulencePeriod = std::max(64.0f, m_params.turbulencePeriod);
-    P.turbulenceStrength = std::clamp(m_params.turbulenceVariation, 0.0f, 0.9f) > 0.0f ? 1.0f : 0.0f;
+    P.turbulenceStrength = std::clamp(m_params.turbulenceVariation, 0.0f, 0.9f) > 0.0f && !m_params.external ? 1.0f : 0.0f;
     const double maxGain = TurbulenceMaxGain(m_params);
 
     // m_strainRms was baked with the same chop profile.
@@ -904,12 +1012,64 @@ void OceanSystem::BeginFrame(float dt, const planet::CameraView& cam, uint32_t f
     // Margin covers fp16 rounding only.
     P.crestHeight = (float)(crest * 1.01 + 0.01);
     P.troughDepth = (float)(trough * 1.01 + 0.01);
+
+    // A host's bands: one per cascade, as long as its patch, heights as they come.
+    P.external = m_params.external ? m_external.bands : 0u;
+    P.externalResolution = m_external.resolution;
+    if (m_params.external) {
+        for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
+            const ExternalBand& b = m_external.band[c];
+            const bool used = c < m_external.bands && b.invPatch > 0.0f;
+            ((float*)&P.cascadeLength)[c] = used ? 1.0f / b.invPatch : 1000.0f;
+            ((float*)&P.crestSkew)[c] = 0.0f;
+            ((float*)&P.cascadeVariance)[c] = 0.0f;
+            P.externalBand[c] = {b.invPatch, b.offsetU - std::floor(b.offsetU), b.offsetV - std::floor(b.offsetV),
+                                 used ? b.amplitude : 0.0f};
+            ((float*)&P.externalFadeA)[c] = b.fadeA;
+            ((float*)&P.externalFadeB)[c] = b.fadeB;
+        }
+        P.crestHeight = P.troughDepth = m_external.maxHeight * 1.01f + 0.01f;
+        m_stats.crestSteepness = 0.0;
+    }
+
+    // Overlays: rectangles relative to the scene origin (in double), their regions in the atlases.
+    P.overlays = 0u;
+    float overlayHeight = 0.0f;
+    const auto atlasSize = [](ID3D12Resource* atlas) {
+        if (!atlas)
+            return DirectX::XMFLOAT2{0.0f, 0.0f};
+        const D3D12_RESOURCE_DESC d = atlas->GetDesc();
+        return DirectX::XMFLOAT2{1.0f / (float)d.Width, 1.0f / (float)d.Height};
+    };
+    const DirectX::XMFLOAT2 heightAtlas = atlasSize(m_overlays.height), foamAtlas = atlasSize(m_overlays.foam);
+    P.overlayAtlas = {heightAtlas.x, heightAtlas.y, foamAtlas.x, foamAtlas.y};
+    for (uint32_t i = 0; i < m_overlays.count; ++i) {
+        const Overlay& o = m_overlays.overlay[i];
+        if (o.sizeX <= 0.0f || o.sizeZ <= 0.0f)
+            continue;
+        const bool height = m_overlays.height && o.height[2] > 0.0f && o.height[3] > 0.0f;
+        const bool foam = m_overlays.foam && o.foam[2] > 0.0f && o.foam[3] > 0.0f;
+        if (!height && !foam)
+            continue;
+        const uint32_t k = P.overlays++;
+        P.overlayRect[k] = {(float)((double)o.originX - m_sceneOrigin.x), (float)((double)o.originZ + m_sceneOrigin.z),
+                            1.0f / o.sizeX, 1.0f / o.sizeZ};
+        P.overlayHeight[k] = height ? DirectX::XMFLOAT4{o.height[0], o.height[1], o.height[2], o.height[3]}
+                                    : DirectX::XMFLOAT4{0.0f, 0.0f, 0.0f, 0.0f};
+        P.overlayFoam[k] = foam ? DirectX::XMFLOAT4{o.foam[0], o.foam[1], o.foam[2], o.foam[3]}
+                                : DirectX::XMFLOAT4{0.0f, 0.0f, 0.0f, 0.0f};
+        P.overlayScale[k] = {o.heightScale, o.foamScale, o.foamMax > 0.0f ? std::min(o.foamMax, 1.0f) : 1.0f, 0.0f};
+        if (height)
+            overlayHeight += std::abs(o.maxHeight); // overlapping ones add up
+    }
+    P.crestHeight += overlayHeight;
+    P.troughDepth += overlayHeight;
     m_stats.crestHeight = P.crestHeight;
     m_stats.troughDepth = P.troughDepth;
 
     // Origin wrapped per cascade: world-pinned waves, small shader coordinates.
     for (uint32_t c = 0; c < OCEAN_CASCADES; ++c) {
-        const double L = CascadeLengths()[c];
+        const double L = ((const float*)&P.cascadeLength)[c];
         double wx = std::fmod(m_sceneOrigin.x, L);
         double wz = std::fmod(m_sceneOrigin.z, L);
         if (wx < 0.0)
@@ -926,7 +1086,7 @@ uint32_t OceanSystem::instance_capacity() const {
 }
 
 void OceanSystem::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12GraphicsCommandList4* computeList) {
-    if (!m_initialised || !m_params.enabled || !m_srvHeap)
+    if (!m_initialised || !Visible() || !m_srvHeap)
         return;
 
     // The orchestrator binds no heap of its own.
@@ -1038,16 +1198,24 @@ void OceanSystem::RecordSimulation(ID3D12GraphicsCommandList4* cl) {
     Transition(cl, disp, m_dispState[cur], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Transition(cl, m_deriv.Get(), m_derivState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    push.f0 = (float)(m_time - m_phaseEpoch);
-    push.f1 = m_dt;
-    cl->SetPipelineState(m_psoFftH.Get());
-    cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
-    cl->Dispatch(N, OCEAN_CASCADES, 1);
-    uavBarrier({m_fft.Get()});
+    if (m_params.external) {
+        push.u0 = cur;
+        cl->SetPipelineState(m_psoImport.Get());
+        cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
+        cl->Dispatch((N + 7) / 8, (N + 7) / 8, OCEAN_CASCADES);
+        uavBarrier({disp, m_deriv.Get()});
+    } else {
+        push.f0 = (float)(m_time - m_phaseEpoch);
+        push.f1 = m_dt;
+        cl->SetPipelineState(m_psoFftH.Get());
+        cl->SetComputeRoot32BitConstants(0, 8, &push, 0);
+        cl->Dispatch(N, OCEAN_CASCADES, 1);
+        uavBarrier({m_fft.Get()});
 
-    cl->SetPipelineState(m_psoFftV.Get());
-    cl->Dispatch(N, OCEAN_CASCADES, 1);
-    uavBarrier({disp, m_deriv.Get()});
+        cl->SetPipelineState(m_psoFftV.Get());
+        cl->Dispatch(N, OCEAN_CASCADES, 1);
+        uavBarrier({disp, m_deriv.Get()});
+    }
     Timestamp(cl, 1);
 
     cl->SetPipelineState(m_psoMip.Get());
@@ -1148,6 +1316,34 @@ void OceanSystem::RecordAccelerationStructures(ID3D12GraphicsCommandList4* cl) {
     const D3D12_GPU_VIRTUAL_ADDRESS ibBase = m_globalIndex->GetGPUVirtualAddress();
 
     const auto& tiles = m_quadtree.Tiles();
+#if RDN_CLUSTER_API
+    // Queued with the frame's other cluster work; the stream orchestrator records it after the streams.
+    if (m_clustered) {
+        const uint32_t n = (uint32_t)m_tileSpans.size();
+        for (size_t i = 0; i < tiles.size(); ++i) {
+            const TileDesc& t = tiles[i];
+            // The BLAS must follow every CLAS rebuild, so both fit or neither is queued.
+            if (!m_clusters->can_queue(n + 1, false))
+                break;
+            clusters::Mesh mesh;
+            mesh.vertices = vbBase;
+            mesh.vertexStride = sizeof(BTriVertex);
+            mesh.indices = ibBase + (uint64_t)(m_indexBase + t.slot * OCEAN_TILE_INDICES) * sizeof(uint32_t);
+            mesh.spans = m_tileSpans.data();
+            mesh.clusterCount = n;
+            mesh.clusterBase = m_tileClusterBase[t.slot];
+            mesh.opaqueTriCount = OCEAN_TILE_TRIS;
+            mesh.limits = m_tileLimits;
+            const D3D12_GPU_VIRTUAL_ADDRESS scratch = m_blasScratch->GetGPUVirtualAddress() + (uint64_t)i * m_blasScratchSize;
+            m_clusters->queue_build(mesh, m_clasBuffer->GetGPUVirtualAddress() + (uint64_t)t.slot * m_clasSlotSize, scratch);
+            m_clusters->queue_blas(mesh.clusterBase, n, false,
+                                   m_blasBuffer->GetGPUVirtualAddress() + (uint64_t)t.slot * m_blasSlotSize,
+                                   scratch + m_clasScratchSize, false);
+            ++m_stats.builds;
+        }
+        return;
+    }
+#endif
     for (size_t i = 0; i < tiles.size(); ++i) {
         const TileDesc& t = tiles[i];
 
@@ -1218,8 +1414,9 @@ void OceanSystem::append_instances(planet::TlasBuilder& tlas, InstanceProperties
         const float xform[12] = {
             1, 0, 0, (float)dx, 0, 1, 0, (float)dy, 0, 0, 1, (float)dz,
         };
+        // Dynamic: the tile's BLAS is rebuilt or refit in place every frame.
         tlas.add_instance(m_blasBuffer->GetGPUVirtualAddress() + (uint64_t)t.slot * m_blasSlotSize, xform, instID,
-                          hitGroup, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE);
+                          hitGroup, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE, 0xFF, true);
 
         if (props) {
             InstanceProperties& p = props[instID];
