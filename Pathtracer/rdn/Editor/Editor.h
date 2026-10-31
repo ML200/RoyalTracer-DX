@@ -31,6 +31,8 @@ class Editor {
 
     bool IsVisible() const { return m_visible; }
     void ToggleVisibility() { m_visible = !m_visible; }
+    // Its layer shows while the DLSS buffers panel is open.
+    void ShowDlssInputs() { m_showDlssInputs = true; }
 
   private:
     void DrawScenePanel(Scene& scene);

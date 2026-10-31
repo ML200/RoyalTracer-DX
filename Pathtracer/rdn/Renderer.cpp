@@ -98,6 +98,11 @@ void Renderer::InitDevice(HWND hwnd) {
             m_integratorSettings.geometryView = std::clamp(atoi(v), 0, (int)GEOMETRY_VIEW_COUNT - 1);
         if (GetEnvironmentVariableA("RDN_LOD_ERROR", v, sizeof(v)) > 0)
             m_integratorSettings.lodErrorPixels = std::max(0.01f, (float)atof(v));
+        // A DLSS input buffer on screen (the editor's DLSS buffers layer), for captures.
+        if (GetEnvironmentVariableA("RDN_DLSS_LAYER", v, sizeof(v)) > 0) {
+            m_integratorSettings.dlssDebugLayer = std::max(0, atoi(v));
+            m_editor.ShowDlssInputs();
+        }
     }
     try {
         if (!m_headless)
@@ -652,6 +657,11 @@ void Renderer::UpdateRenderer(float dt) {
         const auto& os = m_ocean.GetStats();
         m_camera.oceanGroundY = (float)(os.surfaceY - os.troughDepth - 1.0);
     }
+#if RDN_CLUSTER_API
+    m_camera.instanceSetFrame = ++m_setFrame;
+    m_camera.instanceSetTlasBase = m_instanceSets.tlas_base();
+    m_camera.instanceSetInstances = m_instanceSets.instances();
+#endif
     m_camera.UploadGPUBuffer(m_aspectRatio);
 
     if (m_camera.ConsumeResetPending()) {
@@ -1547,29 +1557,10 @@ void Renderer::CreateScatterSets(uint32_t count) {
         clusters::InstanceSets::Desc d;
         d.whole = meshOf(m_scene.instances[src].meshIndex, placed, hitGroup);
         if (assembly) {
-            const float height = std::max(oh.y - ol.y, 1e-3f);
+            // The loader's pieces of one mesh, not twigs: they bend with the tree and do not flutter of their own.
             for (const auto& [partMesh, partPlaced] : m_scene.scatter.parts) {
                 clusters::InstanceSets::Part p;
                 p.mesh = meshOf(partMesh, partPlaced, hitGroup);
-                // It hangs from the point of its bounds nearest the trunk (the set's y axis), at its foot; it sways
-                // the more the higher that is.
-                const MeshGPU& pm = m_scene.meshes[partMesh];
-                XMVECTOR plo = XMVectorReplicate(FLT_MAX), phi = XMVectorReplicate(-FLT_MAX);
-                for (int c = 0; c < 8; ++c) {
-                    const XMVECTOR q = XMVector3TransformCoord(
-                        XMVectorSet(c & 1 ? pm.boundsMax.x : pm.boundsMin.x, c & 2 ? pm.boundsMax.y : pm.boundsMin.y,
-                                    c & 4 ? pm.boundsMax.z : pm.boundsMin.z, 1.0f),
-                        partPlaced * toSet);
-                    plo = XMVectorMin(plo, q);
-                    phi = XMVectorMax(phi, q);
-                }
-                XMFLOAT3 l, h;
-                XMStoreFloat3(&l, plo);
-                XMStoreFloat3(&h, phi);
-                p.pivot[0] = std::clamp(0.0f, l.x, h.x);
-                p.pivot[1] = l.y;
-                p.pivot[2] = std::clamp(0.0f, l.z, h.z);
-                p.windWeight = std::clamp(l.y / (0.6f * height), 0.0f, 1.0f);
                 d.parts.push_back(p);
             }
             if (m_scene.scatter.standIn != ~0u) {
@@ -1615,6 +1606,7 @@ void Renderer::RecordInstanceSets(ID3D12GraphicsCommandList4* cl, planet::TlasBu
     v.threshold = std::max(0.01f, m_integratorSettings.lodErrorPixels);
     v.znear = m_camera.nearPlane;
     v.time = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_setStart).count();
+    v.frame = m_setFrame;
     m_instanceSets.record(cl, m_clusters.slot(), tlas, v, SET_OFFSCREEN_ERROR, clusters::InstanceSets::Wind{});
 
     const auto& s = m_instanceSets.stats();
@@ -1622,7 +1614,7 @@ void Renderer::RecordInstanceSets(ID3D12GraphicsCommandList4* cl, planet::TlasBu
     vg.sets = s.sets;
     vg.setInstances = s.instances;
     vg.setWritten = s.written;
-    vg.setWrites = s.writes + s.blockWrites;
+    vg.setWrites = s.writes;
     vg.setExpanded = s.expanded;
     vg.setUpdates = s.updates;
     vg.setCells = s.cells;
@@ -1632,7 +1624,7 @@ void Renderer::RecordInstanceSets(ID3D12GraphicsCommandList4* cl, planet::TlasBu
         std::printf("[sets] %llu of %llu instances in the TLAS, %u in their parts; %u writes (%u of whole "
                     "expansions and sways), %u updates, %u of %u cells visited; scene origin %.0f %.0f %.0f\n",
                     (unsigned long long)s.written, (unsigned long long)s.instances, s.expanded,
-                    s.writes + s.blockWrites, s.blockWrites, s.updates, s.activeCells, s.cells, v.origin[0],
+                    s.writes, s.blockWrites, s.updates, s.activeCells, s.cells, v.origin[0],
                     v.origin[1], v.origin[2]);
 }
 

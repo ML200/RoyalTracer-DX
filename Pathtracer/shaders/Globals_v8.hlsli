@@ -145,6 +145,10 @@ cbuffer CameraParams : register(b0)
     // record holds the set's mesh in world space (identity transforms); the hit's own transform places its vertices.
     float instanceSetBase;
     float instanceSetEnd;
+    // asuint: the sets' frame stamp, their first TLAS instance, their instance count (setMotion's layout).
+    float instanceSetFrame;
+    float instanceSetTlasBase;
+    float instanceSetInstances;
 }
 
 // HitLean_v8.hlsl: Pass_pt_trace sends it no ocean hit and no in-water path, so the sea compiles out.
@@ -227,6 +231,7 @@ RaytracingAccelerationStructure      SceneBVH            : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps       : register(t3);
 StructuredBuffer<uint>               materialIDs         : register(t4);
 StructuredBuffer<ClusterRecord>      clusterRecords      : register(t60);
+StructuredBuffer<float4>             setMotion           : register(t61); // clusters::InstanceSets::motion()
 
 // Clustered geometry (SM 6.10): the host defines RDN_CLUSTERS=1 when the device supports it. Off, every hit
 // reports CLUSTER_ID_INVALID and FlatPrimID keeps the classic per-geometry indexing.

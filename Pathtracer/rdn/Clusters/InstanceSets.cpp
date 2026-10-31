@@ -49,19 +49,21 @@ struct Constants {
     uint32_t partitionBase, writeArgs, updateArgs, workLo;
     uint32_t workHi, translate, translateArgs, slots;
     float delta[3], time;
-    uint32_t blockArgs, maxBlockWrites, poolTlasBase, poolPartitionBase;
+    uint32_t frame, pad5, poolTlasBase, poolPartitionBase;
     float windDistance, windAmplitude, windFrequency;
     uint32_t blocks;
     uint32_t sets, freeLists, partStates, poolPartitions;
+    float windFlutter, pad3[3];
     float planes[5][4];
 };
 static_assert(sizeof(GpuSet) == 80 && sizeof(GpuBucket) == 80 && sizeof(GpuPart) == 32 && sizeof(GpuCell) == 48 &&
-              sizeof(GpuInstance) == 24 && sizeof(Constants) == 224);
-constexpr uint32_t SRVS = 5, UAVS = 4;
+              sizeof(GpuInstance) == 24 && sizeof(Constants) == 240);
+constexpr uint32_t SRVS = 5, UAVS = 5;
 // work: counters, the operation count and operations, the readback's copy, then the arguments.
 constexpr uint32_t WORK_OP_COUNT = 32, WORK_OPS = 40, WORK_FEEDBACK = 160, FEEDBACK_BYTES = 32, WORK_ARGS = 256;
 constexpr uint32_t WRITE_ARG_BYTES = 104, UPDATE_ARG_BYTES = 16, TRANSLATE_ARG_BYTES = 16;
-// TLAS operations a frame may write: a new set's instances enter over several frames.
+// TLAS operations a frame may write: a new set's instances enter over several frames; expansions, collapses and
+// sways have room of their own on top.
 constexpr uint32_t MAX_WRITES = 128u << 10, MAX_UPDATES = 128u << 10, MAX_BLOCK_WRITES = 64u << 10;
 constexpr uint32_t GROUP_INSTANCES = 256; // InstanceSets_v8.hlsl's per-instance passes
 
@@ -418,15 +420,19 @@ void InstanceSets::commit(planet::TlasBuilder& tlas, const float origin[3], ID3D
     m_freeLists = (uint32_t)align(4ull * m_setCount, 16);
     m_partStates = (uint32_t)align(m_freeLists + 4ull * m_blockCount, 16);
     m_pool = buffer(m_partStates + 4ull * m_slotCount, true, L"InstanceSetPool");
+    // Read by the camera pass on the direct queue: common, so each queue promotes it to its own use.
+    m_motion = nv_helpers_dx12::CreateBuffer(m_ctx->Device(), 16ull * (m_instanceCount + m_slotCount),
+                                             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
+                                             nv_helpers_dx12::kDefaultHeapProps);
+    m_motion->SetName(L"InstanceSetMotion");
 
-    m_maxWrites = std::min(MAX_WRITES, m_instanceCount);
+    m_maxWrites = std::min(MAX_WRITES, m_instanceCount) + (m_slotCount ? MAX_BLOCK_WRITES : 0u);
     m_maxUpdates = std::min(MAX_UPDATES, m_instanceCount + m_slotCount);
-    m_maxBlockWrites = m_slotCount ? MAX_BLOCK_WRITES : 0u;
     m_writeArgs = WORK_ARGS;
     m_updateArgs = (uint32_t)align(m_writeArgs + (uint64_t)WRITE_ARG_BYTES * m_maxWrites, 16);
     m_translateArgs = (uint32_t)align(m_updateArgs + (uint64_t)UPDATE_ARG_BYTES * m_maxUpdates, 16);
-    m_blockArgs = (uint32_t)align(m_translateArgs + (uint64_t)TRANSLATE_ARG_BYTES * (m_cellCount + m_poolPartitions), 16);
-    m_work = buffer(m_blockArgs + (uint64_t)WRITE_ARG_BYTES * m_maxBlockWrites, true, L"InstanceSetWork");
+    m_work = buffer(m_translateArgs + (uint64_t)TRANSLATE_ARG_BYTES * (m_cellCount + m_poolPartitions), true,
+                    L"InstanceSetWork");
     for (Slot& s : m_slots) {
         s.constants = nv_helpers_dx12::CreateBuffer(m_ctx->Device(), 256, D3D12_RESOURCE_FLAG_NONE,
                                                     D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
@@ -450,7 +456,8 @@ void InstanceSets::commit(planet::TlasBuilder& tlas, const float origin[3], ID3D
     tlas.reserve_external(m_instanceCount + m_slotCount, m_cellCount + m_poolPartitions);
     m_tlasGeneration = ~0u;
     m_stats.gpuBytes = m_instanceBuf->GetDesc().Width + m_cellBuf->GetDesc().Width + m_instanceState->GetDesc().Width +
-                       m_cellState->GetDesc().Width + m_work->GetDesc().Width + m_pool->GetDesc().Width;
+                       m_cellState->GetDesc().Width + m_work->GetDesc().Width + m_pool->GetDesc().Width +
+                       m_motion->GetDesc().Width;
     std::printf("[sets] %u sets, %llu instances in %u cells, %u part slots; %.1f MB of tables, %.1f MB of bucket BLAS\n",
                 m_setCount, (unsigned long long)m_instanceCount, m_cellCount, m_slotCount,
                 (double)m_stats.gpuBytes / 1048576.0, (double)m_stats.blasBytes / 1048576.0);
@@ -495,6 +502,8 @@ void InstanceSets::record(ID3D12GraphicsCommandList4* cl, uint32_t frameSlot, pl
     k.maxWrites = m_maxWrites;
     k.maxUpdates = m_maxUpdates;
     k.tlasBase = tlas.external_instance_base();
+    m_tlasBase = k.tlasBase;
+    k.frame = view.frame;
     k.partitionBase = tlas.external_partition_base();
     k.writeArgs = m_writeArgs;
     k.updateArgs = m_updateArgs;
@@ -506,13 +515,12 @@ void InstanceSets::record(ID3D12GraphicsCommandList4* cl, uint32_t frameSlot, pl
     std::memcpy(k.delta, delta, sizeof(delta));
     std::memcpy(m_translated, delta, sizeof(delta));
     k.time = view.time;
-    k.blockArgs = m_blockArgs;
-    k.maxBlockWrites = m_maxBlockWrites;
     k.poolTlasBase = k.tlasBase + m_instanceCount;
     k.poolPartitionBase = k.partitionBase + m_cellCount;
     k.windDistance = wind.distance;
     k.windAmplitude = wind.amplitude;
     k.windFrequency = wind.frequency;
+    k.windFlutter = wind.flutter;
     k.blocks = m_blockCount;
     k.sets = m_setCount;
     k.freeLists = m_freeLists;
@@ -532,7 +540,7 @@ void InstanceSets::record(ID3D12GraphicsCommandList4* cl, uint32_t frameSlot, pl
                                                   m_instanceBuf->GetGPUVirtualAddress(),
                                                   m_partBuf->GetGPUVirtualAddress() };
     for (uint32_t i = 0; i < SRVS; ++i) cl->SetComputeRootShaderResourceView(1 + i, srv[i]);
-    ID3D12Resource* uav[UAVS] = { m_instanceState.Get(), m_cellState.Get(), m_work.Get(), m_pool.Get() };
+    ID3D12Resource* uav[UAVS] = { m_instanceState.Get(), m_cellState.Get(), m_work.Get(), m_pool.Get(), m_motion.Get() };
     for (uint32_t i = 0; i < UAVS; ++i) cl->SetComputeRootUnorderedAccessView(1 + SRVS + i, uav[i]->GetGPUVirtualAddress());
 
     const D3D12_RESOURCE_BARRIER uavAll = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);

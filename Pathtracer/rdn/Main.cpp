@@ -33,6 +33,10 @@ class EnvTestHooks {
             if (n < 4)
                 m_flySeconds = 1e30f;
         }
+        // RT_AUTOTURN=<degrees per second>: the camera turns about the vertical.
+        char tb[64] = {};
+        if (GetEnvironmentVariableA("RT_AUTOTURN", tb, sizeof(tb)) > 0)
+            m_turn = sscanf_s(tb, "%f", &m_turnRate) == 1;
         char jb[128] = {};
         if (GetEnvironmentVariableA("RT_JUMP", jb, sizeof(jb)) > 0)
             m_jump = sscanf_s(jb, "%f %f %f %f", &m_jumpOffset.x, &m_jumpOffset.y, &m_jumpOffset.z, &m_jumpDelay) == 4;
@@ -45,13 +49,22 @@ class EnvTestHooks {
             const glm::vec3 step = m_flyVel * std::min(dt, 0.1f);
             nv_helpers_dx12::CameraManip.setLookat(eye + step, center + step, up);
         }
+        if (m_turn) {
+            glm::vec3 eye, center, up;
+            nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
+            const float a = glm::radians(m_turnRate) * std::min(dt, 0.1f);
+            const glm::vec3 d = center - eye;
+            const glm::vec3 r(d.x * std::cos(a) - d.z * std::sin(a), d.y, d.x * std::sin(a) + d.z * std::cos(a));
+            nv_helpers_dx12::CameraManip.setLookat(eye, eye + r, up);
+        }
         if (m_jump && m_elapsed >= m_jumpDelay) {
             m_jump = false;
             glm::vec3 eye, center, up;
             nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
             nv_helpers_dx12::CameraManip.setLookat(eye + m_jumpOffset, center + m_jumpOffset, up);
-            std::printf("[test hook] camera jumped by (%.0f, %.0f, %.0f)\n", m_jumpOffset.x, m_jumpOffset.y,
-                        m_jumpOffset.z);
+            std::printf("[test hook] camera jumped by (%.0f, %.0f, %.0f) to (%.0f, %.0f, %.0f)\n", m_jumpOffset.x,
+                        m_jumpOffset.y, m_jumpOffset.z, eye.x + m_jumpOffset.x, eye.y + m_jumpOffset.y,
+                        eye.z + m_jumpOffset.z);
         }
     }
 
@@ -59,6 +72,8 @@ class EnvTestHooks {
     bool m_fly = false;
     float m_flySeconds = 1e30f;
     glm::vec3 m_flyVel = glm::vec3(0.0f);
+    bool m_turn = false;
+    float m_turnRate = 0.0f;
     bool m_jump = false;
     glm::vec3 m_jumpOffset{0.0f};
     float m_jumpDelay = 0.0f;

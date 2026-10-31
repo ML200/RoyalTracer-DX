@@ -40,6 +40,16 @@ inline bool TraceCameraRay(uint2 pixel, uint pixelIdx, float3 rayOrigin, float3 
     const float3  emission = GetEmissionFast(instID, primID, abs(dot(hinfo.geometricNormal, rayDir)));
     const bool    isEmitter = any(emission > 0.0f);
 
+    // An instance set's instance sways in the wind: its surface's move since the last frame, from its sway (a shear
+    // along x in proportion to the height above its base), for the motion pass. Part slots name their instance.
+    if (IS_SET_INSTANCE(instID)) {
+        const uint index = hitObj.GetInstanceIndex() - asuint(instanceSetTlasBase);
+        const uint owner = index >= asuint(instanceSetInstances) ? asuint(setMotion[index].x) : index;
+        const float4 sway = setMotion[owner];
+        const float  dx   = asuint(sway.w) == asuint(instanceSetFrame) ? (sway.y - sway.x) * (hitPos.y - sway.z) : 0.0f;
+        gScratchPing[uint3(pixel, OCEAN_PREVIOUS_POSITION_SLOT)] = float4(dx, 0.0f, 0.0f, asfloat(instID));
+    }
+
     // Correspondence only; the motion pass evaluates the previous geometry.
     if (hinfo.isOcean) {
         gScratchPing[uint3(pixel, OCEAN_PREVIOUS_POSITION_SLOT)] =

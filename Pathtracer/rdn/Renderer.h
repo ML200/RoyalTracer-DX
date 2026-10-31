@@ -359,6 +359,8 @@ class Renderer {
 
     // t60 placeholder (one unused record) without clustered geometry.
     ComPtr<ID3D12Resource> m_clusterRecords;
+    ComPtr<ID3D12Resource> m_setMotionNone;
+    uint32_t m_setFrame = 0; // stamps the instance sets' motion records, uploaded with the camera
 
     ComPtr<ID3D12Resource> m_terrainHeightmapTexture;
     ComPtr<ID3D12Resource> m_terrainHeightmapUploadHeap;

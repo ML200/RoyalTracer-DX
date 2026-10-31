@@ -65,18 +65,22 @@ class InstanceSets {
         float camera[3];
         float planes[5][4];
         float pixelsPerUnit, threshold, znear;
-        float time; // seconds, for the wind
+        float time;     // seconds, for the wind
+        uint32_t frame; // stamps the motion records written (never 0)
     };
+    // Instances nearer than distance bend with the wind, whole or parts alike (a shear about their base, amplitude per
+    // unit of height), and their twig parts flutter about their pivots besides; beyond, they stand still.
     struct Wind {
-        float distance = 60.0f;  // parts sway nearer than this, and hold still beyond
-        float amplitude = 0.05f; // radians at full weight
-        float frequency = 1.6f;  // radians per second
+        float distance = 60.0f;
+        float amplitude = 0.012f;
+        float flutter = 0.06f;  // radians at a part's full weight
+        float frequency = 1.6f; // radians per second
     };
     struct Stats {
         uint32_t sets = 0, cells = 0, buckets = 0, slots = 0;
         uint64_t instances = 0, blasBytes = 0, gpuBytes = 0;
-        // The latest frame read back: TLAS instance writes (single and of whole expansions) and updates, cells whose
-        // instances were visited, instances expanded into their parts.
+        // The latest frame read back: TLAS instance writes (blockWrites of them for expansions, collapses and sways) and
+        // updates, cells whose instances were visited, instances expanded into their parts.
         uint32_t writes = 0, blockWrites = 0, updates = 0, activeCells = 0, expanded = 0;
         uint64_t written = 0; // instances in the TLAS
         bool valid = false;
@@ -98,6 +102,11 @@ class InstanceSets {
                 float offscreenScale, const Wind& wind);
     void on_submitted(uint64_t computeFence);
     const Stats& stats() const { return m_stats; }
+    // For the motion vectors: per TLAS instance from tlas_base(), an instance's sway (float4: shear now, shear before
+    // the write, base height, the frame stamp of the write), then for each part slot (from instances()) its instance.
+    ID3D12Resource* motion() const { return m_motion.Get(); }
+    uint32_t tlas_base() const { return m_tlasBase; }
+    uint32_t instances() const { return m_instanceCount; }
 
   private:
     struct Slot {
@@ -130,9 +139,10 @@ class InstanceSets {
     uint32_t m_setCount = 0, m_instanceCount = 0, m_cellCount = 0;
     uint32_t m_blockCount = 0, m_slotCount = 0, m_poolPartitions = 0; // assemblies' part slots
     ComPtr<ID3D12Resource> m_setBuf, m_bucketBuf, m_cellBuf, m_instanceBuf, m_partBuf, m_instanceState, m_cellState,
-        m_work, m_pool;
-    uint32_t m_maxWrites = 0, m_maxUpdates = 0, m_maxBlockWrites = 0;
-    uint32_t m_writeArgs = 0, m_updateArgs = 0, m_translateArgs = 0, m_blockArgs = 0, m_freeLists = 0, m_partStates = 0;
+        m_work, m_pool, m_motion;
+    uint32_t m_tlasBase = 0;
+    uint32_t m_maxWrites = 0, m_maxUpdates = 0;
+    uint32_t m_writeArgs = 0, m_updateArgs = 0, m_translateArgs = 0, m_freeLists = 0, m_partStates = 0;
     uint32_t m_tlasGeneration = ~0u;
     float m_origin[3] = {}, m_translated[3] = {}; // the sets' origin, and their partitions' translation
     std::vector<Slot> m_slots;

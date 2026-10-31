@@ -567,6 +567,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
 
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 59, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 60, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 61, 0, BUFFER_SRV, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
 
@@ -1318,6 +1319,30 @@ void Renderer::CreateShaderResourceHeap() {
         d.Buffer.NumElements = (UINT)(records->GetDesc().Width / sizeof(ClusterRecord));
         d.Buffer.StructureByteStride = sizeof(ClusterRecord);
         dev->CreateShaderResourceView(records, &d, handle);
+        next();
+    }
+
+    {
+        // The instance sets' motion records (t61), or one empty record.
+        ID3D12Resource* motion = nullptr;
+#if RDN_CLUSTER_API
+        motion = m_instanceSets.motion();
+#endif
+        if (!motion) {
+            if (!m_setMotionNone) {
+                const float none[4] = {};
+                m_setMotionNone = ResourceFactory(dev).CreateUploadBufferWithData(none, sizeof(none));
+                m_setMotionNone->SetName(L"InstanceSetMotionNone");
+            }
+            motion = m_setMotionNone.Get();
+        }
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Buffer.NumElements = (UINT)(motion->GetDesc().Width / 16);
+        d.Buffer.StructureByteStride = 16;
+        dev->CreateShaderResourceView(motion, &d, handle);
         next();
     }
 

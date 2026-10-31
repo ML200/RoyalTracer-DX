@@ -278,6 +278,12 @@ inline float2 SurfaceMotionVector(uint2 px, float2 dims, float3 x, uint instID)
 {
     if (instID == 0xFFFFFFFFu) return SkyMotionVector(px, dims);
     float2 prevPix = GetLastFramePixelCoordinates_Unclamped(x, prevView, prevProjection, dims, instID);
+    // A set instance's sway: the camera pass left its move in the ocean's correspondence slot.
+    if (IS_SET_INSTANCE(instID)) {
+        const float4 move = gScratchPing[uint3(px, OCEAN_PREVIOUS_POSITION_SLOT)];
+        if (asuint(move.w) == instID)
+            prevPix = GetLastFramePixelCoordinates_World(x + move.xyz, prevView, prevProjection, dims);
+    }
     if (IS_OCEAN_INSTANCE(instID)) {
         const float4 correspondence = gScratchPing[uint3(px, OCEAN_PREVIOUS_POSITION_SLOT)];
         if (OceanParams().historyValid <= 0.0f || asuint(correspondence.w) != instID) return 0.0f;
@@ -293,6 +299,8 @@ inline float2 PsrChainMotionVector(uint2 px, float2 dims, PsrChainEnd e)
 {
     if (e.instID == 0xFFFFFFFFu) return SkyMotionVector(px, dims);
     if (IS_OCEAN_INSTANCE(e.instID)) return SurfaceMotionVector(px, dims, e.xHit, e.instID);
+    // The primary surface itself: a set instance's sway is in the camera pass's correspondence slot.
+    if (e.bounces == 0u && IS_SET_INSTANCE(e.instID)) return SurfaceMotionVector(px, dims, e.xHit, e.instID);
     const float3 localHit    = mul(instanceProps[e.instID].objectToWorldInverse, float4(e.xHit, 1.0f));
     const float3 prevHit     = mul(instanceProps[e.instID].prevObjectToWorld, float4(localHit, 1.0f));
     const float3 prevVirtual = e.xVirtual + mul(e.M, prevHit - e.xHit);

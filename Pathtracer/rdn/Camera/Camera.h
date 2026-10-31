@@ -72,6 +72,8 @@ class Camera {
     // Instances at or above this are ocean tiles.
     uint32_t oceanInstanceBase = 0xFFFFFFFFu;
     uint32_t instanceSetBase = 0, instanceSetEnd = 0; // instance-set records (IS_SET_INSTANCE)
+    // The sets' motion records: this frame's stamp, their first TLAS instance, their instance count.
+    uint32_t instanceSetFrame = 0, instanceSetTlasBase = 0, instanceSetInstances = 0;
     bool oceanEnabled = false;
 
     // DLSS responsivity mask values, mirrored from DLSSManager.
