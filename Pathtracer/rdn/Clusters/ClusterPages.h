@@ -21,6 +21,8 @@ class RangeAllocator {
     void free(uint64_t offset, uint64_t count);
     uint64_t used() const { return m_used; }
     uint64_t capacity() const { return m_capacity; }
+    // More room at the end.
+    void grow(uint64_t capacity);
 
   private:
     std::vector<std::pair<uint64_t, uint64_t>> m_free; // offset, count; sorted
@@ -34,6 +36,7 @@ std::string cache_dir();
 struct PoolSizes {
     uint32_t vertices = 0, tris = 0; // the page pool at the front of the global vertex, index and material-ID arrays
     uint64_t clasBytes = 0, ommBytes = 0;
+    bool fixed = false;              // set by the environment: the pool does not grow to the scene
 };
 // RDN_PAGE_POOL_VERTS, RDN_PAGE_POOL_TRIS, RDN_PAGE_POOL_CLAS_MB and RDN_PAGE_POOL_OMM_MB override the defaults.
 PoolSizes pool_sizes();
@@ -44,6 +47,7 @@ struct PageEntry {
     uint64_t offset = 0;
     uint32_t bytes = 0, firstCluster = 0, clusterCount = 0, vertexCount = 0, triCount = 0;
     bool alpha = false;
+    uint16_t file = 0; // into PagedSource::files, for a page index
 };
 // Opacity micromaps: per triangle an OMM index (or a special index), and the micromaps they refer to.
 struct PageOmm {
@@ -59,6 +63,16 @@ struct PagedSource {
     std::vector<Span> spans;          // per hierarchy cluster; firstTri within its page
     std::vector<uint32_t> materials;  // per hierarchy cluster, relative to the model's first material
     PageOmm omm;                      // the alpha pages' micromaps (no indices; those are in the pages)
+    // Coded pages: a uint16 material per triangle (relative to materialBase) after the indices, in place of the
+    // clusters' materials; an alpha page's micromap indices then refer to the array at ommArray, the loader's (0: none,
+    // so micromapped triangles fall back to any-hit).
+    bool coded = false;
+    D3D12_GPU_VIRTUAL_ADDRESS ommArray = 0;
+    std::vector<uint8_t> extra;       // what the bake kept with the file for its loader
+    // A page index (write_page_index): the files the pages are in, and per hierarchy cluster the cell (spatial owner) it
+    // belongs to. Roots do not lead its clusters.
+    std::vector<std::string> files;
+    std::vector<uint32_t> cells;
 };
 
 // The bake's input mesh: Vertex-layout vertices (float3 position, float4 normal, float2 uv).
@@ -71,9 +85,43 @@ struct BakeMesh {
     // for its coarser ones apart.
     std::function<bool(uint32_t region, int maxLevel, const float* uvs, uint32_t vertexCount, const uint32_t* indices,
                        uint32_t triCount, PageOmm& out)> opacity;
+    // With LodBuild::codes, pages are coded (see PagedSource): per code its material (relative; the code itself when
+    // unset). Then with opacity, a code is a material and micromaps are baked per material (opacity is asked with
+    // materialBase + code), else per code whether it needs any-hit (which makes its page alpha) and its micromap index
+    // there (or a special index).
+    std::function<uint16_t(uint32_t code)> codeMaterial;
+    std::function<bool(uint32_t code)> codeAlpha;
+    std::function<int32_t(uint32_t code)> codeOmm;
+    std::vector<uint8_t> extra; // kept with the file, for its loader
 };
 // Writes the hierarchy's page file; the roots' pages first, and their clusters first by offset.
 bool write_pages(const std::string& path, const LodBuild& build, const BakeMesh& mesh);
+
+// A coded page's bytes (see PagedSource) from its clusters' triangles (vertex indices into mesh's vertices) and codes; layout
+// gets its counts, whether it is alpha and per cluster its span in the page.
+struct PageCluster {
+    const uint32_t* indices;
+    const uint32_t* codes;
+    uint32_t triCount;
+};
+struct PageLayout {
+    uint32_t vertexCount = 0, triCount = 0;
+    bool alpha = false;
+    std::vector<Span> spans;
+};
+bool serialize_page(const PageCluster* clusters, uint32_t count, const BakeMesh& mesh, std::vector<uint8_t>& out,
+                    PageLayout& layout);
+// A page index over pages in several files, for a hierarchy built in stages (build_lod_stage): per group its bounds and
+// page; per cluster its group, refined group, span in its page and cell.
+struct IndexPage {
+    uint64_t offset = 0;
+    uint32_t file = 0, bytes = 0, vertexCount = 0, triCount = 0;
+    bool alpha = false;
+};
+bool write_page_index(const std::string& path, const std::vector<LodGroup>& groups, const std::vector<IndexPage>& pages,
+                      const std::vector<LodCluster>& clusters, const std::vector<Span>& spans,
+                      const std::vector<std::string>& files, const std::vector<uint32_t>& cells,
+                      const std::vector<uint8_t>& extra);
 // Reads a page file's tables into lod (groups, clusters, deps, base; marked paged) and source.
 bool read_pages(const std::string& path, Lod& lod, PagedSource& source);
 
@@ -171,7 +219,7 @@ class Pager {
     struct Mesh {
         Lod* lod = nullptr;
         PagedSource src;
-        HANDLE file = INVALID_HANDLE_VALUE;
+        std::vector<HANDLE> files; // per PagedSource::files, or the one page file
         uint32_t triBase = 0, materialBase = 0;
         bool omm = false; // its fixed clusters use micromaps
         std::vector<uint8_t> levels; // per hierarchy cluster
@@ -199,8 +247,8 @@ class Pager {
     void upload(Mesh& m, uint32_t group, const uint8_t* data, ID3D12GraphicsCommandList* copy, ID3D12Resource* staging,
                 uint8_t* stagingMapped, uint64_t stagingOff, uint32_t* gpuMaterials);
     clusters::Mesh build_desc(const Mesh& m, uint32_t group) const;
-    // An alpha page's OMM indices, as stored after its geometry.
-    static const int32_t* omm_indices(const PageEntry& e, const uint8_t* data);
+    // An alpha page's OMM indices, as stored after its geometry (and its materials, when coded).
+    static const int32_t* omm_indices(const PageEntry& e, const uint8_t* data, bool coded);
     // The OMM array build's result and scratch sizes (128- and 256-byte aligned).
     void omm_prebuild(const PageOmm& o, uint64_t& result, uint64_t& scratch) const;
     // Builds the micromaps from raw and descs already in GPU memory (rawVa 128-byte aligned) into dest.

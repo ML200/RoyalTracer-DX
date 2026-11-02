@@ -176,26 +176,12 @@ void ClusterGeometry::init(DeviceContext* ctx, uint32_t slots, const Config& cfg
         std::printf("[clusters] RTAS interfaces unavailable, classic BLAS only\n");
         return;
     }
+    m_ctx = ctx;
     ID3D12Device* device = ctx->Device();
     using nv_helpers_dx12::CreateBuffer;
-    const uint64_t cap = cfg.clusterCapacity;
     D3D12_RANGE noRead{ 0, 0 };
     void* p = nullptr;
-    m_records = CreateBuffer(device, cap * sizeof(ClusterRecord), D3D12_RESOURCE_FLAG_NONE,
-                             D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-    m_records->SetName(L"ClusterRecords");
-    if (FAILED(m_records->Map(0, &noRead, &p))) throw std::runtime_error("clusters: record Map failed");
-    m_recordsMapped = static_cast<ClusterRecord*>(p);
-    m_built = CreateBuffer(device, cap * sizeof(D3D12_GPU_VIRTUAL_ADDRESS), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nv_helpers_dx12::kDefaultHeapProps);
-    m_built->SetName(L"ClasBuiltAddresses");
-    m_builtVa = m_built->GetGPUVirtualAddress();
-    m_final = CreateBuffer(device, cap * sizeof(D3D12_GPU_VIRTUAL_ADDRESS), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nv_helpers_dx12::kDefaultHeapProps);
-    m_final->SetName(L"ClasAddresses");
-    m_finalVa = m_final->GetGPUVirtualAddress();
-    m_ids.free.assign(1, { 0u, cfg.clusterCapacity });
-    m_ids.used = 0;
+    create_id_tables(cfg.clusterCapacity);
     ++slots; // sync_slot()
     m_args.resize(slots); m_argsMapped.assign(slots, nullptr);
     m_sizes.resize(slots); m_sizesReadback.resize(slots);
@@ -223,6 +209,42 @@ void ClusterGeometry::init(DeviceContext* ctx, uint32_t slots, const Config& cfg
 #else
     (void)ctx; (void)slots;
 #endif
+}
+
+void ClusterGeometry::create_id_tables(uint32_t capacity) {
+#if RDN_CLUSTER_API
+    ID3D12Device* device = m_ctx->Device();
+    using nv_helpers_dx12::CreateBuffer;
+    const uint64_t cap = capacity;
+    D3D12_RANGE noRead{ 0, 0 };
+    void* p = nullptr;
+    m_records = CreateBuffer(device, cap * sizeof(ClusterRecord), D3D12_RESOURCE_FLAG_NONE,
+                             D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+    m_records->SetName(L"ClusterRecords");
+    if (FAILED(m_records->Map(0, &noRead, &p))) throw std::runtime_error("clusters: record Map failed");
+    m_recordsMapped = static_cast<ClusterRecord*>(p);
+    m_built = CreateBuffer(device, cap * sizeof(D3D12_GPU_VIRTUAL_ADDRESS), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nv_helpers_dx12::kDefaultHeapProps);
+    m_built->SetName(L"ClasBuiltAddresses");
+    m_builtVa = m_built->GetGPUVirtualAddress();
+    m_final = CreateBuffer(device, cap * sizeof(D3D12_GPU_VIRTUAL_ADDRESS), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nv_helpers_dx12::kDefaultHeapProps);
+    m_final->SetName(L"ClasAddresses");
+    m_finalVa = m_final->GetGPUVirtualAddress();
+    m_cfg.clusterCapacity = capacity;
+    m_ids.free.assign(1, { 0u, capacity });
+    m_ids.used = 0;
+#else
+    (void)capacity;
+#endif
+}
+
+bool ClusterGeometry::reserve_ids(uint32_t count) {
+    if (!m_enabled || count <= m_cfg.clusterCapacity) return true;
+    if (m_ids.used) return false;
+    create_id_tables(count);
+    std::printf("[clusters] %.1fM cluster IDs\n", count / 1048576.0);
+    return true;
 }
 
 bool ClusterGeometry::allocate_ids(uint32_t count, uint32_t& base) {

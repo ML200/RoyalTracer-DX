@@ -5,6 +5,7 @@
 #include <fstream>
 #include <unordered_map>
 #include "Scene.h"
+#include <meshoptimizer.h>
 #include "../ocean/OceanCommon.h"
 #include "../DXRHelper.h"
 
@@ -68,8 +69,48 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
         return false;
     }
 
-    // The page file is named after what it is built from: vertices, triangles and their model-relative regions.
-    uint64_t key = 0xcbf29ce484222325ull ^ 4u; // FNV-1a over words; the xor is the page format version
+    // Materials simplify together, each triangle keeping its own (a simplified one the one covering most around it), as
+    // Nanite's clusters mix them: a material border is no lock. Only foliage and the rest are regions apart, as they
+    // simplify differently.
+    constexpr uint32_t REGION_SURFACE = 0, REGION_FOLIAGE = 1;
+    std::vector<uint32_t> codes(triCount, 0), classes(triCount, NO_REGION);
+    for (UINT t = 0; t < triCount; ++t)
+        if (regions[t] != NO_REGION) {
+            codes[t] = regions[t] - materialBase;
+            classes[t] = foliage && foliage(regions[t]) ? REGION_FOLIAGE : REGION_SURFACE;
+        }
+
+    // Material borders as seams: a vertex shared across materials splits into one per material, and every vertex at such a
+    // position is protected, so a border moves only along itself and no material spreads over another's surface.
+    std::vector<Vertex> lodVertices;
+    std::vector<UINT> lodIndices(cpuIndices.size());
+    std::vector<uint8_t> lodFlags;
+    {
+        std::unordered_map<uint64_t, UINT> split;
+        for (UINT t = 0; t < triCount; ++t)
+            for (int k = 0; k < 3; ++k) {
+                const UINT v = cpuIndices[3ull * t + k];
+                const auto [it, fresh] = split.emplace((uint64_t)v << 32 | codes[t], (UINT)lodVertices.size());
+                if (fresh) lodVertices.push_back(cpuVertices[v]);
+                lodIndices[3ull * t + k] = it->second;
+            }
+        const size_t n = lodVertices.size();
+        std::vector<uint32_t> pos(n);
+        meshopt_generatePositionRemap(pos.data(), &lodVertices[0].position.x, n, sizeof(Vertex));
+        constexpr uint32_t NONE = ~0u, MIXED = ~0u - 1;
+        std::vector<uint32_t> owner(n, NONE);
+        for (UINT t = 0; t < triCount; ++t)
+            for (int k = 0; k < 3; ++k) {
+                uint32_t& o = owner[pos[lodIndices[3ull * t + k]]];
+                o = o == NONE ? codes[t] : o == codes[t] ? o : MIXED;
+            }
+        lodFlags.assign(n, 0);
+        for (size_t i = 0; i < n; ++i)
+            if (owner[pos[i]] == MIXED) lodFlags[i] = meshopt_SimplifyVertex_Protect;
+    }
+
+    // The page file is named after what it is built from: vertices, triangles, their model-relative materials and regions.
+    uint64_t key = 0xcbf29ce484222325ull ^ 7u; // FNV-1a over words; the xor is the page format and builder version
     auto mix = [&](const void* data, size_t bytes) {
         const uint8_t* p = static_cast<const uint8_t*>(data);
         for (; bytes >= 8; bytes -= 8, p += 8) {
@@ -81,24 +122,24 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
     };
     mix(cpuVertices.data(), cpuVertices.size() * sizeof(Vertex));
     mix(cpuIndices.data(), cpuIndices.size() * sizeof(UINT));
-    std::vector<uint32_t> relative(regions);
-    for (uint32_t& r : relative)
-        if (r != NO_REGION) r -= materialBase;
-    mix(relative.data(), relative.size() * sizeof(uint32_t));
+    mix(codes.data(), codes.size() * sizeof(uint32_t));
+    mix(classes.data(), classes.size() * sizeof(uint32_t));
     char name[32];
     std::snprintf(name, sizeof(name), "%016llx.rdnpages", (unsigned long long)key);
     const std::string path = clusters::cache_dir() + "\\" + name;
 
     clusters::LodSource src;
-    src.vertices = reinterpret_cast<const uint8_t*>(cpuVertices.data());
+    src.vertices = reinterpret_cast<const uint8_t*>(lodVertices.data());
     src.stride = sizeof(Vertex);
     src.normalOffset = offsetof(Vertex, normal_material);
     src.uvOffset = offsetof(Vertex, texCoord);
-    src.vertexCount = (uint32_t)cpuVertices.size();
-    src.indices = cpuIndices.data();
-    src.regions = regions.data();
+    src.vertexCount = (uint32_t)lodVertices.size();
+    src.indices = lodIndices.data();
+    src.vertexFlags = lodFlags.data();
+    src.regions = classes.data();
     src.triCount = triCount;
-    src.foliage = foliage;
+    src.foliage = [](uint32_t region) { return region == REGION_FOLIAGE; };
+    src.codes = codes.data();
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
         clusters::LodBuild b;
@@ -152,6 +193,29 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
     lodAlpha = std::any_of(pagedSource->pages.begin(), pagedSource->pages.end(), [](const clusters::PageEntry& e) { return e.alpha; });
     paged = true;
     return true;
+}
+
+void MeshGPU::AdoptPages(clusters::Lod&& pages, std::shared_ptr<clusters::PagedSource> source, std::vector<Vertex> vertices,
+                         std::vector<UINT> indices, std::vector<UINT> materials, UINT opaqueTris) {
+    cpuVertices = std::move(vertices);
+    cpuIndices = std::move(indices);
+    cpuMaterialIDs = std::move(materials);
+    vertexCount = (UINT)cpuVertices.size();
+    indexCount = (UINT)cpuIndices.size();
+    opaqueTriCount = opaqueTris;
+    alphaTriCount = indexCount / 3 - opaqueTris;
+    clusterCuts.clear();
+    std::vector<UINT> cuts;
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, 0, opaqueTriCount, cuts);
+    order_cells(cpuVertices, cpuIndices, cpuMaterialIDs, opaqueTriCount, indexCount / 3, cuts);
+    clusterSpans.clear();
+    if (!cuts.empty()) clusters::split(cpuIndices.data(), vertexCount, cuts, indexCount / 3, clusterSpans);
+    lod = std::move(pages);
+    lod.fixed = (uint32_t)clusterSpans.size();
+    lod.base += lod.fixed;
+    pagedSource = std::move(source);
+    lodAlpha = std::any_of(pagedSource->pages.begin(), pagedSource->pages.end(), [](const clusters::PageEntry& e) { return e.alpha; });
+    paged = true;
 }
 
 void MeshGPU::OrderForClusters() {
@@ -340,16 +404,52 @@ void Scene::ReserveVoxels(UINT vertexElems, UINT indexElems, UINT matIDElems, UI
     voxelPropsBase = std::max(minPropsBase, afterRocks);
 }
 
-bool Scene::ReservePagePool() {
+bool Scene::ReservePagePool() { return ReservePagePool(clusters::pool_sizes()); }
+
+bool Scene::ReservePagePool(const clusters::PoolSizes& s) {
     if (!meshes.empty() || !materialIDs.empty())
         return false;
-    const clusters::PoolSizes s = clusters::pool_sizes();
     pagePoolVertices = s.vertices;
     pagePoolTris = s.tris;
     pagePoolVertexAlloc.init(s.vertices);
     pagePoolTriAlloc.init(s.tris);
     materialIDs.assign(s.tris, 0u);
     return true;
+}
+
+void Scene::FitPagePool() {
+    if (!pagePoolTris || clusters::pool_sizes().fixed)
+        return;
+    uint64_t tris = 0, verts = 0;
+    for (const MeshGPU& m : meshes) {
+        if (!m.paged || !m.pagedSource)
+            continue;
+        tris += m.indexCount / 3;
+        verts += m.vertexCount;
+        // Full detail needs every coarser page resident too (a page stays only while its deps do): the whole hierarchy.
+        for (const clusters::PageEntry& e : m.pagedSource->pages) {
+            tris += e.triCount;
+            verts += e.vertexCount;
+        }
+    }
+    // An eighth more for pages on their way in and out; the vertices stay within the 4 GiB view.
+    constexpr uint64_t MAX_TRIS = 96ull << 20, MAX_VERTS = 120ull << 20;
+    const UINT wantTris = (UINT)std::min<uint64_t>(tris + tris / 8, MAX_TRIS);
+    const UINT wantVerts = (UINT)std::min<uint64_t>(verts + verts / 8, MAX_VERTS);
+    if (wantTris <= pagePoolTris && wantVerts <= pagePoolVertices)
+        return;
+    const UINT addTris = std::max(wantTris, pagePoolTris) - pagePoolTris;
+    // Material IDs past the pool (meshes outside it) move up with it.
+    materialIDs.insert(materialIDs.begin() + pagePoolTris, addTris, 0u);
+    for (MeshGPU& m : meshes)
+        if (!m.paged && m.cellOf < 0)
+            m.materialIDBase += addTris;
+    pagePoolTris += addTris;
+    pagePoolVertices = std::max(wantVerts, pagePoolVertices);
+    pagePoolTriAlloc.grow(pagePoolTris);
+    pagePoolVertexAlloc.grow(pagePoolVertices);
+    std::printf("[pager] page pool fitted to the scene: %.1fM triangles, %.1fM vertices\n", pagePoolTris / 1048576.0,
+                pagePoolVertices / 1048576.0);
 }
 
 void Scene::ReleasePagePool() {
@@ -371,6 +471,14 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     size_t totalV = pagePoolVertices, totalI = 3ull * pagePoolTris;
 
     for (size_t m = 0; m < meshes.size(); ++m) {
+        if (meshes[m].cellOf >= 0) {
+            const MeshGPU& owner = meshes[meshes[m].cellOf];
+            meshes[m].globalVertexBase = owner.globalVertexBase;
+            meshes[m].globalIndexBase = owner.globalIndexBase;
+            meshes[m].materialIDBase = owner.materialIDBase;
+            geoOffsets[m] = {owner.globalVertexBase, owner.globalIndexBase, owner.materialIDBase};
+            continue;
+        }
         if (meshes[m].paged) {
             meshes[m].globalVertexBase = meshes[m].poolVertexBase;
             meshes[m].globalIndexBase = 3u * meshes[m].poolTriBase;

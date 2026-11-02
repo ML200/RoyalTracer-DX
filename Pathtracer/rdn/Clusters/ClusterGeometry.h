@@ -86,6 +86,9 @@ class ClusterGeometry {
     ID3D12Resource* records() const { return m_records.Get(); }
     uint64_t ids_used() const { return m_ids.used; }
 
+    // Room for count cluster IDs in all, before any is allocated and before the record table's view is made; false when
+    // IDs are in use already.
+    bool reserve_ids(uint32_t count);
     // Thread-safe.
     bool allocate_ids(uint32_t count, uint32_t& base);
     void free_ids(uint32_t base, uint32_t count);
@@ -146,7 +149,9 @@ class ClusterGeometry {
     };
 
     bool m_enabled = false;
+    DeviceContext* m_ctx = nullptr;
     Config m_cfg;
+    void create_id_tables(uint32_t capacity);
     uint32_t m_slot = 0;
     mutable std::mutex m_idMutex;
     IdRanges m_ids;

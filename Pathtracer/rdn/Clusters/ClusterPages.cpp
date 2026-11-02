@@ -5,6 +5,7 @@
 #include <cfloat>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <numeric>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,11 +15,18 @@ namespace clusters {
 
 namespace {
 constexpr char MAGIC[8] = { 'R', 'D', 'N', 'P', 'A', 'G', 'E', 'S' };
-constexpr uint32_t VERSION = 3;
+constexpr uint32_t VERSION = 4, VERSION_3 = 3;
 // File: header, LodGroup per group, FilePage per group, FileCluster per hierarchy cluster (by offset), the deps, the
-// mesh's micromaps (OmmHeader, descs, histogram, raw data), then the pages: BTriVertex per page vertex, three page-local
-// uint16 indices per triangle, and for an alpha page (flags bit 0), 4-byte aligned, an int32 OMM index per triangle.
+// mesh's micromaps (OmmHeader, descs, histogram, raw data), the extra bytes, then the pages: BTriVertex per page vertex,
+// three page-local uint16 indices per triangle, in a coded file a uint16 material per triangle, and for an alpha page
+// (flags bit 0), 4-byte aligned, an int32 OMM index per triangle. Version 3 files lack the extra bytes and codes.
 constexpr uint32_t PAGE_ALPHA = 1;
+constexpr uint32_t FILE_CODED = 1;
+// A page index: no page data of its own; after the deps the data files' names (a count, then per name its length and
+// characters, relative to the index's folder). FilePage::flags bits 16 and up name a page's file, FileCluster::pad a
+// cluster's cell.
+constexpr uint32_t FILE_INDEX = 2;
+constexpr uint32_t PAGE_FILE_SHIFT = 16;
 // Micromap subdivisions: full detail as the texture asks, where equal micromaps are shared widely; coarser levels' larger
 // triangles rarely share theirs and are seen from further away.
 constexpr int OMM_LEVEL_FULL = 8, OMM_LEVEL_COARSE = 5;
@@ -29,8 +37,10 @@ struct FileHeader {
     char magic[8];
     uint32_t version, groups, clusters, deps;
     uint64_t dataOffset, ommOffset;
-    uint32_t ommBytes, pad;
+    uint32_t ommBytes, flags;
+    uint64_t extraOffset, extraBytes; // version 4
 };
+constexpr uint32_t HEADER_3_BYTES = 48;
 struct FilePage {
     uint64_t offset;
     uint32_t bytes, firstCluster, clusterCount, vertexCount, triCount, depFirst, depCount, flags;
@@ -40,7 +50,7 @@ struct FileCluster {
     uint16_t triCount, uniqueVerts;
     uint32_t pad;
 };
-static_assert(sizeof(FileHeader) == 48 && sizeof(FilePage) == 40 && sizeof(FileCluster) == 24);
+static_assert(sizeof(FileHeader) == 64 && sizeof(FilePage) == 40 && sizeof(FileCluster) == 24);
 static_assert(sizeof(BTriVertex) == 20);
 #if RDN_CLUSTER_API
 constexpr uint64_t CLAS_UNIT = D3D12_RAYTRACING_CLAS_BYTE_ALIGNMENT;
@@ -85,6 +95,14 @@ bool RangeAllocator::allocate(uint64_t count, uint64_t& offset) {
     return false;
 }
 
+void RangeAllocator::grow(uint64_t capacity) {
+    if (capacity <= m_capacity) return;
+    const uint64_t at = m_capacity;
+    m_capacity = capacity;
+    m_used += capacity - at;
+    free(at, capacity - at);
+}
+
 void RangeAllocator::free(uint64_t offset, uint64_t count) {
     if (!count) return;
     auto it = std::lower_bound(m_free.begin(), m_free.end(), std::make_pair(offset, 0ull));
@@ -115,6 +133,9 @@ PoolSizes pool_sizes() {
     s.tris = (uint32_t)env_u64("RDN_PAGE_POOL_TRIS", 4u << 20);
     s.clasBytes = env_u64("RDN_PAGE_POOL_CLAS_MB", 512) << 20;
     s.ommBytes = env_u64("RDN_PAGE_POOL_OMM_MB", 256) << 20;
+    char v[4] = {};
+    s.fixed = GetEnvironmentVariableA("RDN_PAGE_POOL_TRIS", v, sizeof(v)) > 0 ||
+              GetEnvironmentVariableA("RDN_PAGE_POOL_VERTS", v, sizeof(v)) > 0;
     return s;
 }
 
@@ -140,7 +161,64 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
     // alpha page holds an index per triangle into them.
     std::vector<std::vector<int32_t>> pageOmm(groups);
     PageOmm meshOmm;
-    if (mesh.opacity) {
+    const bool coded = !b.codes.empty();
+    // Coded with materials for codes: micromaps per material over its triangles of every page (full detail and the coarser
+    // ones apart), an index per triangle into the mesh's; a page is alpha when any of its triangles' materials is.
+    std::vector<int32_t> triOmm;
+    std::vector<uint8_t> triAlpha;
+    if (mesh.opacity && coded) {
+        const size_t tris = b.indices.size() / 3;
+        triOmm.assign(tris, D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_OPAQUE);
+        triAlpha.assign(tris, 0);
+        std::vector<uint8_t> coarse(tris, 0);
+        for (uint32_t c = 0; c < clusters; ++c)
+            if (b.clusters[c].refined != LOD_NONE)
+                std::fill(coarse.begin() + b.spans[c].firstTri, coarse.begin() + b.spans[c].firstTri + b.spans[c].triCount, 1);
+        std::map<uint32_t, std::vector<uint32_t>> byMaterial[2];
+        for (uint32_t t = 0; t < (uint32_t)tris; ++t) byMaterial[coarse[t]][b.codes[t]].push_back(t);
+        std::unordered_map<uint32_t, uint32_t> local;
+        std::vector<float> uvs;
+        std::vector<uint32_t> idx;
+        for (int pass = 0; pass < 2; ++pass)
+            for (const auto& [code, list] : byMaterial[pass]) {
+                local.clear();
+                uvs.clear();
+                idx.clear();
+                for (uint32_t t : list)
+                    for (uint32_t i = 3 * t; i < 3 * t + 3; ++i) {
+                        const auto [it, fresh] = local.emplace(b.indices[i], (uint32_t)(uvs.size() / 2));
+                        if (fresh) {
+                            float uv[2];
+                            std::memcpy(uv, mesh.vertices + (size_t)b.indices[i] * mesh.stride + mesh.uvOffset, 8);
+                            uvs.insert(uvs.end(), uv, uv + 2);
+                        }
+                        idx.push_back(it->second);
+                    }
+                PageOmm r;
+                if (!mesh.opacity(mesh.materialBase + code, pass ? OMM_LEVEL_COARSE : OMM_LEVEL_FULL, uvs.data(),
+                                  (uint32_t)(uvs.size() / 2), idx.data(), (uint32_t)list.size(), r))
+                    continue;
+                r.indices.resize(list.size(), D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_OPAQUE);
+                const int32_t descBase = (int32_t)meshOmm.descs.size();
+                for (D3D12_RAYTRACING_OPACITY_MICROMAP_DESC d : r.descs) {
+                    d.ByteOffset += (UINT)meshOmm.raw.size();
+                    meshOmm.descs.push_back(d);
+                }
+                meshOmm.raw.insert(meshOmm.raw.end(), r.raw.begin(), r.raw.end());
+                for (const auto& e : r.histogram) {
+                    auto same = std::find_if(meshOmm.histogram.begin(), meshOmm.histogram.end(), [&](const auto& x) {
+                        return x.SubdivisionLevel == e.SubdivisionLevel && x.Format == e.Format;
+                    });
+                    if (same != meshOmm.histogram.end()) same->Count += e.Count;
+                    else meshOmm.histogram.push_back(e);
+                }
+                for (size_t i = 0; i < list.size(); ++i) {
+                    triOmm[list[i]] = r.indices[i] >= 0 ? r.indices[i] + descBase : r.indices[i];
+                    triAlpha[list[i]] = 1;
+                }
+            }
+    }
+    if (mesh.opacity && !coded) {
         std::unordered_map<uint32_t, std::vector<uint32_t>> regionPages;
         std::vector<uint32_t> regionOrder;
         for (uint32_t g : order) {
@@ -244,7 +322,7 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
             fc.group = g;
             fc.refined = b.clusters[c].refined;
             fc.firstTri = (uint32_t)(idx.size() / 3);
-            fc.material = b.regions[s.firstTri] - mesh.materialBase;
+            fc.material = coded ? b.codes[s.firstTri] : b.regions[s.firstTri] - mesh.materialBase;
             fc.triCount = s.triCount;
             fc.uniqueVerts = s.uniqueVerts;
             for (uint32_t i = 3 * s.firstTri; i < 3 * (s.firstTri + s.triCount); ++i) {
@@ -259,8 +337,21 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
         }
         p.vertexCount = (uint32_t)verts.size();
         p.triCount = (uint32_t)(idx.size() / 3);
+        std::vector<uint16_t> codes;
+        if (coded) {
+            bool alpha = false;
+            for (uint32_t c : members[g])
+                for (uint32_t t = b.spans[c].firstTri; t < b.spans[c].firstTri + b.spans[c].triCount; ++t) {
+                    codes.push_back(mesh.codeMaterial ? mesh.codeMaterial(b.codes[t]) : (uint16_t)b.codes[t]);
+                    alpha = alpha || (mesh.opacity ? triAlpha[t] != 0 : mesh.codeAlpha && mesh.codeAlpha(b.codes[t]));
+                }
+            if (alpha)
+                for (uint32_t c : members[g])
+                    for (uint32_t t = b.spans[c].firstTri; t < b.spans[c].firstTri + b.spans[c].triCount; ++t)
+                        pageOmm[g].push_back(mesh.opacity ? triOmm[t] : mesh.codeOmm(b.codes[t]));
+        }
         const size_t at = data.size();
-        data.resize(at + verts.size() * sizeof(BTriVertex) + idx.size() * sizeof(uint16_t));
+        data.resize(at + verts.size() * sizeof(BTriVertex) + (idx.size() + codes.size()) * sizeof(uint16_t));
         auto* out = reinterpret_cast<BTriVertex*>(data.data() + at);
         for (size_t i = 0; i < verts.size(); ++i) {
             const uint8_t* v = mesh.vertices + (size_t)verts[i] * mesh.stride;
@@ -274,6 +365,9 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
             PackedVector::XMStoreHalf2(&out[i].texCoord, XMLoadFloat2(&uv));
         }
         std::memcpy(data.data() + at + verts.size() * sizeof(BTriVertex), idx.data(), idx.size() * sizeof(uint16_t));
+        if (!codes.empty())
+            std::memcpy(data.data() + at + verts.size() * sizeof(BTriVertex) + idx.size() * sizeof(uint16_t), codes.data(),
+                        codes.size() * sizeof(uint16_t));
         if (!pageOmm[g].empty()) {
             p.flags |= PAGE_ALPHA;
             data.resize((data.size() + 3) & ~size_t(3));
@@ -310,7 +404,10 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
                             depList.size() * sizeof(uint32_t);
     h.ommOffset = (tables + 15) & ~15ull;
     h.ommBytes = (uint32_t)ommBlock.size();
-    h.dataOffset = (h.ommOffset + h.ommBytes + 4095) & ~4095ull;
+    h.flags = coded ? FILE_CODED : 0u;
+    h.extraOffset = (h.ommOffset + h.ommBytes + 15) & ~15ull;
+    h.extraBytes = mesh.extra.size();
+    h.dataOffset = (h.extraOffset + h.extraBytes + 4095) & ~4095ull;
     for (FilePage& p : pages) p.offset += h.dataOffset;
 
     // Written aside and renamed, so a crash leaves no half file under the real name.
@@ -330,8 +427,163 @@ bool write_pages(const std::string& path, const LodBuild& b, const BakeMesh& mes
     };
     ok = ok && pad(tables, h.ommOffset);
     ok = ok && (ommBlock.empty() || fwrite(ommBlock.data(), 1, ommBlock.size(), f) == ommBlock.size());
-    ok = ok && pad(h.ommOffset + h.ommBytes, h.dataOffset);
+    ok = ok && pad(h.ommOffset + h.ommBytes, h.extraOffset);
+    ok = ok && (mesh.extra.empty() || fwrite(mesh.extra.data(), 1, mesh.extra.size(), f) == mesh.extra.size());
+    ok = ok && pad(h.extraOffset + h.extraBytes, h.dataOffset);
     ok = ok && fwrite(data.data(), 1, data.size(), f) == data.size();
+    ok = fclose(f) == 0 && ok;
+    if (ok) {
+        std::filesystem::rename(tmp, path, ec);
+        ok = !ec;
+    }
+    if (!ok) std::filesystem::remove(tmp, ec);
+    return ok;
+}
+
+namespace {
+void encode_vertex(BTriVertex& out, const BakeMesh& mesh, uint32_t v, const float* position) {
+    using namespace DirectX;
+    const uint8_t* src = mesh.vertices + (size_t)v * mesh.stride;
+    XMFLOAT3 pos, n;
+    XMFLOAT2 uv;
+    std::memcpy(&pos, position ? (const void*)position : (const void*)src, 12);
+    std::memcpy(&n, src + mesh.normalOffset, 12);
+    std::memcpy(&uv, src + mesh.uvOffset, 8);
+    out.vertex = pos;
+    out.packedNormal = EncodeNormalOct(XMVector3Normalize(XMLoadFloat3(&n)));
+    PackedVector::XMStoreHalf2(&out.texCoord, XMLoadFloat2(&uv));
+}
+} // namespace
+
+bool serialize_page(const PageCluster* clusters, uint32_t count, const BakeMesh& mesh, std::vector<uint8_t>& out,
+                    PageLayout& layout) {
+    std::unordered_map<uint32_t, uint16_t> local;
+    std::vector<uint32_t> verts;
+    std::vector<uint16_t> idx, codes;
+    std::vector<int32_t> omm;
+    layout = PageLayout{};
+    for (uint32_t c = 0; c < count; ++c) {
+        const PageCluster& pc = clusters[c];
+        const size_t first = verts.size();
+        layout.spans.push_back(Span{ (uint32_t)(idx.size() / 3), (uint16_t)pc.triCount, 0 });
+        for (uint32_t i = 0; i < 3 * pc.triCount; ++i) {
+            const auto [it, fresh] = local.emplace(pc.indices[i], (uint16_t)verts.size());
+            if (fresh) {
+                if (verts.size() == 0xFFFF) return false;
+                verts.push_back(pc.indices[i]);
+            }
+            idx.push_back(it->second);
+        }
+        // Unique vertices of the cluster alone.
+        std::vector<uint32_t> u(pc.indices, pc.indices + 3 * pc.triCount);
+        std::sort(u.begin(), u.end());
+        layout.spans.back().uniqueVerts = (uint16_t)(std::unique(u.begin(), u.end()) - u.begin());
+        (void)first;
+        for (uint32_t t = 0; t < pc.triCount; ++t) {
+            codes.push_back(mesh.codeMaterial(pc.codes[t]));
+            layout.alpha = layout.alpha || mesh.codeAlpha(pc.codes[t]);
+        }
+    }
+    if (layout.alpha)
+        for (uint32_t c = 0; c < count; ++c)
+            for (uint32_t t = 0; t < clusters[c].triCount; ++t) omm.push_back(mesh.codeOmm(clusters[c].codes[t]));
+    layout.vertexCount = (uint32_t)verts.size();
+    layout.triCount = (uint32_t)(idx.size() / 3);
+    out.resize(verts.size() * sizeof(BTriVertex) + (idx.size() + codes.size()) * sizeof(uint16_t));
+    auto* v = reinterpret_cast<BTriVertex*>(out.data());
+    for (size_t i = 0; i < verts.size(); ++i) encode_vertex(v[i], mesh, verts[i], nullptr);
+    std::memcpy(out.data() + verts.size() * sizeof(BTriVertex), idx.data(), idx.size() * sizeof(uint16_t));
+    std::memcpy(out.data() + verts.size() * sizeof(BTriVertex) + idx.size() * sizeof(uint16_t), codes.data(),
+                codes.size() * sizeof(uint16_t));
+    if (!omm.empty()) {
+        out.resize((out.size() + 3) & ~size_t(3));
+        const size_t o = out.size();
+        out.resize(o + omm.size() * sizeof(int32_t));
+        std::memcpy(out.data() + o, omm.data(), omm.size() * sizeof(int32_t));
+    }
+    return true;
+}
+
+bool write_page_index(const std::string& path, const std::vector<LodGroup>& groups, const std::vector<IndexPage>& pages,
+                      const std::vector<LodCluster>& clusters, const std::vector<Span>& spans,
+                      const std::vector<std::string>& files, const std::vector<uint32_t>& cells,
+                      const std::vector<uint8_t>& extra) {
+    const uint32_t groupCount = (uint32_t)groups.size(), clusterCount = (uint32_t)clusters.size();
+    // Clusters by group, a group's in the order given.
+    std::vector<uint32_t> order(clusterCount);
+    std::iota(order.begin(), order.end(), 0u);
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return clusters[a].group < clusters[b].group; });
+    std::vector<std::vector<uint32_t>> deps(groupCount);
+    for (const LodCluster& c : clusters)
+        if (c.refined != LOD_NONE) deps[c.refined].push_back(c.group);
+    std::vector<FilePage> fp(groupCount);
+    std::vector<FileCluster> fc(clusterCount);
+    std::vector<uint32_t> depList;
+    std::vector<uint8_t> seen(groupCount, 0);
+    for (uint32_t i = 0; i < clusterCount; ++i) {
+        const uint32_t c = order[i], g = clusters[c].group;
+        if (!seen[g]) {
+            seen[g] = 1;
+            fp[g].firstCluster = i;
+        }
+        ++fp[g].clusterCount;
+        fc[i] = FileCluster{ g, clusters[c].refined, spans[c].firstTri, 0u, spans[c].triCount, spans[c].uniqueVerts, cells[c] };
+    }
+    for (uint32_t g = 0; g < groupCount; ++g) {
+        std::sort(deps[g].begin(), deps[g].end());
+        deps[g].erase(std::unique(deps[g].begin(), deps[g].end()), deps[g].end());
+        FilePage& p = fp[g];
+        p.offset = pages[g].offset;
+        p.bytes = pages[g].bytes;
+        p.vertexCount = pages[g].vertexCount;
+        p.triCount = pages[g].triCount;
+        p.depFirst = (uint32_t)depList.size();
+        p.depCount = (uint32_t)deps[g].size();
+        p.flags = (pages[g].alpha ? PAGE_ALPHA : 0u) | pages[g].file << PAGE_FILE_SHIFT;
+        depList.insert(depList.end(), deps[g].begin(), deps[g].end());
+    }
+    std::vector<uint8_t> names;
+    auto put = [&](const void* src, size_t n) {
+        const size_t o = names.size();
+        names.resize(o + n);
+        if (n) std::memcpy(names.data() + o, src, n);
+    };
+    const uint32_t fileCount = (uint32_t)files.size();
+    put(&fileCount, 4);
+    for (const std::string& f : files) {
+        const uint16_t n = (uint16_t)f.size();
+        put(&n, 2);
+        put(f.data(), n);
+    }
+
+    FileHeader h = {};
+    std::memcpy(h.magic, MAGIC, sizeof(MAGIC));
+    h.version = VERSION;
+    h.groups = groupCount;
+    h.clusters = clusterCount;
+    h.deps = (uint32_t)depList.size();
+    h.flags = FILE_CODED | FILE_INDEX;
+    const uint64_t tables = sizeof(h) + groupCount * (sizeof(LodGroup) + sizeof(FilePage)) + clusterCount * sizeof(FileCluster) +
+                            depList.size() * sizeof(uint32_t);
+    h.ommOffset = tables + names.size();
+    h.ommBytes = 0;
+    h.extraOffset = (h.ommOffset + 15) & ~15ull;
+    h.extraBytes = extra.size();
+    h.dataOffset = h.extraOffset + h.extraBytes;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    const std::string tmp = path + ".tmp";
+    FILE* f = nullptr;
+    if (fopen_s(&f, tmp.c_str(), "wb") || !f) return false;
+    bool ok = fwrite(&h, sizeof(h), 1, f) == 1;
+    ok = ok && fwrite(groups.data(), sizeof(LodGroup), groupCount, f) == groupCount;
+    ok = ok && fwrite(fp.data(), sizeof(FilePage), groupCount, f) == groupCount;
+    ok = ok && fwrite(fc.data(), sizeof(FileCluster), clusterCount, f) == clusterCount;
+    ok = ok && (depList.empty() || fwrite(depList.data(), sizeof(uint32_t), depList.size(), f) == depList.size());
+    ok = ok && fwrite(names.data(), 1, names.size(), f) == names.size();
+    const std::vector<uint8_t> zeros((size_t)(h.extraOffset - h.ommOffset), 0);
+    ok = ok && (zeros.empty() || fwrite(zeros.data(), 1, zeros.size(), f) == zeros.size());
+    ok = ok && (extra.empty() || fwrite(extra.data(), 1, extra.size(), f) == extra.size());
     ok = fclose(f) == 0 && ok;
     if (ok) {
         std::filesystem::rename(tmp, path, ec);
@@ -345,7 +597,10 @@ bool read_pages(const std::string& path, Lod& lod, PagedSource& src) {
     const HANDLE file = open_read(path);
     if (file == INVALID_HANDLE_VALUE) return false;
     FileHeader h = {};
-    bool ok = read_at(file, 0, &h, sizeof(h)) && std::memcmp(h.magic, MAGIC, sizeof(MAGIC)) == 0 && h.version == VERSION;
+    bool ok = read_at(file, 0, &h, HEADER_3_BYTES) && std::memcmp(h.magic, MAGIC, sizeof(MAGIC)) == 0 &&
+              (h.version == VERSION || h.version == VERSION_3);
+    if (ok && h.version == VERSION_3) h.flags = 0;
+    ok = ok && (h.version == VERSION_3 || read_at(file, HEADER_3_BYTES, (uint8_t*)&h + HEADER_3_BYTES, sizeof(h) - HEADER_3_BYTES));
     std::vector<FilePage> pages;
     std::vector<FileCluster> fc;
     if (ok) {
@@ -353,7 +608,7 @@ bool read_pages(const std::string& path, Lod& lod, PagedSource& src) {
         pages.resize(h.groups);
         fc.resize(h.clusters);
         lod.deps.resize(h.deps);
-        uint64_t at = sizeof(h);
+        uint64_t at = h.version == VERSION_3 ? HEADER_3_BYTES : sizeof(h);
         ok = read_at(file, at, lod.groups.data(), h.groups * (uint32_t)sizeof(LodGroup));
         at += h.groups * sizeof(LodGroup);
         ok = ok && read_at(file, at, pages.data(), h.groups * (uint32_t)sizeof(FilePage));
@@ -362,10 +617,33 @@ bool read_pages(const std::string& path, Lod& lod, PagedSource& src) {
         at += h.clusters * sizeof(FileCluster);
         ok = ok && (h.deps == 0 || read_at(file, at, lod.deps.data(), h.deps * (uint32_t)sizeof(uint32_t)));
     }
-    std::vector<uint8_t> omm(ok ? h.ommBytes : 0);
+    std::vector<uint8_t> omm(ok && !(h.flags & FILE_INDEX) ? h.ommBytes : 0);
     ok = ok && (omm.empty() || read_at(file, h.ommOffset, omm.data(), h.ommBytes));
+    // An index's data files and cells.
+    src.files.clear();
+    src.cells.clear();
+    if (ok && (h.flags & FILE_INDEX)) {
+        const uint64_t at = sizeof(h) + h.groups * (sizeof(LodGroup) + sizeof(FilePage)) + h.clusters * sizeof(FileCluster) +
+                            (uint64_t)h.deps * sizeof(uint32_t);
+        std::vector<uint8_t> names((size_t)(h.ommOffset - at));
+        ok = read_at(file, at, names.data(), (uint32_t)names.size()) && names.size() >= 4;
+        size_t o = 0;
+        uint32_t count = 0;
+        if (ok) std::memcpy(&count, names.data(), 4), o = 4;
+        const std::filesystem::path dir = std::filesystem::path(path).parent_path();
+        for (uint32_t i = 0; ok && i < count; ++i) {
+            uint16_t n = 0;
+            ok = o + 2 <= names.size();
+            if (ok) std::memcpy(&n, names.data() + o, 2), o += 2;
+            ok = ok && o + n <= names.size();
+            if (ok) src.files.push_back((dir / std::string(names.data() + o, names.data() + o + n)).string()), o += n;
+        }
+    }
+    src.extra.assign(ok && h.version != VERSION_3 ? (size_t)h.extraBytes : 0, 0);
+    ok = ok && (src.extra.empty() || read_at(file, h.extraOffset, src.extra.data(), (uint32_t)src.extra.size()));
     CloseHandle(file);
     if (!ok) return false;
+    src.coded = (h.flags & FILE_CODED) != 0;
     src.omm = PageOmm{};
     if (omm.size() >= sizeof(OmmHeader)) {
         OmmHeader oh;
@@ -392,11 +670,11 @@ bool read_pages(const std::string& path, Lod& lod, PagedSource& src) {
     for (uint32_t g = 0; g < h.groups; ++g) {
         const FilePage& p = pages[g];
         src.pages[g] = PageEntry{ p.offset, p.bytes, p.firstCluster, p.clusterCount, p.vertexCount, p.triCount,
-                                  (p.flags & PAGE_ALPHA) != 0 };
+                                  (p.flags & PAGE_ALPHA) != 0, (uint16_t)(p.flags >> PAGE_FILE_SHIFT) };
         if ((uint64_t)p.depFirst + p.depCount > fileDeps.size()) return false;
         lod.depFirst[g] = (uint32_t)lod.deps.size();
         lod.deps.insert(lod.deps.end(), fileDeps.begin() + p.depFirst, fileDeps.begin() + p.depFirst + p.depCount);
-        if (lod.groups[g].error == FLT_MAX) roots += p.clusterCount;
+        if (lod.groups[g].error == FLT_MAX && !(h.flags & FILE_INDEX)) roots += p.clusterCount;
     }
     lod.depFirst[h.groups] = (uint32_t)lod.deps.size();
     lod.clusters.resize(h.clusters);
@@ -406,6 +684,10 @@ bool read_pages(const std::string& path, Lod& lod, PagedSource& src) {
         lod.clusters[c] = LodCluster{ fc[c].group, fc[c].refined };
         src.spans[c] = Span{ fc[c].firstTri, fc[c].triCount, fc[c].uniqueVerts };
         src.materials[c] = fc[c].material;
+    }
+    if (h.flags & FILE_INDEX) {
+        src.cells.resize(h.clusters);
+        for (uint32_t c = 0; c < h.clusters; ++c) src.cells[c] = fc[c].pad;
     }
     lod.paged = true;
     lod.base = lod.fixed + roots;
@@ -427,10 +709,10 @@ D3D12_RTAS_CLUSTER_LIMITS page_limits(const PagedSource& src, uint32_t g) {
 }
 } // namespace
 
-const int32_t* Pager::omm_indices(const PageEntry& e, const uint8_t* data) {
+const int32_t* Pager::omm_indices(const PageEntry& e, const uint8_t* data, bool coded) {
     if (!e.alpha) return nullptr;
     return reinterpret_cast<const int32_t*>(
-        data + align((uint64_t)e.vertexCount * sizeof(BTriVertex) + 3ull * e.triCount * sizeof(uint16_t), 4));
+        data + align((uint64_t)e.vertexCount * sizeof(BTriVertex) + (coded ? 4ull : 3ull) * e.triCount * sizeof(uint16_t), 4));
 }
 
 void Pager::omm_prebuild(const PageOmm& o, uint64_t& result, uint64_t& scratch) const {
@@ -473,7 +755,8 @@ Pager::~Pager() {
     m_ioWake.notify_all();
     for (auto& t : m_ioThreads) t.join();
     for (Mesh& m : m_meshes)
-        if (m.file != INVALID_HANDLE_VALUE) CloseHandle(m.file);
+        for (HANDLE f : m.files)
+            if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
 }
 
 void Pager::init(DeviceContext* ctx, ClusterGeometry* geometry, const Geometry& g, const Config& cfg) {
@@ -520,8 +803,10 @@ void Pager::add_mesh(Lod* lod, PagedSource&& source, uint32_t triBase, bool omm)
     m.omm = omm;
     m.lod = lod;
     m.src = std::move(source);
-    m.file = open_read(m.src.path);
-    if (m.file == INVALID_HANDLE_VALUE) throw std::runtime_error("pager: cannot open " + m.src.path);
+    for (const std::string& path : m.src.files.empty() ? std::vector<std::string>{ m.src.path } : m.src.files) {
+        m.files.push_back(open_read(path));
+        if (m.files.back() == INVALID_HANDLE_VALUE) throw std::runtime_error("pager: cannot open " + path);
+    }
     m.triBase = triBase;
     m.materialBase = m.src.materialBase;
     for (const PageEntry& e : m.src.pages) m.omm = m.omm || e.alpha;
@@ -573,14 +858,16 @@ void Pager::upload(Mesh& m, uint32_t g, const uint8_t* data, ID3D12GraphicsComma
     copy->CopyBufferRegion(m_geo.indices, p.tri * 3 * sizeof(uint32_t), staging, stagingOff + vbytes, ibytes);
     // Material IDs at the triangles' positions; records as flat IDs from the mesh's own range, which wrap below it.
     std::vector<uint32_t>& mats = *m_geo.materialIds;
+    const uint16_t* codes = m.src.coded ? local + 3ull * e.triCount : nullptr;
     thread_local std::vector<Span> records;
     records.resize(e.clusterCount);
     for (uint32_t k = 0; k < e.clusterCount; ++k) {
         const Span& s = m.src.spans[e.firstCluster + k];
         const uint32_t material = m.materialBase + m.src.materials[e.firstCluster + k];
         for (uint32_t t = 0; t < s.triCount; ++t) {
-            mats[p.tri + s.firstTri + t] = material;
-            if (gpuMaterials) gpuMaterials[p.tri + s.firstTri + t] = material;
+            const uint32_t mt = codes ? m.materialBase + codes[s.firstTri + t] : material;
+            mats[p.tri + s.firstTri + t] = mt;
+            if (gpuMaterials) gpuMaterials[p.tri + s.firstTri + t] = mt;
         }
         records[k] = Span{ (uint32_t)p.tri + s.firstTri - m.triBase, s.triCount, s.uniqueVerts };
     }
@@ -591,9 +878,10 @@ void Pager::upload(Mesh& m, uint32_t g, const uint8_t* data, ID3D12GraphicsComma
         info[k] = cluster_info(p.pinned ? CLUSTER_KIND_ROOT : CLUSTER_KIND_STREAMED, m.levels[e.firstCluster + k]);
     m_geometry->write_info(m.lod->idBase + e.firstCluster, info.data(), e.clusterCount);
     if (e.alpha) {
-        const int32_t* src = omm_indices(e, data);
+        const int32_t* src = omm_indices(e, data, m.src.coded);
+        const bool array = m.ommUnits || m.src.ommArray;
         for (uint32_t t = 0; t < e.triCount; ++t)
-            m_ommIndexMapped[p.tri + t] = src[t] >= 0 && !m.ommUnits
+            m_ommIndexMapped[p.tri + t] = src[t] >= 0 && !array
                                               ? D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_UNKNOWN_OPAQUE
                                               : src[t];
     }
@@ -612,7 +900,9 @@ clusters::Mesh Pager::build_desc(const Mesh& m, uint32_t g) const {
     if (e.alpha) {
         d.opaqueTriCount = 0;
         d.alphaGeometry = 1;
-        d.ommArray = m.ommUnits ? m_ommPool->GetGPUVirtualAddress() + m.ommArray * OMM_UNIT : 0;
+        d.ommArray = m.src.ommArray ? m.src.ommArray
+                     : m.ommUnits   ? m_ommPool->GetGPUVirtualAddress() + m.ommArray * OMM_UNIT
+                                    : 0;
         d.ommIndices = m_ommIndexPool->GetGPUVirtualAddress() + m.pages[g].tri * sizeof(int32_t);
     } else {
         d.opaqueTriCount = e.triCount;
@@ -865,7 +1155,7 @@ void Pager::load_roots(ID3D12GraphicsCommandList4* cl, const std::function<void(
                 throw std::runtime_error("pager: CLAS prebuild query failed");
             sz.push_back(s);
             std::vector<uint8_t>& d = data.emplace_back(e.bytes);
-            if (!read_at(m.file, e.offset, d.data(), e.bytes)) throw std::runtime_error("pager: cannot read " + m.src.path);
+            if (!read_at(m.files[e.file], e.offset, d.data(), e.bytes)) throw std::runtime_error("pager: cannot read " + m.src.path);
             m_stats.readBytes += e.bytes;
             staging += stagingBytes(e);
             arena += s.clas;
@@ -1091,7 +1381,7 @@ void Pager::installs(std::vector<LodRequest>& requests, ID3D12GraphicsCommandLis
             const PageEntry& e = m.src.pages[q.group];
             p.state = State::Reading;
             ++m_reading;
-            m_ioQueue.push_back(Read{ q.mesh, q.group, m.file, e.offset, e.bytes, {}, false });
+            m_ioQueue.push_back(Read{ q.mesh, q.group, m.files[e.file], e.offset, e.bytes, {}, false });
             ++issued;
         }
     }

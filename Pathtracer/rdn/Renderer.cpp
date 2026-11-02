@@ -1232,7 +1232,8 @@ void Renderer::LoadPagedRoots() {
     g.materialIds = &m_scene.materialIDs;
     g.materialIdBuffer = std::addressof(m_scene.materialIndexBuffer); // ComPtr's operator& would release it
     clusters::Pager::Config cfg;
-    cfg.clasPoolBytes = clusters::pool_sizes().clasBytes;
+    // The CLAS of a full pool: about 15 bytes a triangle (Bistro, Greenfield), with room.
+    cfg.clasPoolBytes = std::max(clusters::pool_sizes().clasBytes, (uint64_t)m_scene.pagePoolTris * 20ull);
     m_pager.init(&m_ctx, &m_clusters, g, cfg);
     for (UINT m : m_pagedMeshes) {
         MeshGPU& mesh = m_scene.meshes[m];
@@ -1333,7 +1334,16 @@ void Renderer::UpdateSceneLod() {
         for (size_t i = 0; i < inst.size(); ++i) {
             m_lodMeshOf[i] = inst[i].meshIndex;
             MeshGPU& mesh = m_scene.meshes[inst[i].meshIndex];
-            if (mesh.lod.empty())
+            // A cell traces its share of its owner's cut; the owner's own instance holds only its fixed clusters.
+            if (mesh.cellOf >= 0 && m_lodGpuMode && mesh.blas && i < m_scene.tlasInstances.size()) {
+                const UINT hitGroup = m_scene.tlasInstances[i].hitGroupContribution;
+                gpuSet.push_back({&m_scene.meshes[mesh.cellOf].lod, mesh.blas->GetGPUVirtualAddress(), (uint32_t)i, hitGroup,
+                                  mesh.cellIndex, mesh.cells.get()});
+                m_lodGpuInstance.push_back((UINT)i);
+                m_lodGpuHitGroup.push_back(hitGroup);
+                continue;
+            }
+            if (mesh.lod.empty() || mesh.lod.celled)
                 continue;
             if (m_lodGpuMode && mesh.lod.paged && mesh.blas && i < m_scene.tlasInstances.size()) {
                 const UINT hitGroup = m_scene.tlasInstances[i].hitGroupContribution;
@@ -1451,6 +1461,9 @@ void Renderer::UpdateSceneLod() {
                     "px, x%.2f for %.0f%% pool use)%s\n",
                     (unsigned long long)vg.cutClusters, (unsigned long long)vg.baseClusters, vg.builds, vg.deferred,
                     vg.tlasUpdates, threshold, m_lodErrorScale, 100.0f * vg.pressure, gpu ? " on the GPU" : "");
+    if (gpu)
+        std::printf("[lod] BLAS rings %.0f of %.0f MB, %u handovers failed, LOD work %.2f ms\n", m_lodGpu.ring_used() / 1048576.0,
+                    m_lodGpu.ring_bytes() / 1048576.0, m_lodGpu.ring_failures(), m_lodGpu.last().gpuMs);
 }
 
 // The test forest: count copies of the scatter's object (its pieces, a set each, with the same transforms) on a jittered

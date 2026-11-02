@@ -798,6 +798,8 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
     if (scene.pagePoolTris &&
         std::none_of(scene.meshes.begin(), scene.meshes.end(), [](const MeshGPU& m) { return m.paged; }))
         scene.ReleasePagePool();
+    else
+        scene.FitPagePool();
 
     {
         SCOPE_TIMER("OMM Bake");

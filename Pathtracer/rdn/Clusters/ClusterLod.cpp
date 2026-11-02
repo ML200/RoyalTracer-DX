@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <meshoptimizer.h>
 #define CLUSTERLOD_IMPLEMENTATION
-#include <clusterlod.h>
+#include "ClodBuild.h"
 
 namespace clusters {
 
@@ -26,6 +26,7 @@ struct RegionLod {
     std::vector<float> positions;  // per entry of indices, as its group was emitted
     std::vector<RegionCluster> clusters;
     std::vector<LodGroup> groups;
+    std::vector<uint32_t> codes;   // per triangle of indices, with the source's codes
 };
 
 // One region's hierarchy, over a compact copy of its vertices.
@@ -47,14 +48,21 @@ void build_region(const LodSource& src, const std::vector<uint8_t>& locked, cons
         std::memcpy(&pos[i * 3], v, 12);
         std::memcpy(&attr[i * 5], v + src.normalOffset, 12);
         std::memcpy(&attr[i * 5 + 3], v + src.uvOffset, 8);
-        lock[i] = locked[remap[verts[i]]] ? (uint8_t)meshopt_SimplifyVertex_Lock : (uint8_t)0;
+        lock[i] = (locked[remap[verts[i]]] ? (uint8_t)meshopt_SimplifyVertex_Lock : (uint8_t)0) |
+                  (src.vertexFlags ? src.vertexFlags[verts[i]] : (uint8_t)0);
     }
     std::vector<uint32_t> idx(r.tris.size() * 3);
     for (size_t i = 0; i < r.tris.size(); ++i)
         for (int k = 0; k < 3; ++k) idx[i * 3 + k] = local(src.indices[3ull * r.tris[i] + k]);
 
+    std::vector<uint32_t> triCodes;
+    if (src.codes) {
+        triCodes.resize(r.tris.size());
+        for (size_t i = 0; i < r.tris.size(); ++i) triCodes[i] = src.codes[r.tris[i]];
+    }
+
     // The meshoptimizer demo's setup: normals weigh in, UV seams are protected from permissive collapses.
-    static const float weights[3] = { 0.5f, 0.5f, 0.5f };
+    const float* weights = src.attributeWeights;
     clodMesh mesh = {};
     mesh.indices = idx.data();
     mesh.index_count = idx.size();
@@ -66,12 +74,25 @@ void build_region(const LodSource& src, const std::vector<uint8_t>& locked, cons
     mesh.vertex_lock = lock.data();
     mesh.attribute_weights = weights;
     mesh.attribute_count = 3;
-    mesh.attribute_protect_mask = (1u << 3) | (1u << 4);
+    mesh.attribute_protect_mask = src.protectUvSeams ? (1u << 3) | (1u << 4) : 0u;
     clodConfig config = clodDefaultConfigRT(MAX_TRIS);
+    // Groups that fail to simplify try again with other neighbours, so a hierarchy ends at a single root more often; but
+    // never sloppily (vertex clustering, blind to UVs and the shape's detail), which Nanite does not either.
+    config.simplify_carry = 3;
+    config.simplify_fallback_sloppy = false;
     if (src.foliage && src.foliage(r.region)) {
         // Dilation moves positions in place, so each group's are copied as it is emitted.
         config.simplify_dilate_borders = true;
         config.simplify_preserve_folds = true;
+    }
+
+    if (src.codes) {
+        mesh.triangle_codes = triCodes.data();
+        mesh.coarsen = [](void* ctx, unsigned int code, int level) {
+            const LodSource& s = *static_cast<const LodSource*>(ctx);
+            return s.coarsen ? s.coarsen(code, (uint32_t)level) : code;
+        };
+        mesh.coarsen_context = const_cast<LodSource*>(&src);
     }
 
     clodBuild(config, mesh, [&](clodGroup group, const clodCluster* cl, size_t count) -> int {
@@ -79,13 +100,14 @@ void build_region(const LodSource& src, const std::vector<uint8_t>& locked, cons
         const clodBounds& b = group.simplified;
         r.groups.push_back(LodGroup{ { b.center[0], b.center[1], b.center[2] }, b.radius, b.error });
         for (size_t i = 0; i < count; ++i) {
-            RegionCluster c{ (uint32_t)(r.indices.size() / 3), (uint32_t)(cl[i].index_count / 3), (uint32_t)cl[i].vertex_count,
-                             g, cl[i].refined < 0 ? LOD_NONE : (uint32_t)cl[i].refined };
+            r.clusters.push_back(RegionCluster{ (uint32_t)(r.indices.size() / 3), (uint32_t)(cl[i].index_count / 3),
+                                                (uint32_t)cl[i].vertex_count, g,
+                                                cl[i].refined < 0 ? LOD_NONE : (uint32_t)cl[i].refined });
+            if (cl[i].codes) r.codes.insert(r.codes.end(), cl[i].codes, cl[i].codes + cl[i].index_count / 3);
             for (size_t k = 0; k < cl[i].index_count; ++k) {
                 r.indices.push_back(verts[cl[i].indices[k]]);
                 r.positions.insert(r.positions.end(), &pos[cl[i].indices[k] * 3ull], &pos[cl[i].indices[k] * 3ull] + 3);
             }
-            r.clusters.push_back(c);
         }
         return (int)g;
     });
@@ -112,6 +134,7 @@ void build_lod(const LodSource& src, LodBuild& out) {
     std::vector<RegionLod> regions;
     for (uint32_t t = 0; t < src.triCount; ++t) {
         const uint32_t reg = src.regions[t];
+        if (reg == NO_REGION && !src.lockOutside) continue;
         for (int k = 0; k < 3; ++k) {
             const uint32_t p = remap[src.indices[3ull * t + k]];
             if (owner[p] == UNSEEN) owner[p] = reg;
@@ -148,6 +171,8 @@ void build_lod(const LodSource& src, LodBuild& out) {
         out.positions.insert(out.positions.end(), r.positions.begin() + 9ull * c.firstTri,
                              r.positions.begin() + 9ull * (c.firstTri + c.triCount));
         out.regions.insert(out.regions.end(), c.triCount, r.region);
+        if (!r.codes.empty())
+            out.codes.insert(out.codes.end(), r.codes.begin() + c.firstTri, r.codes.begin() + c.firstTri + c.triCount);
     };
     for (const RegionLod& r : regions) {
         for (const RegionCluster& c : r.clusters)
@@ -160,6 +185,71 @@ void build_lod(const LodSource& src, LodBuild& out) {
     for (const auto& [r, base] : later)
         for (const RegionCluster& c : r->clusters)
             if (c.refined != LOD_NONE) emit(*r, c, base);
+}
+
+void build_lod_stage(const LodStageMesh& m, const std::vector<LodSurvivor>* in, const LodStageEmit& emit,
+                     std::vector<LodSurvivor>* out) {
+    static const float weights[3] = { 0.5f, 0.5f, 0.5f };
+    clodMesh mesh = {};
+    mesh.indices = m.indices;
+    mesh.index_count = 3ull * m.triCount;
+    mesh.vertex_count = m.vertexCount;
+    mesh.vertex_positions = m.positions;
+    mesh.vertex_positions_stride = sizeof(float) * 3;
+    mesh.vertex_attributes = m.attributes;
+    mesh.vertex_attributes_stride = sizeof(float) * 5;
+    mesh.vertex_lock = m.flags;
+    mesh.attribute_weights = weights;
+    mesh.attribute_count = 3;
+    mesh.triangle_codes = m.codes;
+    if (m.coarsen) {
+        mesh.coarsen = [](void* ctx, unsigned int code, int level) {
+            return (*static_cast<const std::function<uint32_t(uint32_t, uint32_t)>*>(ctx))(code, (uint32_t)level);
+        };
+        mesh.coarsen_context = const_cast<std::function<uint32_t(uint32_t, uint32_t)>*>(&m.coarsen);
+    }
+    clodConfig config = clodDefaultConfigRT(MAX_TRIS);
+    config.simplify_carry = 3;
+    config.simplify_fallback_sloppy = false;
+    std::vector<clodSurvivor> survivorsIn, survivorsOut;
+    if (in) {
+        survivorsIn.resize(in->size());
+        for (size_t i = 0; i < in->size(); ++i) {
+            const LodSurvivor& v = (*in)[i];
+            clodSurvivor& c = survivorsIn[i];
+            c.indices = v.indices;
+            c.codes = v.codes;
+            c.refined = v.refined == LOD_NONE ? -1 : (int)v.refined;
+            c.level = (int)v.level;
+            c.stuck = 0;
+            c.bounds = clodBounds{ { v.bounds.center[0], v.bounds.center[1], v.bounds.center[2] }, v.bounds.radius, v.bounds.error };
+        }
+    }
+    std::vector<LodStageCluster> clusters;
+    clodBuildStage(config, mesh, survivorsIn.data(), survivorsIn.size(), (void*)&emit,
+                   [](void* ctx, clodGroup group, const clodCluster* cl, size_t count) -> int {
+                       thread_local std::vector<LodStageCluster> list;
+                       list.resize(count);
+                       for (size_t i = 0; i < count; ++i)
+                           list[i] = LodStageCluster{ cl[i].indices, cl[i].codes, (uint32_t)(cl[i].index_count / 3),
+                                                      (uint32_t)cl[i].vertex_count,
+                                                      cl[i].refined < 0 ? LOD_NONE : (uint32_t)cl[i].refined,
+                                                      (uint32_t)cl[i].level };
+                       const clodBounds& b = group.simplified;
+                       const LodGroup g{ { b.center[0], b.center[1], b.center[2] }, b.radius, b.error };
+                       return (int)(*static_cast<const LodStageEmit*>(ctx))(g, list.data(), (uint32_t)count);
+                   },
+                   out ? &survivorsOut : nullptr);
+    if (out)
+        for (clodSurvivor& c : survivorsOut) {
+            LodSurvivor v;
+            v.indices = std::move(c.indices);
+            v.codes = std::move(c.codes);
+            v.refined = c.refined < 0 ? LOD_NONE : (uint32_t)c.refined;
+            v.level = (uint32_t)c.level;
+            v.bounds = LodGroup{ { c.bounds.center[0], c.bounds.center[1], c.bounds.center[2] }, c.bounds.radius, c.bounds.error };
+            out->push_back(std::move(v));
+        }
 }
 
 void lod_levels(const Lod& lod, std::vector<uint8_t>& levels) {

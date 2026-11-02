@@ -88,11 +88,11 @@ class MainScene : public SceneDefinition {
         if (GetEnvironmentVariableA("RT_SCENE", scene, sizeof(scene)) > 0)
             return {{scene, XMMatrixIdentity(), "RT_SCENE"}};
         return {
-            /*{"studio2.glb",
-             XMMatrixIdentity(), "TWR"},*/
-            MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
+            {"island.glb",
+             XMMatrixIdentity(), "TWR"},
+            /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
-                           XMMatrixIdentity(), "Night City"),
+                           XMMatrixIdentity(), "Night City"),*/
         };
     }
     void Init(SceneManager& sm, Renderer& r) override {

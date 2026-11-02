@@ -43,6 +43,12 @@ struct MeshGPU {
     // triangles, in its own range of the scene's page pool.
     bool paged = false;
     bool lodAlpha = false; // some of its hierarchy is alpha-tested or transmissive (alpha pages)
+    // A cell of a celled paged mesh (cellOf, the owner's index): no geometry of its own, its instance traces the owner's
+    // hierarchy clusters of cell cellIndex (the owner's pagedSource cells, kept in cells) that are in the cut; blas is for
+    // an empty share.
+    int cellOf = -1;
+    uint32_t cellIndex = 0;
+    std::shared_ptr<const std::vector<uint32_t>> cells;
     UINT poolVertexBase = 0, poolTriBase = 0;
     std::shared_ptr<clusters::PagedSource> pagedSource;
     XMFLOAT3 boundsMin = {0, 0, 0}, boundsMax = {0, 0, 0}; // object space
@@ -61,6 +67,10 @@ struct MeshGPU {
     // Alpha regions join too: foliage(region) simplifies with dilated borders, opacity bakes their pages' micromaps.
     bool BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase, std::function<bool(uint32_t)> foliage,
                        decltype(clusters::BakeMesh::opacity) opacity);
+    // A paged mesh from a page file read elsewhere (pages and source from read_pages with pages.fixed 0) and the triangles
+    // kept outside its hierarchy (absolute material IDs, the opaque ones first), which become its fixed clusters.
+    void AdoptPages(clusters::Lod&& pages, std::shared_ptr<clusters::PagedSource> source, std::vector<Vertex> vertices,
+                    std::vector<UINT> indices, std::vector<UINT> materials, UINT opaqueTris);
 };
 
 struct SceneInstance {
@@ -128,6 +138,10 @@ struct Scene {
     D3D12_RESOURCE_STATES globalReadState = D3D12_RESOURCE_STATE_GENERIC_READ;
     // Before any mesh: false when meshes were loaded already.
     bool ReservePagePool();
+    bool ReservePagePool(const clusters::PoolSizes& sizes);
+    // After loading: room for the paged meshes' fixed triangles and whole hierarchies, so their cuts need not coarsen for
+    // want of room, up to a cap (past it, the pages stream). Grows only.
+    void FitPagePool();
     // With no paged mesh: before anything but the meshes' material IDs used the positions.
     void ReleasePagePool();
 

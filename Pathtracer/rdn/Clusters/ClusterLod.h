@@ -39,6 +39,9 @@ struct Lod {
     // may be resident only while the groups holding its simplification (its deps) are, so the roots, which have none,
     // stay; base then ends the roots' clusters, the coarsest cut. The hierarchy's cluster IDs start at idBase.
     bool paged = false;
+    // Celled: instances share the hierarchy's cut, each tracing the clusters of its own cell (a range of them), as a huge
+    // mesh gets a BLAS per spatial cell; the mesh's own BLAS then holds only its fixed clusters.
+    bool celled = false;
     uint32_t idBase = 0;
     uint32_t pager = LOD_NONE;      // the pager's index for the mesh
     std::vector<uint8_t> resident;  // per group
@@ -82,11 +85,25 @@ struct LodSource {
     // Foliage regions (alpha-tested cards): their simplification dilates open borders against area loss and keeps the
     // folds of double-sided sheets.
     std::function<bool(uint32_t region)> foliage;
+    // Per vertex, meshopt_SimplifyVertex_* flags added to the hierarchy's own (open borders it must not move, seams the
+    // caller protects itself); and whether UV seams are protected regardless.
+    const uint8_t* vertexFlags = nullptr;
+    bool protectUvSeams = true;
+    // Whether positions shared with triangles outside the hierarchy are locked (they always are between regions). Off,
+    // the hierarchy sees them as open borders, which simplification keeps in place within its error.
+    bool lockOutside = true;
+    float attributeWeights[3] = { 0.5f, 0.5f, 0.5f }; // normal, then both UV channels
+    // Per triangle, a code the hierarchy's triangles carry (a material, say). An original triangle keeps its own; a
+    // simplified one at level l takes, of the codes coarsen(code, l) of the triangles it replaces that touch its corners,
+    // the one covering most area. Codes may then mix within a region.
+    const uint32_t* codes = nullptr;
+    std::function<uint32_t(uint32_t code, uint32_t level)> coarsen;
 };
 struct LodBuild {
     std::vector<uint32_t> indices; // the hierarchy's triangles, cluster after cluster: cluster k is spans[k]
     std::vector<float> positions;  // per entry of indices: its vertex's position as that cluster has it (dilation moves them)
     std::vector<uint32_t> regions; // per triangle of indices
+    std::vector<uint32_t> codes;   // per triangle of indices, when the source has codes
     std::vector<Span> spans;       // firstTri counts from indices' first triangle
     std::vector<LodCluster> clusters;
     std::vector<LodGroup> groups;
@@ -95,6 +112,36 @@ struct LodBuild {
 // Vertices a region shares with another one or with triangles outside the hierarchy stay where they are, so no cut opens
 // a crack against them. Parallel over the regions.
 void build_lod(const LodSource& src, LodBuild& out);
+
+// A hierarchy over a mesh too large to build at once, built region by region: a stage builds a region from its triangles,
+// or a larger region from the clusters its subregions could not simplify against their locked borders (survivors, with
+// their vertex indices remapped into the larger region's vertices), and passes on the clusters it cannot simplify either;
+// the last stage, over the whole mesh, ends the hierarchy. Groups go to emit as they form; it returns the IDs that later
+// clusters (in this stage or later ones) name as refined.
+struct LodStageMesh {
+    const float* positions = nullptr;  // float3 per vertex
+    const float* attributes = nullptr; // normal xyz and uv per vertex
+    const uint8_t* flags = nullptr;    // meshopt_SimplifyVertex_* per vertex: the region's border is locked
+    uint32_t vertexCount = 0;
+    const uint32_t* indices = nullptr; // the first stage's triangles, and their codes (optional)
+    const uint32_t* codes = nullptr;
+    uint32_t triCount = 0;
+    std::function<uint32_t(uint32_t code, uint32_t level)> coarsen; // as LodSource::coarsen
+};
+struct LodSurvivor {
+    std::vector<uint32_t> indices, codes;
+    uint32_t refined = LOD_NONE, level = 0;
+    LodGroup bounds = {};
+};
+struct LodStageCluster {
+    const uint32_t* indices; // into the stage's vertices
+    const uint32_t* codes;   // per triangle, or null
+    uint32_t triCount, vertexCount, refined, level;
+};
+using LodStageEmit = std::function<uint32_t(const LodGroup& group, const LodStageCluster* clusters, uint32_t count)>;
+// out null: the last stage.
+void build_lod_stage(const LodStageMesh& mesh, const std::vector<LodSurvivor>* in, const LodStageEmit& emit,
+                     std::vector<LodSurvivor>* out);
 
 // The view a cut is chosen for, with the camera in mesh space. A group is fine enough when its error projects to at most
 // threshold pixels.
