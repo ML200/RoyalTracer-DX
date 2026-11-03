@@ -21,7 +21,9 @@ struct SetDesc
     uint instanceBase, instanceCount, cellBase, cellCount;
     uint bucketBase, bucketCount, partBase, partCount;
     uint blockBase, blockCount, slotBase, partitionBase; // assemblies: pool blocks, part slots, their partitions
-    uint mask, pad0, pad1, pad2;
+    uint mask;
+    float wind;    // its sway's factor: 0 stands still
+    uint pad1, pad2;
     float3 center; // the object's bounding sphere in set space
     float  radius;
 };
@@ -46,7 +48,8 @@ struct SetCell
     float  radius;
     uint   first, count, set;
     float  minScale, maxScale;
-    uint3  pad;
+    uint   partition; // its region's, which all sets' instances there share
+    uint2  pad;
 };
 
 cbuffer Sets : register(b0)
@@ -72,7 +75,7 @@ cbuffer Sets : register(b0)
     float3 cDelta;          // from the sets' frame to the scene origin's
     float  cTime;
     uint   cFrame;          // this frame's stamp in the motion records (never 0)
-    uint   cPad5;
+    uint   cRegions;        // the sets' partitions from cPartitionBase
     uint   cPoolTlasBase;   // the part slots' first TLAS instance index
     uint   cPoolPartitionBase;
     float  cWindDistance;
@@ -91,7 +94,8 @@ cbuffer Sets : register(b0)
 StructuredBuffer<SetDesc>   sets      : register(t0);
 StructuredBuffer<SetBucket> buckets   : register(t1);
 StructuredBuffer<SetCell>   cells     : register(t2);
-ByteAddressBuffer           instances : register(t3); // 24 bytes: position, scale, snorm16 rotation (x, y | z, w)
+// 32 bytes: position, largest axis scale, snorm16 rotation (x, y | z, w), snorm16 axis scales over it (x, y | z)
+ByteAddressBuffer           instances : register(t3);
 StructuredBuffer<SetPart>   parts     : register(t4);
 
 RWStructuredBuffer<uint>  instanceState : register(u0);
@@ -169,27 +173,35 @@ struct SetInstance
 {
     uint ci, i;      // cell, instance
     uint set;
+    uint partition;  // its cell's
     SetDesc s;
-    float4 ps;       // position, scale
-    float3x3 R;
+    float4 ps;       // position, largest axis scale
+    float3x3 RS;     // rotation after axis scale
     float d;         // distance to its bounding sphere
     float threshold; // its error budget: looser off screen
 };
 
+#define SET_CELL_ROWS 65535u // cells per dispatch slab (z), rows of groups (y) of a dispatch's most
+
 bool LoadInstance(uint3 group, uint3 thread, out SetInstance o)
 {
     o = (SetInstance)0;
-    o.ci = group.y;
+    o.ci = group.y + group.z * SET_CELL_ROWS;
     if (o.ci >= cCells || cellState[o.ci].y == 0u) return false;
     const SetCell c = cells[o.ci];
     const uint k = group.x * 256u + thread.x;
     if (k >= c.count) return false;
     o.i = c.first + k;
     o.set = c.set;
+    o.partition = cPartitionBase + c.partition;
     o.s = sets[c.set];
-    o.ps = asfloat(instances.Load4(24u * o.i));
-    o.R  = MatrixOf(RotationOf(instances.Load2(24u * o.i + 16u)));
-    const float3 center = o.ps.xyz + mul(o.R, o.s.center * o.ps.w);
+    o.ps = asfloat(instances.Load4(32u * o.i));
+    const uint4 ra = instances.Load4(32u * o.i + 16u);
+    const float3x3 R = MatrixOf(RotationOf(ra.xy));
+    const float3 axes = o.ps.w * float3(SnormOf(int(ra.z << 16) >> 16), SnormOf(int(ra.z) >> 16),
+                                        SnormOf(int(ra.w << 16) >> 16));
+    o.RS = float3x3(R[0] * axes, R[1] * axes, R[2] * axes);
+    const float3 center = o.ps.xyz + mul(o.RS, o.s.center);
     const float  radius = o.s.radius * o.ps.w;
     o.d = max(length(center - cCamera) - radius, cZnear);
     o.threshold = SphereVisibility(center, radius) != 0u ? cThreshold : cThreshold * cOffscreen;
@@ -221,10 +233,10 @@ void WriteArgs(uint at, float3x3 M, float3 t, uint record, uint mask, uint hitGr
 // along the world's x in proportion to height, swinging with a phase of its own. 0 out of the wind's reach.
 float WindShear(SetInstance o)
 {
-    if (o.d >= cWindDistance) return 0.0f;
+    if (o.d >= cWindDistance || o.s.wind == 0.0f) return 0.0f;
     const float phase = (float)(Hash(o.i) & 0xFFFFu) * (6.2831853f / 65536.0f);
     const float w = cTime * cWindFrequency;
-    return cWindAmplitude * (sin(w + phase) + 0.35f * sin(2.3f * w + 1.7f * phase));
+    return o.s.wind * cWindAmplitude * (sin(w + phase) + 0.35f * sin(2.3f * w + 1.7f * phase));
 }
 
 float3x3 ShearOf(float shear) { return float3x3(1.0f, shear, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f); }
@@ -234,7 +246,7 @@ float3x3 ShearOf(float shear) { return float3x3(1.0f, shear, 0.0f, 0.0f, 1.0f, 0
 void WriteBucket(uint at, SetInstance o, uint b, uint index, uint partition, float shear, bool visible = true)
 {
     const SetBucket k = buckets[b];
-    const float3x3 S = mul(ShearOf(shear), o.R * o.ps.w);
+    const float3x3 S = mul(ShearOf(shear), o.RS);
     const float3x3 M = mul(S, float3x3(k.base[0].xyz, k.base[1].xyz, k.base[2].xyz));
     const float3   t = o.ps.xyz + mul(S, float3(k.base[0].w, k.base[1].w, k.base[2].w));
     WriteArgs(at, M, t, k.record, visible ? o.s.mask : 0u, k.hitGroup, k.flags, k.blas, index, partition);
@@ -284,7 +296,7 @@ void WritePart(uint at, SetInstance o, uint block, uint p, uint pb, float shear,
     float sn, cs;
     sincos(angle, sn, cs);
     const float3x3 F  = float3x3(cs, -sn, 0.0f, sn, cs, 0.0f, 0.0f, 0.0f, 1.0f);
-    const float3x3 S  = mul(ShearOf(shear), o.R * o.ps.w);
+    const float3x3 S  = mul(ShearOf(shear), o.RS);
     const float3x3 B  = float3x3(k.base[0].xyz, k.base[1].xyz, k.base[2].xyz);
     const float3   Bt = float3(k.base[0].w, k.base[1].w, k.base[2].w);
     const float3x3 M  = mul(S, mul(F, B));
@@ -333,8 +345,8 @@ void SetReset(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void SetCells(uint3 id : SV_DispatchThreadID)
 {
-    // D3D12_RTAS_PARTITIONED_TLAS_OPERATION_TRANSLATE_PARTITION_ARGS: the cells' partitions, then the slots'.
-    if (cTranslate != 0u && id.x < cCells + cPoolPartitions)
+    // D3D12_RTAS_PARTITIONED_TLAS_OPERATION_TRANSLATE_PARTITION_ARGS: the regions' partitions, then the slots'.
+    if (cTranslate != 0u && id.x < cRegions + cPoolPartitions)
         work.Store4(cTranslateArgs + 16u * id.x, uint4(cPartitionBase + id.x, asuint(cDelta)));
     if (id.x >= cCells) return;
     const SetCell c = cells[id.x];
@@ -347,7 +359,7 @@ void SetCells(uint3 id : SV_DispatchThreadID)
                                   vis == 2u ? cThreshold : cThreshold * cOffscreen);
     const uint  held   = fine == coarse ? fine : SET_MIXED;
     const bool  skip   = held != SET_MIXED && cellState[id.x].x == held && !(s.partCount != 0u && fine == 0u) &&
-                         dist - c.radius >= cWindDistance;
+                         (dist - c.radius >= cWindDistance || s.wind == 0.0f);
     cellState[id.x] = uint2(held, skip ? 0u : 1u);
     if (skip) return;
     uint ignored;
@@ -382,7 +394,7 @@ void SetCollapse(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
         next = BucketOf(o.s.bucketBase, o.s.bucketCount, o.d, o.ps.w, o.threshold) | (shear != 0.0f ? ST_WINDY : 0u) |
                ST_FRESH;
         WriteBucket(cWriteArgs + WRITE_BYTES * (first + o.s.partCount), o, o.s.bucketBase + (next & ST_BUCKET_MASK),
-                    cTlasBase + o.i, cPartitionBase + o.ci, shear);
+                    cTlasBase + o.i, o.partition, shear);
         RecordMotion(o, shear, false);
     }
     instanceState[o.i] = next;
@@ -446,7 +458,7 @@ void SetInstances(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
             RecordMotion(o, shear, false);
             WriteBucket(cWriteArgs + WRITE_BYTES * (first + o.s.partCount), o,
                         o.s.bucketBase + ((st >> ST_BUCKET_SHIFT) & ST_BUCKET_MASK), cTlasBase + o.i,
-                        cPartitionBase + o.ci, 0.0f, false);
+                        o.partition, 0.0f, false);
             next = ST_BLOCK | ST_EXPANDED | (windy ? ST_WINDY : 0u) | block;
         }
         else if (windy || (st & ST_WINDY) != 0u)
@@ -508,7 +520,7 @@ void SetInstances(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
     {
         work.InterlockedAdd(WORK_WRITES, 1u, slot);
         if (slot >= cMaxWrites) { cellState[o.ci].x = SET_MIXED; return; }
-        WriteBucket(cWriteArgs + WRITE_BYTES * slot, o, kb, cTlasBase + o.i, cPartitionBase + o.ci, shear);
+        WriteBucket(cWriteArgs + WRITE_BYTES * slot, o, kb, cTlasBase + o.i, o.partition, shear);
         RecordMotion(o, shear, st == SET_UNWRITTEN);
         if (st == SET_UNWRITTEN)
         {
@@ -546,7 +558,7 @@ void SetFinalize(uint3 id : SV_DispatchThreadID)
     uint ops = 0u;
     if (writes != 0u) StoreOp(ops++, 0u, writes, va + cWriteArgs, WRITE_BYTES);       // WRITE_INSTANCE
     if (updates != 0u) StoreOp(ops++, 1u, updates, va + cUpdateArgs, 16u);            // UPDATE_INSTANCE
-    if (cTranslate != 0u) StoreOp(ops++, 2u, cCells + cPoolPartitions, va + cTranslateArgs, 16u); // TRANSLATE_PARTITION
+    if (cTranslate != 0u) StoreOp(ops++, 2u, cRegions + cPoolPartitions, va + cTranslateArgs, 16u); // TRANSLATE_PARTITION
     work.Store(WORK_OP_COUNT, ops);
     work.Store4(WORK_FEEDBACK, uint4(writes, updates, n.z, n.w));
     work.Store4(WORK_FEEDBACK + 16u, uint4(m.x, m.y, 0u, 0u));

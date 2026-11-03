@@ -55,6 +55,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Broad group lit on every deferring pick (1/DvDeferP), other groups on their own.
     const bool broadEvery = (v.flags & DVF_BROAD_NEE) != 0u;
     const bool liteNee    = (v.flags & DVF_LITE_NEE) != 0u;
+    const bool noBsdf     = (v.flags & DVF_NO_BSDF) != 0u;
     LiteGen liteG = LiteGenEmpty();
     if (liteNee && s != 0u) liteG = LiteGenLoad(pixelIdx);
     if ((v.flags & DVF_PERFORM_NEE) != 0u)
@@ -91,7 +92,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 if (lobeNEE.pdf > 0.0f)
                 {
                     trained = lobeNEE.val;
-                    const float misWeight = lightPdf / (lightPdf + lobeNEE.pdf);
+                    const float misWeight = noBsdf ? 1.0f : lightPdf / (lightPdf + lobeNEE.pdf);
                     if (liteNee)
                     {
                         // Broad part goes to the reservoir, not the pixel.
@@ -123,7 +124,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 if (lobeNEE.pdf > 0.0f)
                 {
                     if (!broadEvery) trained = LTC_TrainShare(v.Pr, v.matID, lobeNEE.val, false);
-                    const float misWeight = lightPdf / (lightPdf + lobeNEE.pdf);
+                    const float misWeight = noBsdf ? 1.0f : lightPdf / (lightPdf + lobeNEE.pdf);
                     total += path.T * lobeNEE.val * lightScale * (misWeight * neeScale);
                 }
             }

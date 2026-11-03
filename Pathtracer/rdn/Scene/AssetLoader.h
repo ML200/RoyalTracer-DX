@@ -30,6 +30,8 @@ class AssetLoader {
                                        const FlushFn& flushAndReset);
 
     static constexpr UINT MAX_TRIS_PER_MESH = 25'000'000;
+    // Instances a mesh needs to become an instance set (Scene::setSources).
+    static constexpr UINT SET_MIN_INSTANCES = 1024;
 
     // Opaque triangles first, then alpha-tested and transmissive ones (BLAS geometry 0 and 1).
     static MeshSplitResult SplitOpaqueAlpha(const std::vector<UINT>& indices, const std::vector<UINT>& perTriMatIDs,

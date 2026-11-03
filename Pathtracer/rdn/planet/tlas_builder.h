@@ -52,8 +52,9 @@ public:
     // Partitioned: the instance IDs the last build wrote.
     const std::vector<uint32_t>& written() const { return m_written; }
     // Partitioned: instances and partitions the GPU writes (build_gpu_ops), after the CPU's own. Changing them starts a
-    // new structure, as growth does; generation() then changes, and their writer writes them all again.
-    void reserve_external(uint32_t instances, uint32_t partitions);
+    // new structure, as growth does; generation() then changes, and their writer writes them all again. perPartition:
+    // the most instances one of their partitions holds.
+    void reserve_external(uint32_t instances, uint32_t partitions, uint32_t perPartition);
     uint32_t external_instance_base() const { return m_cpuCapacity; }
     uint32_t external_partition_base() const;
     uint32_t external_instances() const { return m_extInstances; }
@@ -105,7 +106,7 @@ private:
     uint32_t m_lastWrites = 0;
     std::vector<uint32_t> m_written;
     uint32_t m_cpuCapacity = 0;                    // instance indices the CPU writes; the external ones follow
-    uint32_t m_extInstances = 0, m_extPartitions = 0;
+    uint32_t m_extInstances = 0, m_extPartitions = 0, m_extPerPartition = 0;
     uint32_t m_generation = 0;
 
     ComPtr<ID3D12Device5> m_device;

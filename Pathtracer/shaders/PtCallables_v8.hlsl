@@ -4,7 +4,8 @@
 
 // Path-tracer callables: rare or heavy work kept out of Pass_pt_trace_v8 and its material shaders, so
 // those stay small in code and registers. Table order: PT_CALLABLE_LIGHT_PDF, PT_CALLABLE_SSS,
-// PT_CALLABLE_WATER_SEGMENT, PT_CALLABLE_NEE_WATER. Other light samples run in Pass_pt_nee_v8.
+// PT_CALLABLE_WATER_SEGMENT, PT_CALLABLE_NEE_WATER (PtNeeWater, or PtNeeLand without a sea). Other light
+// samples run in Pass_pt_nee_v8.
 
 // Emitter MIS: the density with which the previous vertex's light sample picks this emitter.
 [shader("callable")]
@@ -28,9 +29,17 @@ void PtWaterSegment(inout PtWaterSegmentIO p)
 }
 
 // Light-tree and sun sample on the sea surface or in the water (in-water sun, sea highlight, water
-// reach); it may precede the deferred vertex, so it is not queued.
+// reach); it may precede the deferred vertex, so it is not queued. Also the samples the full queue refused.
 [shader("callable")]
 void PtNeeWater(inout PtNeeIO p)
 {
-    PtNeeShade(p, DispatchRaysIndex().xy);
+    PtNeeShade(p, DispatchRaysIndex().xy, true);
+}
+
+// The same table slot without a sea: only the samples the full queue refused, without the water paths
+// and their registers.
+[shader("callable")]
+void PtNeeLand(inout PtNeeIO p)
+{
+    PtNeeShade(p, DispatchRaysIndex().xy, false);
 }

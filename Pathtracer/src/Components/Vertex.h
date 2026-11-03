@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstdint>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 struct TextureData {
@@ -41,6 +42,14 @@ struct alignas(16) Material {
     float sssPhaseG   = 0.0f;
     float sssWeight   = 1.0f;
     uint8_t sssEnable = 0;
+
+    // Terrain detail: a splat texture (linear rgba, the weights of up to four layers, at the albedo UV) and per layer a
+    // tiling albedo modulation (mean 0.5, so it averages out to the base albedo) and normal map, at that UV times
+    // detailUVScale. -1: none.
+    int splatTexID = -1;
+    int detailAlbedoTexID[4] = { -1, -1, -1, -1 };
+    int detailNormalTexID[4] = { -1, -1, -1, -1 };
+    float detailUVScale[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     Material() :
         Kd(1.0f, 1.0f, 1.0f, 1.0f), Ke(0.0f, 0.0f, 0.0f), Ni(1.0f),
@@ -111,7 +120,7 @@ inline uint8_t PackSnorm8(float v)
     return uint8_t(q & 0xFF);
 }
 
-static constexpr size_t kMatPackedU32 = 12;
+static constexpr size_t kMatPackedU32 = 20;
 
 inline void PackOne(const Material& m, uint32_t dst[kMatPackedU32])
 {
@@ -153,6 +162,15 @@ inline void PackOne(const Material& m, uint32_t dst[kMatPackedU32])
     dst[10] = PackRGB9E5(m.sssAlbedo.x, m.sssAlbedo.y, m.sssAlbedo.z);
     dst[11] = uint32_t(PackHalf(m.sssRadius))
             | (uint32_t(PackHalf(m.sssPhaseG)) << 16);
+
+    // Terrain detail: splat, the layers' albedo and normal texture IDs, their UV scales.
+    dst[12] = uint32_t(clip16(m.splatTexID));
+    for (int k = 0; k < 2; ++k) {
+        dst[13 + k] = uint32_t(clip16(m.detailAlbedoTexID[2 * k])) | (uint32_t(clip16(m.detailAlbedoTexID[2 * k + 1])) << 16);
+        dst[15 + k] = uint32_t(clip16(m.detailNormalTexID[2 * k])) | (uint32_t(clip16(m.detailNormalTexID[2 * k + 1])) << 16);
+        dst[17 + k] = uint32_t(PackHalf(m.detailUVScale[2 * k])) | (uint32_t(PackHalf(m.detailUVScale[2 * k + 1])) << 16);
+    }
+    dst[19] = 0u;
 }
 
 }
@@ -179,6 +197,11 @@ struct MaterialSoA {
     std::vector<float>             sssPhaseG;
     std::vector<float>             sssWeight;
     std::vector<uint8_t>           sssEnable;
+    // Terrain detail, as Material's: the splat, then per layer albedo, normal (texture IDs) and UV scale.
+    std::vector<int32_t>           splatTexID;
+    std::vector<std::array<int32_t, 4>> detailAlbedoTexID;
+    std::vector<std::array<int32_t, 4>> detailNormalTexID;
+    std::vector<std::array<float, 4>>   detailUVScale;
 
     size_t size()  const { return Ni.size(); }
     bool   empty() const { return Ni.empty(); }
@@ -192,7 +215,11 @@ struct MaterialSoA {
         albedoTexID.reserve(n); normalTexID.reserve(n); rmaTexID.reserve(n);
         alphaThreshold.reserve(n); invertAlpha.reserve(n); thinGlass.reserve(n);
         sssAlbedo.reserve(n); sssRadius.reserve(n); sssPhaseG.reserve(n); sssWeight.reserve(n); sssEnable.reserve(n);
+        splatTexID.reserve(n); detailAlbedoTexID.reserve(n); detailNormalTexID.reserve(n); detailUVScale.reserve(n);
     }
+
+    static std::array<int32_t, 4> ids4(const int (&v)[4]) { return { v[0], v[1], v[2], v[3] }; }
+    static std::array<float, 4> f4(const float (&v)[4]) { return { v[0], v[1], v[2], v[3] }; }
 
     void push_back(const Material& m)
     {
@@ -217,6 +244,10 @@ struct MaterialSoA {
         sssPhaseG.push_back(m.sssPhaseG);
         sssWeight.push_back(m.sssWeight);
         sssEnable.push_back(m.sssEnable ? 1u : 0u);
+        splatTexID.push_back(m.splatTexID);
+        detailAlbedoTexID.push_back(ids4(m.detailAlbedoTexID));
+        detailNormalTexID.push_back(ids4(m.detailNormalTexID));
+        detailUVScale.push_back(f4(m.detailUVScale));
     }
 
     void Set(size_t i, const Material& m)
@@ -240,6 +271,10 @@ struct MaterialSoA {
         sssPhaseG[i] = m.sssPhaseG;
         sssWeight[i] = m.sssWeight;
         sssEnable[i] = m.sssEnable ? 1u : 0u;
+        splatTexID[i] = m.splatTexID;
+        detailAlbedoTexID[i] = ids4(m.detailAlbedoTexID);
+        detailNormalTexID[i] = ids4(m.detailNormalTexID);
+        detailUVScale[i] = f4(m.detailUVScale);
     }
 
     void append(const std::vector<Material>& src)
@@ -270,6 +305,14 @@ struct MaterialSoA {
         m.sssPhaseG = (i < sssPhaseG.size()) ? sssPhaseG[i] : 0.0f;
         m.sssWeight = (i < sssWeight.size()) ? sssWeight[i] : 1.0f;
         m.sssEnable = (i < sssEnable.size()) ? sssEnable[i] : 0u;
+        if (i < splatTexID.size()) {
+            m.splatTexID = splatTexID[i];
+            for (int k = 0; k < 4; ++k) {
+                m.detailAlbedoTexID[k] = detailAlbedoTexID[i][k];
+                m.detailNormalTexID[k] = detailNormalTexID[i][k];
+                m.detailUVScale[k] = detailUVScale[i][k];
+            }
+        }
         return m;
     }
 

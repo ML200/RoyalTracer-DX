@@ -18,8 +18,8 @@ struct [raypayload] PtVertexIO {
     float3 pos       : PT_IO;   // in: previous vertex; out: next ray's origin vertex (SSS exit included)
     float3 color     : PT_OUT;  // throughput multiplier (PV_CAPTURED), or sky radiance on a miss
     uint   auxPk     : PT_OUT;  // packed radiance or weight, per the result flags
-    uint   neePk     : PT_OUT;  // water light sample, PvPackRadiance (PV_NEE); queue slot (PV_NEE_QUEUED)
-    uint   neeLitePk : PT_OUT;  // the water sample's reuse-suffix share (broad only at the park)
+    uint   neePk     : PT_OUT;  // inline light sample, PvPackRadiance (PV_NEE); queue slot (PV_NEE_QUEUED)
+    uint   neeLitePk : PT_OUT;  // the inline sample's reuse-suffix share (broad only at the park)
 };
 #undef PT_IO
 #undef PT_OUT
@@ -35,7 +35,7 @@ static const uint PT_MISS_PRIMARY_LEAN = 2u;  // PtPrimaryShadeLean: the same of
 static const uint PT_CALLABLE_LIGHT_PDF     = 0u;
 static const uint PT_CALLABLE_SSS           = 1u;
 static const uint PT_CALLABLE_WATER_SEGMENT = 2u;
-static const uint PT_CALLABLE_NEE_WATER     = 3u;  // water light samples (PT_NEE_IN_WATER/WATER_DIRECT)
+static const uint PT_CALLABLE_NEE_WATER     = 3u;  // water light samples, and those the full queue refused
 
 // Subsurface random walk (PtSss), 36 bytes.
 struct PtSssIO {
@@ -101,7 +101,7 @@ struct PtLightPdfIO {
 #define PV_STRATEGY_SHIFT   13u  // 2 bits
 #define PV_PRIMARY_LITE     (1u << 15u)
 #define PV_SSS_WALKED       (1u << 16u)  // the subsurface exit consumed one extra depth
-#define PV_NEE              (1u << 17u)  // neePk/neeLitePk hold this in-place vertex's water light sample
+#define PV_NEE              (1u << 17u)  // neePk/neeLitePk hold this in-place vertex's inline light sample
 #define PV_WATER_DIRECT     (1u << 18u)
 #define PV_WATER_MEDIUM     (1u << 19u)
 #define PV_WATER_SCATTERED  (1u << 20u)
@@ -158,7 +158,7 @@ void PtWaterSegmentShade(inout PtWaterSegmentIO p, uint2 pixel)
     p.dirPk  = PvPackRadiance(inScatter);
 }
 
-// Caller side of a water light sample (PtNeeWater), packed like PtVertexIO.neePk / neeLitePk.
+// Caller side of an inline light sample (PtNeeWater), packed like PtVertexIO.neePk / neeLitePk.
 void PtVertexWaterNee(PtNeeIO p, out uint neePk, out uint neeLitePk)
 {
     CallShader(PT_CALLABLE_NEE_WATER, p);
@@ -205,9 +205,10 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     float3 dir    = 0.0f;
     float  pdfOut = io.pdf;
     bool   alive  = true;
-    bool   doNee  = false;            // a water light sample (PtNeeWater)
+    bool   doNee  = false;            // an inline light sample (PtNeeWater)
     uint   neeSlot = PT_NEE_NO_SLOT;  // a deferred one (Pass_pt_nee_v8)
     uint   neeBits = 0u;
+    bool   neeLast = false;           // the path ends at the light sample: no BSDF partner
     g_regularizeRoughness = io.spread > 0.0f ? PT_REGULARIZE_ROUGHNESS : 0.0f;
 
     // Subsurface walk first; the exit is a white Lambertian vertex.
@@ -258,22 +259,25 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm);
     const bool liteX2 = depth == 2u && liteVertex;
 
-    // Radiance cache, gated by the incoming lobe cone, not this material (SharcConeRamp).
+    // Radiance cache, gated by the incoming lobe cone, not this material: it must span enough cells
+    // (SharcFootprintRamp, SharcSpreadRamp) to average out their noise (SharcNoiseGate). Over the diffuse budget
+    // the path ends here anyway, so any cell beats losing the rest of its light.
+    const bool overBudget   = !freeBounce && diffDepth >= (uint)pt_maxDiffuseBounces;
     const bool cacheSurface = sharc_enabled != 0u && !walked && SharcMaterialEligible(ctx, spPath, geoN);
     float2 cone = PtConeUnpack(io.cone);
     float cacheScale = 1.0f;
-    bool  cacheRefused = false;
     if (alive && cacheSurface && depth > 1u)
     {
         uint sCache = RcBounceSeed(pathSeed, depth, 0x53484152u);
-        const float ramp = SharcConeRamp(cone.x, cone.y, ctx.hitPos);
+        const float cells = overBudget ? SHARC_CELLS_ANY : SharcConeCells(cone.x, cone.y, ctx.hitPos);
+        const float ramp  = overBudget ? 1.0f : SharcFootprintRamp(cells) * SharcSpreadRamp(cone.y);
         const bool accepted = ramp >= 1.0f || (ramp > 0.0f && RandomFloatSingle(sCache) < ramp);
-        cacheRefused = !accepted;
         float3 cached = 0.0f;
         bool hit = false;
-        // One query site: forced (SharcQueryForced) behind a deferred vertex, else drawn (SharcQueryDraws).
+        // Drawn by confidence, behind the deferred vertex too: forcing there ended paths on cells of a sample
+        // or two, which a glossy reflection shows as pulsing cells. A miss takes a light sample below.
         if (accepted)
-            hit = SharcQueryStochastic(SharcMakeSurface(ctx, geoN), pending && !inWater, sCache, cached);
+            hit = SharcQueryDraws(SharcMakeSurface(ctx, geoN), sCache, cached, cells);
         float layerT = 0.0f;
         if (hit)
         {
@@ -285,7 +289,7 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
             res |= PV_CACHE_HIT;
             auxPk = PvPackRadiance(cached * layerT);
             const float pSpecular = clamp(1.0f - layerT, 0.02f, 1.0f);
-            if (!DropBroadLobes(spPath, ctx.hitLocalPr) || RandomFloatSingle(sCache) >= pSpecular) alive = false;
+            if (!SharcDropCachedLobes(spPath, ctx.hitLocalPr) || RandomFloatSingle(sCache) >= pSpecular) alive = false;
             else cacheScale = rcp(pSpecular);
         }
     }
@@ -315,18 +319,22 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         const bool neeBase = ctx.mediumMatID == MEDIUM_INVALID &&
             (LoadKd_w(ctx.matID) >= EPSILON || !GGXUsesDeltaSampling(ctx.matID, ctx.hitLocalPr));
         const bool capture     = !waterDirect && !inWater && wide && !pending;
-        // In-place NEE: water surface, in water, or where the cache can't answer. Water samples run here
+        // In-place NEE: water surface, in water, or where the cache did not answer. Water samples run here
         // (PtNeeWater; they may precede the deferred vertex); the rest, always after it, are queued for
-        // Pass_pt_nee_v8. Without one (or with the queue full) MIS_NONE keeps light hits unweighted.
-        const bool waterNee = !capture && (waterDirect || (neeBase && wide && inWater));
-        if (!waterDirect && !inWater && pending && neeBase && wide && (!cacheSurface || cacheRefused))
+        // Pass_pt_nee_v8, and run here too once the queue is full: without the cache a path asks for one
+        // per diffuse bounce, and a vertex left to BSDF hits alone all but loses the sun.
+        const bool queueNee = !waterDirect && !inWater && pending && neeBase && wide && (res & PV_CACHE_HIT) == 0u;
+        if (queueNee)
             neeSlot = PtNeeQueueAppend();
-        const bool inlineNee = waterNee || neeSlot != PT_NEE_NO_SLOT;
-        // Over budget, stop where the deferred pass, a light sample or the cache resolved the vertex;
-        // otherwise its direct light needs one more, emission-only segment (as at the depth limit).
-        const bool overBudget  = !freeBounce && diffDepth >= (uint)pt_maxDiffuseBounces;
+        const bool calledNee = (!capture && (waterDirect || (neeBase && wide && inWater))) ||
+            (queueNee && neeSlot == PT_NEE_NO_SLOT);
+        const bool inlineNee = calledNee || neeSlot != PT_NEE_NO_SLOT;
+        // Over budget, stop where the deferred pass, a light sample or the cache resolved the vertex (a light
+        // sample then has no BSDF partner and takes all the direct light); otherwise its direct light needs
+        // one more, emission-only segment (as at the depth limit).
         const bool budgetBreak = overBudget && (capture || inlineNee || (res & PV_CACHE_HIT) != 0u);
         if (overBudget && !budgetBreak) res |= PV_LAST_NEXT;
+        neeLast = budgetBreak;
 
         if (capture)
         {
@@ -339,7 +347,7 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
                 (neeBase ? DVF_PERFORM_NEE : 0u) | (walked ? DVF_UNIT_IOR : 0u) |
                 (group << DVF_GROUP_SHIFT) | (io.spread > 0.0f ? DVF_REGULARIZE : 0u) |
                 (HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) ? DVF_BROAD_NEE : 0u) |
-                (liteSurface ? DVF_LITE_NEE : 0u);
+                (liteSurface ? DVF_LITE_NEE : 0u) | (budgetBreak ? DVF_NO_BSDF : 0u);
             DvStoreVertex(pixelIdx, dv);
             DvStorePickP(pixelIdx, groupP);
             color *= cacheScale;
@@ -349,11 +357,11 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
         else if (inlineNee)
         {
             // Requested at the end, where little else is live.
-            doNee = waterNee;
+            doNee = calledNee;
             neeBits = (blue ? PT_NEE_BLUE : 0u) | (liteX2 && cacheSurface ? PT_NEE_LITE_BROAD : 0u) |
                 (depth >= 2u && liteVertex ? PT_NEE_LITE_PATH : 0u) | (inWater ? PT_NEE_IN_WATER : 0u) |
                 (waterDirect ? PT_NEE_WATER_DIRECT : 0u);
-            res |= waterNee ? PV_NEE | (inWater ? PV_SUN_OWNED : 0u) : PV_NEE_QUEUED;
+            res |= calledNee ? PV_NEE | (inWater ? PV_SUN_OWNED : 0u) : PV_NEE_QUEUED;
         }
 
         if (budgetBreak)
@@ -488,13 +496,13 @@ void PtVertexShade(inout PtVertexIO io, HitContext ctx, float3 geoN, float3 dirI
     if (neeSlot != PT_NEE_NO_SLOT)
     {
         // The raygen adds the path's weights to the slot (PtNeeQueueStoreWeights).
-        PtNeeQueueStoreRequest(neeSlot, PtNeeRequest(ctx, io.nPk, rayDir, group, groupP, depth, sample, neeBits),
-            pixel);
+        PtNeeQueueStoreRequest(neeSlot,
+            PtNeeRequest(ctx, io.nPk, rayDir, group, groupP, depth, sample, neeBits, neeLast), pixel);
         io.neePk = neeSlot;
     }
     else if (doNee)
-        PtVertexWaterNee(PtNeeRequest(ctx, io.nPk, rayDir, group, groupP, depth, sample, neeBits), io.neePk,
-            io.neeLitePk);
+        PtVertexWaterNee(PtNeeRequest(ctx, io.nPk, rayDir, group, groupP, depth, sample, neeBits, neeLast),
+            io.neePk, io.neeLitePk);
 }
 
 // Primary vertex from the camera record; geoN is in scratch while the cache is on.

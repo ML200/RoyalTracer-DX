@@ -1,7 +1,7 @@
 #pragma once
 // In-place light samples of path vertices: run deferred by Pass_pt_nee_v8 from a queue the trace pass
-// fills, or inline in the water callable (PtNeeWater, PtCallables_v8.hlsl). No ray-tracing shader
-// intrinsics here, so the compute pass can include it.
+// fills, or inline in the callable (PtNeeWater, PtCallables_v8.hlsl) for water samples and the requests
+// the full queue refused. No ray-tracing shader intrinsics here, so the compute pass can include it.
 #include "PtDefer_v8.hlsli"
 #include "OceanVolume.hlsli"
 
@@ -27,11 +27,12 @@ struct PtNeeIO {
 #define PT_NEE_IN_WATER     (1u << 14u)
 #define PT_NEE_WATER_DIRECT (1u << 15u)
 #define PT_NEE_REGULARIZE   (1u << 31u) // in matID: g_regularizeRoughness is on (path spread)
+#define PT_NEE_NO_PARTNER   (1u << 30u) // in matID: the path ends here, so no BSDF sample shares the light
 
 // Light-tree and sun sample of an in-place vertex, on the picked lobe group.
 void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, float3 rayDir, uint pathSeed,
     uint depth, bool blue, uint2 pixel, uint blueIndex, bool liteBroadOnly, bool litePath, bool inWater,
-    bool waterDirect, out float3 direct, out float3 liteDirect)
+    bool waterDirect, bool noPartner, out float3 direct, out float3 liteDirect)
 {
     direct = 0.0f;
     liteDirect = 0.0f;
@@ -120,8 +121,9 @@ void PtInlineNee(HitContext ctx, SamplingP spPath, uint group, float groupP, flo
                     reward = dot(radiance * cosSurf * visT * LTC_TrainShare((float)ctx.hitLocalPr, ctx.matID,
                         lobe.val, group == LOBE_GROUP_BROAD) / lightPdf,
                         float3(0.2126f, 0.7152f, 0.0722f));
-                    // Water direct light and the in-water sun have no BSDF partner.
-                    const float  misWeight  = waterDirect || waterSunTech ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
+                    // Water direct light, the in-water sun and a path's last vertex have no BSDF partner.
+                    const float  misWeight  = waterDirect || waterSunTech || noPartner
+                        ? 1.0f : lightPdf / (lightPdf + lobe.pdf);
                     const float3 lightScale = radiance * cosSurf * visT * (misWeight / (lightPdf * groupP));
                     direct += lobe.val * lightScale;
                     if (litePath) liteDirect += (liteBroadOnly ? broad : lobe.val) * lightScale;
@@ -145,7 +147,7 @@ void PtNeeEvaluate(PtNeeIO p, uint2 pixel, bool water, out float3 direct, out fl
     HitContext ctx = (HitContext)0;
     ctx.hitPos      = p.pos;
     ctx.hitNormal   = UnpackNormal(p.nPk);
-    ctx.matID       = p.matID & ~PT_NEE_REGULARIZE;
+    ctx.matID       = p.matID & ~(PT_NEE_REGULARIZE | PT_NEE_NO_PARTNER);
     ctx.hitLocalKd  = (half3)float3(f16tof32(p.kdRG), f16tof32(p.kdRG >> 16u), f16tof32(p.kdBPr));
     ctx.hitLocalPr  = (half)f16tof32(p.kdBPr >> 16u);
     ctx.hitLocalPm  = (half)f16tof32(p.pmIorI);
@@ -158,29 +160,31 @@ void PtNeeEvaluate(PtNeeIO p, uint2 pixel, bool water, out float3 direct, out fl
     PtInlineNee(ctx, spPath, (bits >> PT_NEE_GROUP_SHIFT) & 3u, p.groupP, rayDir, PtPathSeed(pixel, sample),
         depth, (bits & PT_NEE_BLUE) != 0u, pixel, (uint)time * PtSampleCount() + sample,
         (bits & PT_NEE_LITE_BROAD) != 0u, (bits & PT_NEE_LITE_PATH) != 0u,
-        water && (bits & PT_NEE_IN_WATER) != 0u, water && (bits & PT_NEE_WATER_DIRECT) != 0u, direct, liteDirect);
+        water && (bits & PT_NEE_IN_WATER) != 0u, water && (bits & PT_NEE_WATER_DIRECT) != 0u,
+        (p.matID & PT_NEE_NO_PARTNER) != 0u, direct, liteDirect);
 }
 
-// Callee side of the water callable (PtNeeWater): the two radiances packed back into the request.
-void PtNeeShade(inout PtNeeIO p, uint2 pixel)
+// Callee side of the inline callables (PtNeeWater, PtNeeLand): the two radiances packed back into the request.
+void PtNeeShade(inout PtNeeIO p, uint2 pixel, bool water)
 {
     float3 direct, liteDirect;
-    PtNeeEvaluate(p, pixel, true, direct, liteDirect);
+    PtNeeEvaluate(p, pixel, water, direct, liteDirect);
     p.kdRG  = PvPackRadiance(direct);
     p.kdBPr = PvPackRadiance(liteDirect);
 }
 
 // Caller side: the request of a shaded vertex. nPk: PackNormal(ctx.hitNormal), already packed for the
-// payload; g_regularizeRoughness is the shading vertex's.
+// payload; g_regularizeRoughness is the shading vertex's. noPartner: the path ends at this vertex.
 PtNeeIO PtNeeRequest(HitContext ctx, uint nPk, float3 rayDir, uint group, float groupP, uint depth, uint sample,
-    uint bits)
+    uint bits, bool noPartner)
 {
     bits |= min(depth, PT_NEE_DEPTH_MASK) | (sample << PT_NEE_SAMPLE_SHIFT) | (group << PT_NEE_GROUP_SHIFT);
     PtNeeIO p;
     p.pos      = ctx.hitPos;
     p.nPk      = nPk;
     p.dirPk    = PackNormal(rayDir);
-    p.matID    = ctx.matID | (g_regularizeRoughness > 0.0f ? PT_NEE_REGULARIZE : 0u);
+    p.matID    = ctx.matID | (g_regularizeRoughness > 0.0f ? PT_NEE_REGULARIZE : 0u) |
+        (noPartner ? PT_NEE_NO_PARTNER : 0u);
     p.kdRG     = f32tof16(ctx.hitLocalKd.r) | (f32tof16(ctx.hitLocalKd.g) << 16u);
     p.kdBPr    = f32tof16(ctx.hitLocalKd.b) | (f32tof16(ctx.hitLocalPr) << 16u);
     p.pmIorI   = f32tof16(ctx.hitLocalPm) | (f32tof16(ctx.iors.x) << 16u);

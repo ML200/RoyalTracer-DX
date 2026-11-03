@@ -404,6 +404,23 @@ class ObjLoader {
         return fallback;
     }
 
+    static const tg3_value* tg3_obj_get(const tg3_value* obj, const char* key) {
+        if (!obj || obj->type != TG3_VALUE_OBJECT)
+            return nullptr;
+        for (uint32_t i = 0; i < obj->object_count; ++i)
+            if (tg3_str_eq(obj->object_data[i].key, key))
+                return &obj->object_data[i].value;
+        return nullptr;
+    }
+
+    // Element k of an array value as a number, or fallback.
+    static double tg3_array_number(const tg3_value* arr, uint32_t k, double fallback) {
+        if (!arr || arr->type != TG3_VALUE_ARRAY || k >= arr->array_count)
+            return fallback;
+        const tg3_value& e = arr->array_data[k];
+        return e.type == TG3_VALUE_REAL ? e.real_val : e.type == TG3_VALUE_INT ? (double)e.int_val : fallback;
+    }
+
     static void tg3_obj_get_vec3(const tg3_value* obj, const char* key, float out[3], float fallback) {
         out[0] = out[1] = out[2] = fallback;
         if (!obj || obj->type != TG3_VALUE_OBJECT)
@@ -1604,6 +1621,24 @@ class ObjLoader {
             int aoImg = getImageIndex(gmat.occlusion_texture.index);
             t_mat.rmaTexID =
                 (mrImg >= 0 || aoImg >= 0) ? processGltfRMA(mrImg, aoImg, roughness, metallic, rmaTextures) : -1;
+
+            // Terrain detail (RDN_materials_terrain_detail): {"splat": texture, "albedo": [4 textures], "normal":
+            // [4 textures], "scale": [4 numbers]}; a texture is an index into textures, -1 for none. The splat is
+            // linear (weights), the albedo modulations sRGB.
+            if (const tg3_value* det = tg3_find_extension(gmat.ext, "RDN_materials_terrain_detail")) {
+                const int splat = (int)tg3_obj_get_double(det, "splat", -1.0);
+                t_mat.splatTexID = processEmbeddedTexture(getImageIndex(splat), rmaTextures, false, "splat");
+                const tg3_value* al = tg3_obj_get(det, "albedo");
+                const tg3_value* nm = tg3_obj_get(det, "normal");
+                const tg3_value* sc = tg3_obj_get(det, "scale");
+                for (uint32_t k = 0; k < 4; ++k) {
+                    t_mat.detailAlbedoTexID[k] = processEmbeddedTexture(
+                        getImageIndex((int)tg3_array_number(al, k, -1.0)), albedoTextures, true, "detail albedo");
+                    t_mat.detailNormalTexID[k] = processEmbeddedTexture(
+                        getImageIndex((int)tg3_array_number(nm, k, -1.0)), normalTextures, false, "detail normal");
+                    t_mat.detailUVScale[k] = (float)tg3_array_number(sc, k, 1.0);
+                }
+            }
 
             scene.materials.push_back(t_mat);
             scene.materialNames.push_back(tg3_to_string(gmat.name));

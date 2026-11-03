@@ -55,6 +55,8 @@ struct MatPacked {
     uint uv_rma;
     uint sss_albedo;
     uint sss_radius_g;
+    // Terrain detail (MaterialPack::PackOne): splat; layer albedos 0|1, 2|3; normals 0|1, 2|3; UV scales 0|1, 2|3.
+    uint detail[8];
 };
 
 // GPU node layouts, read as uint4 records by LightTreeDecode.hlsli.

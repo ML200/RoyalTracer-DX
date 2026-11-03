@@ -85,6 +85,9 @@ struct LodSource {
     // Foliage regions (alpha-tested cards): their simplification dilates open borders against area loss and keeps the
     // folds of double-sided sheets.
     std::function<bool(uint32_t region)> foliage;
+    // Aggregate regions (many small separate elements: modelled leaves, needles, blades): their levels keep a share of the
+    // elements, grown to keep their area, where edge collapses would shrink every element away at once.
+    std::function<bool(uint32_t region)> aggregate;
     // Per vertex, meshopt_SimplifyVertex_* flags added to the hierarchy's own (open borders it must not move, seams the
     // caller protects itself); and whether UV seams are protected regardless.
     const uint8_t* vertexFlags = nullptr;

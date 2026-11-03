@@ -356,15 +356,26 @@ void AssetLoader::SplitOversizedMeshes(LoadedScene& scene, UINT maxTris) {
     std::vector<LoadedMesh> newMeshes;
     std::vector<std::vector<UINT>> oldToNew(scene.meshes.size());
     newMeshes.reserve(scene.meshes.size());
+    // A shared mesh splits only above maxTris: each piece repeats at every one of its instances.
+    std::vector<UINT> uses(scene.meshes.size(), 0);
+    for (const auto& [meshIdx, xform] : scene.instances)
+        ++uses[meshIdx];
 
     for (size_t i = 0; i < scene.meshes.size(); ++i) {
         const UINT triCount = (UINT)scene.meshes[i].indices.size() / 3;
         const UINT vtxCount = (UINT)scene.meshes[i].vertices.size();
+        const bool shared = uses[i] > 1 && triCount <= maxTris;
         std::wcout << L"[Split]   mesh[" << i << L"] tris=" << triCount << L" verts=" << vtxCount
-                   << (triCount > maxTris ? L"  (limit requires splitting)" : L"  (checking spatial cost)") << std::endl;
+                   << (triCount > maxTris ? L"  (limit requires splitting)"
+                                          : shared ? L"  (instanced, kept whole)" : L"  (checking spatial cost)")
+                   << std::endl;
 
         const std::string name = scene.meshes[i].name;
-        auto pieces = SplitMeshSpatial(std::move(scene.meshes[i]), maxTris);
+        std::vector<LoadedMesh> pieces;
+        if (shared)
+            pieces.push_back(std::move(scene.meshes[i]));
+        else
+            pieces = SplitMeshSpatial(std::move(scene.meshes[i]), maxTris);
 
         if (pieces.size() > 1) {
             std::wcout << L"[Split]   -> produced " << pieces.size() << L" pieces:" << std::endl;
@@ -573,6 +584,9 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
 
         std::vector<int> keptSceneMesh(loaded.meshes.size(), -1);
         std::vector<std::string> meshNames(loaded.meshes.size());
+        // Paged meshes with many instances and no emitters (a set's records carry no lights) become instance sets.
+        std::vector<uint8_t> asSet(loaded.meshes.size(), 0);
+        std::vector<int> setSource(loaded.meshes.size(), -1);
         for (size_t mi = 0; mi < loaded.meshes.size(); ++mi) {
             if (isMergeCandidate(mi))
                 continue;
@@ -580,28 +594,57 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             meshNames[mi] = srcMesh.name;
 
             std::vector<UINT> globalMatIDs = srcMesh.perTriMaterialIDs;
-            for (auto& mid : globalMatIDs)
+            bool emits = false;
+            for (auto& mid : globalMatIDs) {
                 mid += globalMatBase;
+                const XMFLOAT3& ke = scene.materials.Ke[mid];
+                emits = emits || ke.x + ke.y + ke.z > 0.0f;
+            }
 
             auto split = SplitOpaqueAlpha(srcMesh.indices, globalMatIDs, scene.materials);
             keptSceneMesh[mi] =
                 (int)finalizeMesh(std::move(srcMesh.vertices), std::move(split.reorderedIndices),
                                   std::move(split.reorderedMaterialIDs), split.opaqueTriCount, split.alphaTriCount);
             srcMesh = LoadedMesh{};
+            asSet[mi] = scene.instanceSetsWanted && instCount[mi] >= SET_MIN_INSTANCES && !emits &&
+                        scene.meshes[keptSceneMesh[mi]].paged;
         }
+        size_t setMeshes = 0, setPlacements = 0;
         for (const auto& [meshIdx, xform] : loaded.instances) {
             if (isMergeCandidate(meshIdx))
                 continue;
+            const XMMATRIX world = xform * modelXform;
+            if (setSource[meshIdx] >= 0) {
+                Scene::SetPlacement p;
+                XMVECTOR s, q, t;
+                if (!XMMatrixDecompose(&s, &q, &t, world))
+                    continue;
+                XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(p.position), t);
+                XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(p.scale), s);
+                XMStoreFloat4(reinterpret_cast<XMFLOAT4*>(p.rotation), q);
+                scene.setSources[setSource[meshIdx]].placements.push_back(p);
+                ++setPlacements;
+                continue;
+            }
             SceneInstance si{};
             si.meshIndex = (UINT)keptSceneMesh[meshIdx];
             si.modelIndex = (UINT)scene.models.size();
             si.localTransform = xform;
-            si.worldTransform = xform * modelXform;
+            si.worldTransform = world;
             si.prevWorldTransform = si.worldTransform;
             si.name = model.name + "_sub" + std::to_string(subIdx++) +
                       (meshNames[meshIdx].empty() ? std::string() : "_" + meshNames[meshIdx]);
             scene.instances.push_back(si);
+            if (asSet[meshIdx]) {
+                setSource[meshIdx] = (int)scene.setSources.size();
+                scene.setSources.push_back({(UINT)scene.instances.size() - 1, {}});
+                scene.setSources.back().placements.reserve(instCount[meshIdx] - 1);
+                ++setMeshes;
+            }
         }
+        if (setMeshes)
+            std::printf("[sets] %s: %zu meshes as instance sets, %zu instances in them\n", model.name.c_str(),
+                        setMeshes, setPlacements);
 
         std::vector<Vertex> mVerts;
         std::vector<UINT> mOpaqueIdx, mAlphaIdx, mOpaqueMat, mAlphaMat;
@@ -832,6 +875,17 @@ void AssetLoader::LoadModels(const std::vector<ModelEntry>& modelEntries, Scene&
             scene.materials.normalTexID[i] += (int)scene.bindlessNormalBase;
         if (scene.materials.rmaTexID[i] >= 0)
             scene.materials.rmaTexID[i] += (int)scene.bindlessRmaBase;
+        // Terrain detail: the splat is with the RMA (linear) textures, the layers with the albedos and normals.
+        if (i < scene.materials.splatTexID.size()) {
+            if (scene.materials.splatTexID[i] >= 0)
+                scene.materials.splatTexID[i] += (int)scene.bindlessRmaBase;
+            for (int k = 0; k < 4; ++k) {
+                if (scene.materials.detailAlbedoTexID[i][k] >= 0)
+                    scene.materials.detailAlbedoTexID[i][k] += (int)scene.bindlessAlbedoBase;
+                if (scene.materials.detailNormalTexID[i][k] >= 0)
+                    scene.materials.detailNormalTexID[i][k] += (int)scene.bindlessNormalBase;
+            }
+        }
     }
 
     CreateBindlessTextures(albedoTextures, scene.bindlessAlbedoBase, L"Albedo", device, cmdList,

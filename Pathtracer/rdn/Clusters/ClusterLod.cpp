@@ -84,6 +84,9 @@ void build_region(const LodSource& src, const std::vector<uint8_t>& locked, cons
         // Dilation moves positions in place, so each group's are copied as it is emitted.
         config.simplify_dilate_borders = true;
         config.simplify_preserve_folds = true;
+    } else if (src.aggregate && src.aggregate(r.region)) {
+        // Growth moves positions in place, too.
+        config.simplify_prune_aggregate = true;
     }
 
     if (src.codes) {

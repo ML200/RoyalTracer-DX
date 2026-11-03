@@ -205,7 +205,7 @@ void TlasBuilder::create_partitioned(uint32_t instanceCapacity) {
     // The GPU's instances follow the scene origin by translating their partitions.
     if (m_extPartitions) in.Flags |= D3D12_RTAS_PARTITIONED_TLAS_FLAG_ENABLE_PARTITION_TRANSLATION;
     in.InstanceCount = capacity + m_extInstances;
-    in.MaxInstancePerPartitionCount = MAX_PER_PARTITION;
+    in.MaxInstancePerPartitionCount = std::max(MAX_PER_PARTITION, m_extPerPartition);
     in.PartitionCount = PARTITION_COUNT + m_extPartitions;
     in.MaxInstanceInGlobalPartitionCount = capacity;
     m_cpuCapacity = capacity;
@@ -246,14 +246,17 @@ void TlasBuilder::create_partitioned(uint32_t instanceCapacity) {
     m_globalCount = 0;
     std::printf("[tlas] partitioned: %u instances (%u GPU-written), %u partitions of up to %u; %.1f MB + %.1f MB "
                 "scratch\n",
-                in.InstanceCount, m_extInstances, in.PartitionCount, MAX_PER_PARTITION,
+                in.InstanceCount, m_extInstances, in.PartitionCount, in.MaxInstancePerPartitionCount,
                 (double)info.ResultDataMaxSizeInBytes / 1048576.0, (double)info.ScratchDataSizeInBytes / 1048576.0);
 }
 
-void TlasBuilder::reserve_external(uint32_t instances, uint32_t partitions) {
-    if (!m_partitioned || (instances == m_extInstances && partitions == m_extPartitions)) return;
+void TlasBuilder::reserve_external(uint32_t instances, uint32_t partitions, uint32_t perPartition) {
+    if (!m_partitioned ||
+        (instances == m_extInstances && partitions == m_extPartitions && perPartition == m_extPerPartition))
+        return;
     m_extInstances = instances;
     m_extPartitions = partitions;
+    m_extPerPartition = perPartition;
     create_partitioned(std::max(m_cpuCapacity, 1024u));
 }
 #endif

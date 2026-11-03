@@ -55,12 +55,13 @@ void SharcTrainingRadiance(inout SharcTrainingState state, float3 value)
             SharcTrainingSetRadiance(state, i, SharcTrainingRadianceOf(state, i) + SharcTrainingWeightOf(state, i) * value);
 }
 
-void SharcTrainingRadianceSplit(inout SharcTrainingState state, float3 full, float3 diffuseOnly)
+// cachedOnly: the share of the lobes a cell stores (SharcCachesGGX), for the cell opened at this vertex.
+void SharcTrainingRadianceSplit(inout SharcTrainingState state, float3 full, float3 cachedOnly)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
         if (i < state.count)
             SharcTrainingSetRadiance(state, i, SharcTrainingRadianceOf(state, i) +
-                SharcTrainingWeightOf(state, i) * (i == state.fresh ? diffuseOnly : full));
+                SharcTrainingWeightOf(state, i) * (i == state.fresh ? cachedOnly : full));
 }
 
 void SharcTrainingScatter(inout SharcTrainingState state, float3 weight)
@@ -98,12 +99,12 @@ float SharcTrainingSurvival(SharcTrainingState state, float3 scatterWeight)
     return clamp(state.suffixLuma * Luma(scatterWeight), 0.1f, 1.0f);
 }
 
-void SharcTrainingAdvance(inout SharcTrainingState state, float3 full, float3 diffuseOnly, float rrWeight)
+void SharcTrainingAdvance(inout SharcTrainingState state, float3 full, float3 cachedOnly, float rrWeight)
 {
     state.suffixLuma *= Luma(full);
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
         if (i < state.count)
-            SharcTrainingSetWeight(state, i, SharcTrainingWeightOf(state, i) * (i == state.fresh ? diffuseOnly : full) * rrWeight);
+            SharcTrainingSetWeight(state, i, SharcTrainingWeightOf(state, i) * (i == state.fresh ? cachedOnly : full) * rrWeight);
     state.fresh = SHARC_INVALID;
 }
 

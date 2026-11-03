@@ -700,13 +700,16 @@ void Renderer::CreateRaytracingPipeline() {
 
     // Path-tracer material shading: lean variants off the sea, light sampling in callables. A ray-tracing
     // pipeline runs at the register count of its heaviest shader, run or not, so the water shaders join
-    // only with a sea; without one the raygen never selects them (stand-ins keep their table slots).
+    // only with a sea; without one the raygen never selects them (stand-ins keep their table slots), and the
+    // light samples the full queue refuses run in PtNeeLand, the light-sample callable without water paths.
     m_ptWaterShaders = m_ocean.Enabled();
     std::vector<std::wstring> missExports = {L"Miss"},
                               callableExports = {L"PtLightPdf", L"PtSss"};
     if (m_ptWaterShaders) {
         missExports.push_back(L"PtPrimaryShade");
         callableExports.insert(callableExports.end(), {L"PtWaterSegment", L"PtNeeWater"});
+    } else {
+        callableExports.push_back(L"PtNeeLand");
     }
     libFiles.insert(libFiles.end(), {L"Miss_v8.hlsl", L"HitLean_v8.hlsl", L"AnyHit.hlsl", L"PtCallables_v8.hlsl"});
     libExports.push_back(missExports);
@@ -823,7 +826,8 @@ void Renderer::CreateRaytracingPipeline() {
     auto stackOf = [&](const wchar_t* exportName) -> UINT64 {
         const bool waterOnly = !wcscmp(exportName, L"PtPrimaryShade") || !wcscmp(exportName, L"PtNeeWater") ||
                                !wcscmp(exportName, L"PtWaterSegment");
-        if (waterOnly && !m_ptWaterShaders)
+        const bool landOnly = !wcscmp(exportName, L"PtNeeLand");
+        if ((waterOnly && !m_ptWaterShaders) || (landOnly && m_ptWaterShaders))
             return 0ull; // not in this pipeline
         const UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(exportName);
         return sz >= 0xFFFFFFFFull ? 0ull : sz;
@@ -842,7 +846,8 @@ void Renderer::CreateRaytracingPipeline() {
                                             << L", primary " << stackOf(L"PtPrimaryShade") << L" (lean "
                                             << stackOf(L"PtPrimaryShadeLean") << L"), callables light pdf "
                                             << stackOf(L"PtLightPdf") << L", SSS " << stackOf(L"PtSss")
-                                            << L", water NEE " << stackOf(L"PtNeeWater") << L", water segment "
+                                            << L", water NEE " << stackOf(L"PtNeeWater") << L", land NEE "
+                                            << stackOf(L"PtNeeLand") << L", water segment "
                                             << stackOf(L"PtWaterSegment") << L" (driver default pipeline stack)");
 }
 
@@ -1431,7 +1436,7 @@ void Renderer::CreateShaderBindingTable() {
     m_sbtHelper.AddCallableProgram(L"PtLightPdf", {});
     m_sbtHelper.AddCallableProgram(L"PtSss", {});
     m_sbtHelper.AddCallableProgram(m_ptWaterShaders ? L"PtWaterSegment" : L"PtSss", {});
-    m_sbtHelper.AddCallableProgram(m_ptWaterShaders ? L"PtNeeWater" : L"PtSss", {});
+    m_sbtHelper.AddCallableProgram(m_ptWaterShaders ? L"PtNeeWater" : L"PtNeeLand", {});
 
     uint32_t sbtSize = m_sbtHelper.ComputeSBTSize();
     m_sbtStorage = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), sbtSize, D3D12_RESOURCE_FLAG_NONE,

@@ -189,7 +189,7 @@ void Pass_pt_trace_v8()
         }
         if ((io.flags & PV_NEE) != 0u)
         {
-            // A water light sample, shaded inline.
+            // A light sample shaded inline (water, or the queue was full).
             PtGather(pixel, pixelIdx, pending, throughput * PvUnpackRadiance(io.neePk));
             if (liteRec) DvAddLiteL(pixelIdx, liteSuffix * PvUnpackRadiance(io.neeLitePk));
         }

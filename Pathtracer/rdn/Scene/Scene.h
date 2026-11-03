@@ -43,6 +43,7 @@ struct MeshGPU {
     // triangles, in its own range of the scene's page pool.
     bool paged = false;
     bool lodAlpha = false; // some of its hierarchy is alpha-tested or transmissive (alpha pages)
+    bool lodAggregate = false; // some of its hierarchy is aggregate detail (modelled leaves, needles, blades)
     // A cell of a celled paged mesh (cellOf, the owner's index): no geometry of its own, its instance traces the owner's
     // hierarchy clusters of cell cellIndex (the owner's pagedSource cells, kept in cells) that are in the cut; blas is for
     // an empty share.
@@ -199,6 +200,20 @@ struct Scene {
     void ReserveInstanceSets(UINT slots);
     // The set record of slot for mesh: identity transforms, no light records.
     void WriteSetRecord(UINT slot, UINT meshIndex);
+    // The loader's instance sets, when instanceSetsWanted (set before loading: the partitioned TLAS takes them): a mesh
+    // with many instances shows its first as a scene instance, whose hit group its set's records share, and leaves the
+    // rest to its set, placed in world space. They stay put when their model moves.
+    struct SetPlacement {
+        float position[3];
+        float scale[3];
+        float rotation[4]; // unit quaternion x, y, z, w
+    };
+    struct SetSource {
+        UINT instance = 0;
+        std::vector<SetPlacement> placements;
+    };
+    bool instanceSetsWanted = false;
+    std::vector<SetSource> setSources;
 
     UINT combinedVertexCount() const {
         return totalVertexCount + terrainVertexElems + voxelVertexElems + oceanVertexElems;

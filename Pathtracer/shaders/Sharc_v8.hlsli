@@ -43,6 +43,11 @@ static const float2 SHARC_CONVERGENCE_Z       = float2(2.0f, 4.0f);      // gap 
 static const float2 SHARC_CONVERGENCE_GAP     = float2(0.15f, 0.35f);    // gap relative to the brighter
 static const uint   SHARC_QUERY_UNCONVERGED   = 0x80000000u;             // free bit of the demodulator word
 
+// A cell's relative error left after the lobe averages the cells it spans (SharcNoiseGate); above it, a
+// cell's noise shows as blobs and flashes where paths of neighbouring pixels share it.
+static const float2 SHARC_VISIBLE_ERROR = float2(0.02f, 0.04f);
+static const float  SHARC_CELLS_ANY     = 1e30f;   // no averaging asked: forced queries, training
+
 // Query/entry mismatch ramps; loose, wide cones average texture detail.
 static const float2 SHARC_SIMILAR_NORMAL    = float2(0.50f, 0.80f);   // shading-normal cosine
 static const float2 SHARC_SIMILAR_ALBEDO    = float2(1.00f, 2.00f);   // log2 of the albedo ratio
@@ -78,6 +83,7 @@ struct SharcHistory
     uint frames;
     uint lastTouch;
     bool converged;     // else no path ends here (SharcConvergence)
+    float error;        // relative standard error of the mean (SharcStatisticalConfidence); query record only
 };
 
 uint SharcStateAddress(uint slot) { return slot * 4u; }
@@ -116,6 +122,12 @@ float3 SharcUnpackLog10x3(uint w)
 uint SharcPackMean(float v) { return f32tof16(min(v, 1048064.0f) * 0.0625f); }
 float SharcUnpackMean(uint h) { return f16tof32(h) * 16.0f; }
 uint SharcPackUnorm8(float v) { return (uint)(saturate(v) * 255.0f + 0.5f); }
+// Query-record bytes: the update interval in 1/16 octaves from 1/4 frame; the relative error on a square-root
+// scale up to 4, unknown as 4.
+uint SharcPackInterval(float v) { return (uint)clamp(log2(max(v, 0.25f)) * 16.0f + 32.5f, 0.0f, 255.0f); }
+float SharcUnpackInterval(uint q) { return exp2(((float)q - 32.0f) * (1.0f / 16.0f)); }
+uint SharcPackError(float v) { return v >= 0.0f ? (uint)(sqrt(saturate(v * 0.25f)) * 255.0f + 0.5f) : 255u; }
+float SharcUnpackError(uint q) { const float r = (float)q * (1.0f / 255.0f); return 4.0f * r * r; }
 
 void SharcLoadQueryRecord(uint e, float size, out uint check, out SharcDescriptor d, out SharcHistory h)
 {
@@ -131,14 +143,16 @@ void SharcLoadQueryRecord(uint e, float size, out uint check, out SharcDescripto
     h.confidence = (float)(b.z >> 24u) * (1.0f / 255.0f);
 
     h.lastUpdate = sharc_frame - ((sharc_frame - (b.w & 0xffffu)) & 0xffffu);
-    h.interval = f16tof32(b.w >> 16u);
+    h.interval = SharcUnpackInterval((b.w >> 16u) & 255u);
     h.frames = a.w >> 30u;
     h.lastTouch = 0u;
     h.converged = (b.x & SHARC_QUERY_UNCONVERGED) == 0u;
+    h.error = SharcUnpackError(b.w >> 24u);
 }
 float3 SharcLoadDemodulator(uint e) { return SharcUnpackLog10x3(g_sharc.Load(e + SHARC_QUERY + 16u)); }
 
-void SharcPublishQueryHistory(uint e, float3 mean, float confidence, bool converged, uint frames, float interval)
+void SharcPublishQueryHistory(uint e, float3 mean, float confidence, bool converged, uint frames, float interval,
+    float error)
 {
     uint w3 = g_sharc.Load(e + SHARC_QUERY + 12u);
     g_sharc.Store(e + SHARC_QUERY + 12u, (w3 & 0x3fffffffu) | (min(frames, 3u) << 30u));
@@ -147,7 +161,7 @@ void SharcPublishQueryHistory(uint e, float3 mean, float confidence, bool conver
         (w456.x & ~SHARC_QUERY_UNCONVERGED) | (converged ? 0u : SHARC_QUERY_UNCONVERGED),
         SharcPackMean(mean.x) | (SharcPackMean(mean.y) << 16u),
         SharcPackMean(mean.z) | (w456.z & 0x00ff0000u) | (SharcPackUnorm8(confidence) << 24u),
-        (sharc_frame & 0xffffu) | (f32tof16(interval) << 16u)));
+        (sharc_frame & 0xffffu) | (SharcPackInterval(interval) << 16u) | (SharcPackError(error) << 24u)));
 }
 
 void SharcLoadKey(uint e, out uint4 key, out uint2 idm)
@@ -172,6 +186,7 @@ SharcHistory SharcLoadHistory(uint e)
     h.frames = b.z;
     h.lastTouch = b.w;
     h.converged = asfloat(g_sharc.Load(e + SHARC_CONVERGENCE)) >= sharc_convergenceThreshold;
+    h.error = 0.0f;
     return h;
 }
 float SharcCellSize(uint level) { return sharc_cellSize * exp2((float)level); }
@@ -290,7 +305,7 @@ void SharcInitializeEntry(uint e, int3 node, uint meta, SharcSurface s, float3 r
     g_sharc.Store4(e + SHARC_QUERY, uint4(SharcCheckHash(node, meta, s.instance, s.material),
         PackNormal(s.geometricNormal), PackNormal(s.normal), SharcPackSnorm10x3(relative / size)));
     g_sharc.Store4(e + SHARC_QUERY + 16u, uint4(SharcPackLog10x3(s.demodulator), 0u,
-        SharcPackUnorm8(s.roughness) << 16u, sharc_frame & 0xffffu));
+        SharcPackUnorm8(s.roughness) << 16u, (sharc_frame & 0xffffu) | (255u << 24u)));
 
     g_sharc.Store4(e + SHARC_NODE, uint4(asuint(node), meta));
     g_sharc.Store4(e + SHARC_NODE + 16u, uint4(s.instance, s.material, 0u, 0u));
@@ -461,21 +476,31 @@ void SharcSplat(SharcSurface s, float3 radiance, inout uint seed)
     if (SharcAllocateDeposit(s, seed, address, weight)) SharcAccumulate(address, radiance, weight);
 }
 
-float SharcStatisticalConfidence(uint e)
+// error: the mean's relative standard error, for the query's noise gate (SharcNoiseGate).
+float SharcStatisticalConfidence(uint e, out float error)
 {
     float w = asfloat(g_sharc.Load(e + SHARC_HISTORY_W));
     float w2 = asfloat(g_sharc.Load(e + SHARC_HISTORY_W2));
     float neff = w * w / max(w2, 1e-20f);
     float mean = Luma(asfloat(g_sharc.Load3(e + SHARC_MEAN)));
     float variance = max(asfloat(g_sharc.Load(e + SHARC_HISTORY_L2)) - mean * mean, 0.0f);
-    float error = sqrt(variance / max(neff, 1.0f)) / max(mean, 1e-8f);
+    error = sqrt(variance / max(neff, 1.0f)) / max(mean, 1e-8f);
     uint frames = g_sharc.Load(e + SHARC_FRAMES);
 
     // Trust follows sample count; the error test only rejects garbage.
     float confidence = smoothstep(0.5f * (float)sharc_minSamples, (float)sharc_minSamples, neff);
     confidence *= smoothstep(1.0f, 2.0f, (float)frames);
     confidence *= 1.0f - smoothstep(1.0f, 2.0f, error);
-    return all(isfinite(float4(mean, variance, neff, confidence))) ? confidence : 0.0f;
+    const bool valid = all(isfinite(float4(mean, variance, neff, confidence))) && isfinite(error);
+    if (!valid) error = 4.0f;
+    return valid ? confidence : 0.0f;
+}
+
+// Share of a cell a query may use: the lobe averages the noise of the cells it spans, cells of them (SharcConeCells),
+// so a settled cell answers even close up, and a noisy one only behind a wide spread.
+float SharcNoiseGate(float error, float cells)
+{
+    return 1.0f - smoothstep(SHARC_VISIBLE_ERROR.x, SHARC_VISIBLE_ERROR.y, error * rsqrt(max(cells, 1.0f)));
 }
 
 float SharcAgeLimit(SharcHistory h)
@@ -497,8 +522,9 @@ float SharcConfidence(SharcHistory h)
     return isfinite(confidence) ? saturate(confidence) : 0.0f;
 }
 
+// cells: how many cells the query's lobe spans (SharcNoiseGate).
 void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 relative,
-    bool ignoreConfidence, out float3 sum, out float support)
+    bool ignoreConfidence, out float3 sum, out float support, float cells = SHARC_CELLS_ANY)
 {
     uint meta = SharcMeta(s, level, axis);
     uint hash = SharcHash(node, meta, s.instance, s.material);
@@ -534,7 +560,7 @@ void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 rel
         geometricSupport += surfaceWeight;
         // Unconverged history ends no path, even with ignoreConfidence.
         float confidence = !h.converged ? 0.0f
-            : ignoreConfidence ? (h.frames > 0u ? 1.0f : 0.0f) : SharcConfidence(h);
+            : ignoreConfidence ? (h.frames > 0u ? 1.0f : 0.0f) : SharcConfidence(h) * SharcNoiseGate(h.error, cells);
 
         if (confidence <= 0.0f || !all(isfinite(h.mean))) continue;
         sum += h.mean * (surfaceWeight * confidence);
@@ -572,8 +598,8 @@ void SharcQueryLevel(SharcSurface s, uint level, out float3 sum, out float suppo
 // Diffuse lobe cone full angle, sqrt(6): solid angle 1.5 pi.
 static const float SHARC_DIFFUSE_CONE = 2.44948974f;
 
-// Cache share; a cell (disk facing the apex, no slant) may fill 1/q of the cone.
-float SharcConeRamp(float coneWidth, float coneAngle, float3 position)
+// How many cells (disks facing the apex, no slant) the cone spans by solid angle.
+float SharcConeCells(float coneWidth, float coneAngle, float3 position)
 {
     if (!(coneAngle > 0.0f)) return 0.0f;
     const float coneSolidAngle = min(0.25f * PI * coneAngle * coneAngle, 2.0f * PI);
@@ -583,10 +609,26 @@ float SharcConeRamp(float coneWidth, float coneAngle, float3 position)
     const float area = size * size * (1.0f + 3.0f * frac(lod));
     const float s    = sqrt(apex * apex + area * INV_PI);
     const float cellSolidAngle = 2.0f * area / (s * (s + apex));   // 2 pi (1 - apex / s)
-    return smoothstep(0.8f, 1.25f, coneSolidAngle / (sharc_queryFootprint * cellSolidAngle));
+    return coneSolidAngle / cellSolidAngle;
 }
 
-bool SharcQueryStochastic(SharcSurface s, bool ignoreConfidence, inout uint seed, out float3 radiance)
+// Cache share; a cell may fill 1/q of the cone.
+float SharcFootprintRamp(float cells) { return smoothstep(0.8f, 1.25f, cells / sharc_queryFootprint); }
+float SharcConeRamp(float coneWidth, float coneAngle, float3 position)
+{
+    return SharcFootprintRamp(SharcConeCells(coneWidth, coneAngle, position));
+}
+
+// Cache share by how far the path's lobes have spread, at any distance: until they span about a broad lobe,
+// neighbouring pixels' paths reach the same few cells, and a glossy reflection shows those cells as blobs. A
+// diffuse bounce passes at once, a lone GGX bounce from about roughness 0.5 (half) to 0.65 (SharcLobeConeAngle).
+float SharcSpreadRamp(float coneAngle)
+{
+    return smoothstep(0.4f, 0.8f, coneAngle * (1.0f / SHARC_DIFFUSE_CONE));
+}
+
+bool SharcQueryStochastic(SharcSurface s, bool ignoreConfidence, inout uint seed, out float3 radiance,
+    float cells = SHARC_CELLS_ANY)
 {
     radiance = 0.0f;
     float lod = SharcLevel(s.position);
@@ -600,16 +642,16 @@ bool SharcQueryStochastic(SharcSurface s, bool ignoreConfidence, inout uint seed
         RandomFloatSingle(seed) < f.y, RandomFloatSingle(seed) < f.z);
     float3 sum; float support;
     SharcQueryNode(s, level, axis, base + int3(corner),
-        (f - float3(corner)) * SharcCellSize(level), ignoreConfidence, sum, support);
+        (f - float3(corner)) * SharcCellSize(level), ignoreConfidence, sum, support, cells);
     if (support <= 1e-5f) return false;
     if (!ignoreConfidence && RandomFloatSingle(seed) >= support) return false;
     radiance = sum / support * s.demodulator;
     return all(isfinite(radiance));
 }
 
-bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance)
+bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance, float cells = SHARC_CELLS_ANY)
 {
-    return SharcQueryStochastic(s, false, seed, radiance);
+    return SharcQueryStochastic(s, false, seed, radiance, cells);
 }
 // At least 1/32 continue so the cache does not only learn from itself.
 bool SharcQueryFootprintAccepted(float3 position, float coneWidth, float coneAngle, inout uint seed)
@@ -721,10 +763,11 @@ void SharcResolveEntry(uint slot)
 
             // Below the threshold no path ends here (SharcQueryNode).
             const bool converged = convergence >= sharc_convergenceThreshold;
-            const float confidence = converged ? SharcStatisticalConfidence(e) * convergence : 0.0f;
+            float error = 4.0f;
+            const float confidence = converged ? SharcStatisticalConfidence(e, error) * convergence : 0.0f;
             g_sharc.Store(e + SHARC_CONFIDENCE, asuint(confidence));
 
-            SharcPublishQueryHistory(e, mean, confidence, converged, frames, interval);
+            SharcPublishQueryHistory(e, mean, confidence, converged, frames, interval, error);
         }
     }
 

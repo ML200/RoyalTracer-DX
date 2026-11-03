@@ -62,6 +62,7 @@ uint dv_light  (uint px) { return ps_plane(DV_LIGHT_PLANE,   DV_LIGHT_BYTES,   p
 #define DVF_REGULARIZE   64u  // path had spread: roughness regularized
 #define DVF_BROAD_NEE    128u // broad group takes NEE on every deferring pick
 #define DVF_LITE_NEE     256u // reuse primary: broad NEE feeds the reservoir
+#define DVF_NO_BSDF      512u // diffuse budget: no continuation, so the light sample takes all the direct light
 
 struct DvVertex {
     float3    pos;

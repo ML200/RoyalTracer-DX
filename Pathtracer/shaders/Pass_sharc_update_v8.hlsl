@@ -64,7 +64,7 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
         {
 
             diffuseCached = true;
-            if (!DropBroadLobes(spPath, ctx.hitLocalPr)) return false;
+            if (!SharcDropCachedLobes(spPath, ctx.hitLocalPr)) return false;
 
             const float pSpecular = clamp(1.0f - layerT, 0.02f, 1.0f);
             if (RandomFloatSingle(sCache) >= pSpecular) return false;
@@ -231,10 +231,12 @@ void Pass_sharc_update_v8()
         const uint  group    = LobeGroupOf(strategy, ctx.hitLocalPr);
         const float groupP   = LobeGroupP(spPath, group, ctx.hitLocalPr);
         const bool  neeTaken = performNEE && (waterDirect || SharcScatterHasSpread(strategy, ctx.matID, ctx.hitLocalPr));
+        // The picked lobes are part of what a cell here stores (SharcCachesGGX): its own response comes only from them.
+        const bool  cachedPick = group == LOBE_GROUP_BROAD || (group == LOBE_GROUP_SPEC && SharcCachesGGX(ctx.hitLocalPr));
 
         // NEE first: shadow rays before any scatter state exists.
         float3 directSum = float3(0, 0, 0);
-        float3 directBroad = float3(0, 0, 0);
+        float3 directCached = float3(0, 0, 0);
         if (neeTaken)
         {
             [loop]
@@ -324,7 +326,7 @@ void Pass_sharc_update_v8()
                             ctx.hitLocalKd, neePr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
                         if (lobe.pdf > 0.0f)
                         {
-                            const float3 broad = group == LOBE_GROUP_BROAD ? lobe.val : 0.0f;
+                            const float3 cached = cachedPick ? lobe.val : 0.0f;
                             trainingReward = dot(radiance*cosSurf*visT*LTC_TrainShare((float)ctx.hitLocalPr,ctx.matID,lobe.val,group == LOBE_GROUP_BROAD)/lightPdf,
                                 float3(0.2126f,0.7152f,0.0722f));
 
@@ -333,13 +335,13 @@ void Pass_sharc_update_v8()
                             directSum += lobe.val * lightScale;
 
                             if (training.fresh != SHARC_INVALID)
-                                directBroad += broad * lightScale;
+                                directCached += cached * lightScale;
                         }
                     }
                 }
                 LT_TrainSample(trainingToken, trainingReward);
             }
-            SharcTrainingRadianceSplit(training, directSum, directBroad);
+            SharcTrainingRadianceSplit(training, directSum, directCached);
         }
         GuideRootsAddSource(GuideLane(), PtPsRoots(ps), directSum);
 
@@ -440,7 +442,7 @@ void Pass_sharc_update_v8()
             break;
 
         const float3 broadWeight = group == LOBE_GROUP_BROAD ? updateWeight : 0.0f;
-        const float3 updateWeightBroad = training.fresh != SHARC_INVALID ? broadWeight : updateWeight;
+        const float3 updateWeightCached = training.fresh != SHARC_INVALID && !cachedPick ? 0.0f : updateWeight;
 
         const bool passThrough = sampledStrategy == 1u && dot(dir, ctx.hitNormal) < 0.0f &&
             LoadKd_w(ctx.matID) < 1.0f - EPSILON;
@@ -483,7 +485,7 @@ void Pass_sharc_update_v8()
             throughput /= survivalProb;
             rrWeight = rcp(survivalProb);
         }
-        SharcTrainingAdvance(training, updateWeight, updateWeightBroad, rrWeight);
+        SharcTrainingAdvance(training, updateWeight, updateWeightCached, rrWeight);
         if (!spread && !passThrough) SharcTrainingSpecular(training);
 
         GuideRootsScale(GuideLane(), PtPsRoots(ps) & ~(guideRoot < GUIDE_ROOTS ? 1u << guideRoot : 0u),

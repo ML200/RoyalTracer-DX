@@ -16,7 +16,9 @@ struct GpuSet {
     uint32_t instanceBase, instanceCount, cellBase, cellCount;
     uint32_t bucketBase, bucketCount, partBase, partCount;
     uint32_t blockBase, blockCount, slotBase, partitionBase; // assemblies: pool blocks, part slots, their partitions
-    uint32_t mask, pad[3];
+    uint32_t mask;
+    float wind;
+    uint32_t pad[2];
     float center[3], radius;
 };
 struct GpuBucket {
@@ -35,11 +37,13 @@ struct GpuCell {
     float center[3], radius;
     uint32_t first, count, set;
     float minScale, maxScale;
-    uint32_t pad[3];
+    uint32_t partition; // its region's
+    uint32_t pad[2];
 };
 struct GpuInstance {
-    float position[3], scale;
-    uint32_t rotation[2]; // snorm16 x, y | z, w
+    float position[3], scale; // scale: its largest axis's
+    uint32_t rotation[2];     // snorm16 x, y | z, w
+    uint32_t axes[2];         // snorm16 axis scales over scale: x, y | z
 };
 struct Constants {
     float camera[3], pixelsPerUnit;
@@ -49,7 +53,7 @@ struct Constants {
     uint32_t partitionBase, writeArgs, updateArgs, workLo;
     uint32_t workHi, translate, translateArgs, slots;
     float delta[3], time;
-    uint32_t frame, pad5, poolTlasBase, poolPartitionBase;
+    uint32_t frame, regions, poolTlasBase, poolPartitionBase;
     float windDistance, windAmplitude, windFrequency;
     uint32_t blocks;
     uint32_t sets, freeLists, partStates, poolPartitions;
@@ -57,7 +61,7 @@ struct Constants {
     float planes[5][4];
 };
 static_assert(sizeof(GpuSet) == 80 && sizeof(GpuBucket) == 80 && sizeof(GpuPart) == 32 && sizeof(GpuCell) == 48 &&
-              sizeof(GpuInstance) == 24 && sizeof(Constants) == 240);
+              sizeof(GpuInstance) == 32 && sizeof(Constants) == 240);
 constexpr uint32_t SRVS = 5, UAVS = 5;
 // work: counters, the operation count and operations, the readback's copy, then the arguments.
 constexpr uint32_t WORK_OP_COUNT = 32, WORK_OPS = 40, WORK_FEEDBACK = 160, FEEDBACK_BYTES = 32, WORK_ARGS = 256;
@@ -66,6 +70,7 @@ constexpr uint32_t WRITE_ARG_BYTES = 104, UPDATE_ARG_BYTES = 16, TRANSLATE_ARG_B
 // sways have room of their own on top.
 constexpr uint32_t MAX_WRITES = 128u << 10, MAX_UPDATES = 128u << 10, MAX_BLOCK_WRITES = 64u << 10;
 constexpr uint32_t GROUP_INSTANCES = 256; // InstanceSets_v8.hlsl's per-instance passes
+constexpr uint32_t CELL_ROWS = 65535;     // and their cells per slab (SET_CELL_ROWS)
 
 static_assert(sizeof(D3D12_RTAS_PARTITIONED_TLAS_OPERATION_WRITE_INSTANCE_ARGS) == WRITE_ARG_BYTES &&
               sizeof(D3D12_RTAS_PARTITIONED_TLAS_OPERATION_UPDATE_INSTANCE_ARGS) == UPDATE_ARG_BYTES &&
@@ -112,6 +117,11 @@ float scale_of(const float base[12]) {
     for (int a = 0; a < 3; ++a)
         s = std::max(s, std::sqrt(base[a] * base[a] + base[4 + a] * base[4 + a] + base[8 + a] * base[8 + a]));
     return s;
+}
+
+// An instance's largest axis scale: its errors and bounds grow by it.
+float largest(const InstanceSets::Instance& in) {
+    return std::max({ std::fabs(in.scale[0]), std::fabs(in.scale[1]), std::fabs(in.scale[2]) });
 }
 
 template <class T> void append(std::vector<uint32_t>& out, const T& v) {
@@ -282,6 +292,7 @@ uint32_t InstanceSets::add(const Desc& d, std::vector<Instance> instances, ID3D1
                            const std::function<void()>& flush) {
     GpuSet g = {};
     g.mask = 0xFF;
+    g.wind = d.wind;
 
     // The whole's buckets, the stand-in last; each part's own.
     float lastError = 0.0f;
@@ -318,94 +329,164 @@ uint32_t InstanceSets::add(const Desc& d, std::vector<Instance> instances, ID3D1
         m_poolPartitions += (g.blockCount * g.partCount + CELL_INSTANCES - 1) / CELL_INSTANCES;
     }
 
-    // Cells: the instances in Morton order of their positions, cut into runs.
-    std::vector<float> spheres(instances.size() * 4);
-    float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    // Its instances wait for commit, which cuts all sets' into cells together (build_cells).
     for (Instance& in : instances) {
         const float len = std::sqrt(in.rotation[0] * in.rotation[0] + in.rotation[1] * in.rotation[1] +
                                     in.rotation[2] * in.rotation[2] + in.rotation[3] * in.rotation[3]);
         for (float& q : in.rotation) q = len > 0.0f ? q / len : 0.0f;
         if (len <= 0.0f) in.rotation[3] = 1.0f;
-        for (int a = 0; a < 3; ++a) {
-            lo[a] = std::min(lo[a], in.position[a]);
-            hi[a] = std::max(hi[a], in.position[a]);
-        }
     }
-    std::vector<std::pair<uint64_t, uint32_t>> order(instances.size());
-    for (size_t i = 0; i < instances.size(); ++i) {
-        uint64_t key = 0;
-        for (int a = 0; a < 3; ++a) {
-            const float extent = std::max(hi[a] - lo[a], 1e-6f);
-            const uint64_t q = (uint64_t)std::clamp((instances[i].position[a] - lo[a]) / extent * 2097151.0f, 0.0f,
-                                                    2097151.0f);
-            key |= spread3(q) << a;
-        }
-        order[i] = { key, (uint32_t)i };
-    }
-    std::sort(order.begin(), order.end());
-
     const uint32_t setIndex = m_setCount++;
-    g.instanceBase = m_instanceCount;
     g.instanceCount = (uint32_t)instances.size();
-    g.cellBase = m_cellCount;
-    const size_t at = m_instanceData.size();
-    m_instanceData.resize(at + instances.size() * sizeof(GpuInstance));
-    for (size_t i = 0; i < order.size(); ++i) {
-        const Instance& in = instances[order[i].second];
-        GpuInstance gi;
-        std::memcpy(gi.position, in.position, sizeof(gi.position));
-        gi.scale = in.scale;
-        gi.rotation[0] = snorm16(in.rotation[0]) | snorm16(in.rotation[1]) << 16;
-        gi.rotation[1] = snorm16(in.rotation[2]) | snorm16(in.rotation[3]) << 16;
-        std::memcpy(m_instanceData.data() + at + i * sizeof(GpuInstance), &gi, sizeof(gi));
-        float c[3];
-        const float scaled[3] = { d.center[0] * in.scale, d.center[1] * in.scale, d.center[2] * in.scale };
-        rotate(in.rotation, scaled, c);
-        for (int a = 0; a < 3; ++a) spheres[i * 4 + a] = in.position[a] + c[a];
-        spheres[i * 4 + 3] = d.radius * in.scale;
-    }
-    for (size_t first = 0; first < order.size(); first += CELL_INSTANCES) {
-        const size_t end = std::min(order.size(), first + CELL_INSTANCES);
-        float bl[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, bh[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-        GpuCell c = {};
-        c.minScale = FLT_MAX;
-        for (size_t i = first; i < end; ++i) {
-            for (int a = 0; a < 3; ++a) {
-                bl[a] = std::min(bl[a], spheres[i * 4 + a] - spheres[i * 4 + 3]);
-                bh[a] = std::max(bh[a], spheres[i * 4 + a] + spheres[i * 4 + 3]);
-            }
-            const float s = instances[order[i].second].scale;
-            c.minScale = std::min(c.minScale, s);
-            c.maxScale = std::max(c.maxScale, s);
-        }
-        for (int a = 0; a < 3; ++a) c.center[a] = 0.5f * (bl[a] + bh[a]);
-        c.radius = 0.5f * std::sqrt((bh[0] - bl[0]) * (bh[0] - bl[0]) + (bh[1] - bl[1]) * (bh[1] - bl[1]) +
-                                    (bh[2] - bl[2]) * (bh[2] - bl[2]));
-        c.first = m_instanceCount + (uint32_t)first;
-        c.count = (uint32_t)(end - first);
-        c.set = setIndex;
-        append(m_cellData, c);
-        ++m_cellCount;
-    }
-    g.cellCount = m_cellCount - g.cellBase;
     m_instanceCount += g.instanceCount;
     std::memcpy(g.center, d.center, sizeof(g.center));
     g.radius = d.radius;
     append(m_setData, g);
+    m_pending.push_back(std::move(instances));
 
     m_stats.sets = m_setCount;
-    m_stats.cells = m_cellCount;
     m_stats.instances = m_instanceCount;
     m_stats.slots = m_slotCount;
-    std::printf("[sets] set %u: %u instances in %u cells; whole in %u buckets (%u to %u clusters, error up to %.3g)%s; "
+    std::printf("[sets] set %u: %u instances; whole in %u buckets (%u to %u clusters, error up to %.3g)%s; "
                 "%u parts (%u clusters)\n",
-                setIndex, g.instanceCount, g.cellCount, g.bucketCount - n, fine, coarse, (double)lastError,
+                setIndex, g.instanceCount, g.bucketCount - n, fine, coarse, (double)lastError,
                 d.proxy ? ", then the stand-in" : "", g.partCount, partClusters);
     return setIndex;
 }
 
+// Regions: k-d cells of all sets' instance positions, at most REGION_INSTANCES each and a TLAS partition each, so that
+// the instances of every set in one place share a partition rather than overlap in partitions of their own sets. Within
+// a region, each set's instances in Morton order are cut into cells of at most CELL_INSTANCES, which keep the bucket
+// bookkeeping per set.
+void InstanceSets::build_cells() {
+    std::vector<std::pair<uint32_t, uint32_t>> refs; // set, instance
+    refs.reserve(m_instanceCount);
+    for (uint32_t s = 0; s < (uint32_t)m_pending.size(); ++s)
+        for (uint32_t i = 0; i < (uint32_t)m_pending[s].size(); ++i) refs.push_back({ s, i });
+    auto pos = [&](const std::pair<uint32_t, uint32_t>& r) { return m_pending[r.first][r.second].position; };
+    std::vector<std::vector<uint32_t>> regionOf(m_pending.size());
+    for (size_t s = 0; s < m_pending.size(); ++s) regionOf[s].resize(m_pending[s].size());
+    m_regionCount = 0;
+    // Median splits along the longest axis: by count, so that coincident positions split too.
+    std::vector<std::pair<size_t, size_t>> stack;
+    if (!refs.empty()) stack.push_back({ 0, refs.size() });
+    while (!stack.empty()) {
+        const auto [b, e] = stack.back();
+        stack.pop_back();
+        if (e - b <= REGION_INSTANCES) {
+            for (size_t k = b; k < e; ++k) regionOf[refs[k].first][refs[k].second] = m_regionCount;
+            ++m_regionCount;
+            continue;
+        }
+        float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        for (size_t k = b; k < e; ++k)
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = std::min(lo[a], pos(refs[k])[a]);
+                hi[a] = std::max(hi[a], pos(refs[k])[a]);
+            }
+        int axis = 0;
+        for (int a = 1; a < 3; ++a)
+            if (hi[a] - lo[a] > hi[axis] - lo[axis]) axis = a;
+        const size_t mid = b + (e - b) / 2;
+        std::nth_element(refs.begin() + b, refs.begin() + mid, refs.begin() + e,
+                         [&](const auto& x, const auto& y) { return pos(x)[axis] < pos(y)[axis]; });
+        stack.push_back({ b, mid });
+        stack.push_back({ mid, e });
+    }
+    refs.clear();
+    refs.shrink_to_fit();
+
+    GpuSet* sets = reinterpret_cast<GpuSet*>(m_setData.data());
+    m_instanceData.resize((size_t)m_instanceCount * sizeof(GpuInstance));
+    uint32_t base = 0;
+    for (uint32_t setIndex = 0; setIndex < m_setCount; ++setIndex) {
+        std::vector<Instance>& instances = m_pending[setIndex];
+        GpuSet& g = sets[setIndex];
+        float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        for (const Instance& in : instances)
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = std::min(lo[a], in.position[a]);
+                hi[a] = std::max(hi[a], in.position[a]);
+            }
+        struct Key {
+            uint32_t region;
+            uint64_t morton;
+            uint32_t instance;
+        };
+        std::vector<Key> order(instances.size());
+        for (size_t i = 0; i < instances.size(); ++i) {
+            uint64_t key = 0;
+            for (int a = 0; a < 3; ++a) {
+                const float extent = std::max(hi[a] - lo[a], 1e-6f);
+                const uint64_t q = (uint64_t)std::clamp((instances[i].position[a] - lo[a]) / extent * 2097151.0f, 0.0f,
+                                                        2097151.0f);
+                key |= spread3(q) << a;
+            }
+            order[i] = { regionOf[setIndex][i], key, (uint32_t)i };
+        }
+        std::sort(order.begin(), order.end(), [](const Key& x, const Key& y) {
+            return x.region != y.region ? x.region < y.region : x.morton < y.morton;
+        });
+
+        g.instanceBase = base;
+        g.cellBase = m_cellCount;
+        std::vector<float> spheres(instances.size() * 4);
+        for (size_t i = 0; i < order.size(); ++i) {
+            const Instance& in = instances[order[i].instance];
+            const float s = largest(in), inv = s > 0.0f ? 1.0f / s : 0.0f;
+            GpuInstance gi;
+            std::memcpy(gi.position, in.position, sizeof(gi.position));
+            gi.scale = s;
+            gi.rotation[0] = snorm16(in.rotation[0]) | snorm16(in.rotation[1]) << 16;
+            gi.rotation[1] = snorm16(in.rotation[2]) | snorm16(in.rotation[3]) << 16;
+            gi.axes[0] = snorm16(in.scale[0] * inv) | snorm16(in.scale[1] * inv) << 16;
+            gi.axes[1] = snorm16(in.scale[2] * inv);
+            std::memcpy(m_instanceData.data() + (base + i) * sizeof(GpuInstance), &gi, sizeof(gi));
+            float c[3];
+            const float scaled[3] = { g.center[0] * in.scale[0], g.center[1] * in.scale[1], g.center[2] * in.scale[2] };
+            rotate(in.rotation, scaled, c);
+            for (int a = 0; a < 3; ++a) spheres[i * 4 + a] = in.position[a] + c[a];
+            spheres[i * 4 + 3] = g.radius * s;
+        }
+        // Runs of one region, cut at CELL_INSTANCES.
+        for (size_t first = 0, end; first < order.size(); first = end) {
+            end = first;
+            while (end < order.size() && end - first < CELL_INSTANCES && order[end].region == order[first].region)
+                ++end;
+            float bl[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, bh[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+            GpuCell c = {};
+            c.minScale = FLT_MAX;
+            for (size_t i = first; i < end; ++i) {
+                for (int a = 0; a < 3; ++a) {
+                    bl[a] = std::min(bl[a], spheres[i * 4 + a] - spheres[i * 4 + 3]);
+                    bh[a] = std::max(bh[a], spheres[i * 4 + a] + spheres[i * 4 + 3]);
+                }
+                const float s = largest(instances[order[i].instance]);
+                c.minScale = std::min(c.minScale, s);
+                c.maxScale = std::max(c.maxScale, s);
+            }
+            for (int a = 0; a < 3; ++a) c.center[a] = 0.5f * (bl[a] + bh[a]);
+            c.radius = 0.5f * std::sqrt((bh[0] - bl[0]) * (bh[0] - bl[0]) + (bh[1] - bl[1]) * (bh[1] - bl[1]) +
+                                        (bh[2] - bl[2]) * (bh[2] - bl[2]));
+            c.first = base + (uint32_t)first;
+            c.count = (uint32_t)(end - first);
+            c.set = setIndex;
+            c.partition = order[first].region;
+            append(m_cellData, c);
+            ++m_cellCount;
+        }
+        g.cellCount = m_cellCount - g.cellBase;
+        base += g.instanceCount;
+        instances.clear();
+        instances.shrink_to_fit();
+    }
+    m_pending.clear();
+    m_stats.cells = m_cellCount;
+}
+
 void InstanceSets::commit(planet::TlasBuilder& tlas, const float origin[3], ID3D12GraphicsCommandList4* cl,
                           const std::function<void()>& flush) {
+    build_cells();
     if (!m_cellCount) return;
     std::memcpy(m_origin, origin, sizeof(m_origin));
     std::vector<ComPtr<ID3D12Resource>> keep;
@@ -431,7 +512,7 @@ void InstanceSets::commit(planet::TlasBuilder& tlas, const float origin[3], ID3D
     m_writeArgs = WORK_ARGS;
     m_updateArgs = (uint32_t)align(m_writeArgs + (uint64_t)WRITE_ARG_BYTES * m_maxWrites, 16);
     m_translateArgs = (uint32_t)align(m_updateArgs + (uint64_t)UPDATE_ARG_BYTES * m_maxUpdates, 16);
-    m_work = buffer(m_translateArgs + (uint64_t)TRANSLATE_ARG_BYTES * (m_cellCount + m_poolPartitions), true,
+    m_work = buffer(m_translateArgs + (uint64_t)TRANSLATE_ARG_BYTES * (m_regionCount + m_poolPartitions), true,
                     L"InstanceSetWork");
     for (Slot& s : m_slots) {
         s.constants = nv_helpers_dx12::CreateBuffer(m_ctx->Device(), 256, D3D12_RESOURCE_FLAG_NONE,
@@ -451,15 +532,17 @@ void InstanceSets::commit(planet::TlasBuilder& tlas, const float origin[3], ID3D
     m_cellData.clear();
     m_cellData.shrink_to_fit();
 
-    // Their own instances and partitions after the CPU's: the instances, then the part slots; the cells, then the
+    // Their own instances and partitions after the CPU's: the instances, then the part slots; the regions, then the
     // slots' partitions. A new structure, so every instance is written again.
-    tlas.reserve_external(m_instanceCount + m_slotCount, m_cellCount + m_poolPartitions);
+    tlas.reserve_external(m_instanceCount + m_slotCount, m_regionCount + m_poolPartitions,
+                          std::max(REGION_INSTANCES, CELL_INSTANCES));
     m_tlasGeneration = ~0u;
     m_stats.gpuBytes = m_instanceBuf->GetDesc().Width + m_cellBuf->GetDesc().Width + m_instanceState->GetDesc().Width +
                        m_cellState->GetDesc().Width + m_work->GetDesc().Width + m_pool->GetDesc().Width +
                        m_motion->GetDesc().Width;
-    std::printf("[sets] %u sets, %llu instances in %u cells, %u part slots; %.1f MB of tables, %.1f MB of bucket BLAS\n",
-                m_setCount, (unsigned long long)m_instanceCount, m_cellCount, m_slotCount,
+    std::printf("[sets] %u sets, %llu instances in %u cells of %u regions, %u part slots; %.1f MB of tables, %.1f MB of "
+                "bucket BLAS\n",
+                m_setCount, (unsigned long long)m_instanceCount, m_cellCount, m_regionCount, m_slotCount,
                 (double)m_stats.gpuBytes / 1048576.0, (double)m_stats.blasBytes / 1048576.0);
 }
 
@@ -516,7 +599,8 @@ void InstanceSets::record(ID3D12GraphicsCommandList4* cl, uint32_t frameSlot, pl
     std::memcpy(m_translated, delta, sizeof(delta));
     k.time = view.time;
     k.poolTlasBase = k.tlasBase + m_instanceCount;
-    k.poolPartitionBase = k.partitionBase + m_cellCount;
+    k.poolPartitionBase = k.partitionBase + m_regionCount;
+    k.regions = m_regionCount;
     k.windDistance = wind.distance;
     k.windAmplitude = wind.amplitude;
     k.windFrequency = wind.frequency;
@@ -544,9 +628,9 @@ void InstanceSets::record(ID3D12GraphicsCommandList4* cl, uint32_t frameSlot, pl
     for (uint32_t i = 0; i < UAVS; ++i) cl->SetComputeRootUnorderedAccessView(1 + SRVS + i, uav[i]->GetGPUVirtualAddress());
 
     const D3D12_RESOURCE_BARRIER uavAll = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-    auto pass = [&](ID3D12PipelineState* pso, uint32_t x, uint32_t y) {
+    auto pass = [&](ID3D12PipelineState* pso, uint32_t x, uint32_t y, uint32_t z = 1) {
         cl->SetPipelineState(pso);
-        cl->Dispatch(x, y, 1);
+        cl->Dispatch(x, y, z);
         cl->ResourceBarrier(1, &uavAll);
     };
     // A new TLAS holds none of them: all are written again.
@@ -555,15 +639,17 @@ void InstanceSets::record(ID3D12GraphicsCommandList4* cl, uint32_t frameSlot, pl
         pass(m_reset.Get(), (std::max({ m_instanceCount, m_cellCount, m_slotCount, m_blockCount, m_setCount }) + 63) / 64,
              1);
     }
+    // The per-instance passes: a row of groups per cell, the rows in slabs of a dispatch's most.
     const uint32_t perCell = CELL_INSTANCES / GROUP_INSTANCES;
-    pass(m_cells.Get(), (m_cellCount + m_poolPartitions + 63) / 64, 1);
+    const uint32_t rows = std::min(m_cellCount, CELL_ROWS), slabs = (m_cellCount + CELL_ROWS - 1) / CELL_ROWS;
+    pass(m_cells.Get(), (std::max(m_cellCount, m_regionCount + m_poolPartitions) + 63) / 64, 1);
     // Expansions take pool blocks before collapses give theirs back: a slot is never disabled and written again in one
     // build, whose operations may apply in any order.
     if (m_slotCount) {
-        pass(m_alloc.Get(), perCell, m_cellCount);
-        pass(m_collapse.Get(), perCell, m_cellCount);
+        pass(m_alloc.Get(), perCell, rows, slabs);
+        pass(m_collapse.Get(), perCell, rows, slabs);
     }
-    pass(m_instances.Get(), perCell, m_cellCount);
+    pass(m_instances.Get(), perCell, rows, slabs);
     cl->SetPipelineState(m_finalize.Get());
     cl->Dispatch(1, 1, 1);
 

@@ -128,6 +128,7 @@ class Renderer {
     uint32_t m_planetFrame = 0; // Monotonic, independent of the swapchain index.
 
     std::vector<planet::SceneInstanceDesc> m_planetSceneInstances;
+    float SceneLowestY() const;
 
 #if RDN_CLUSTER_API
     // Per-instance cuts of the scene meshes' cluster LOD hierarchies, chosen and built first in each frame's cluster
@@ -154,13 +155,16 @@ class Renderer {
             renderer->m_instanceSets.on_submitted(computeFence);
         }
     };
-    // Mass instancing: sets of one mesh at many transforms, which the GPU writes into the TLAS. RDN_SCATTER builds a
-    // test forest from a scene object.
+    // Mass instancing: sets of one mesh at many transforms, which the GPU writes into the TLAS: the loader's meshes
+    // with many instances (Scene::setSources), and RDN_SCATTER's test forest from a scene object.
     clusters::InstanceSets m_instanceSets;
     std::vector<UINT> m_scatterSources;              // its scene instances
     std::vector<std::pair<UINT, UINT>> m_setRecords; // set slot, mesh
     const void* m_setRecordBuffer = nullptr;          // the instance-properties buffer the records are in
     std::chrono::steady_clock::time_point m_setStart; // the wind's clock
+    void CreateInstanceSets(uint32_t scatterCount);
+    clusters::InstanceSets::Mesh SetMesh(UINT meshIndex, const XMMATRIX& placed, UINT hitGroup);
+    void CreateLoadedSets();
     void CreateScatterSets(uint32_t count);
     void RecordInstanceSets(ID3D12GraphicsCommandList4* cl, planet::TlasBuilder& tlas);
     clusters::LodInstances m_lod;

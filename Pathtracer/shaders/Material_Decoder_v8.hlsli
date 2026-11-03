@@ -140,6 +140,35 @@ inline float2 LoadRmaUVScale(uint matID)
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
 }
 
+inline int UnpackTexID16(uint w, uint hi)
+{
+    const uint v = hi != 0u ? (w >> 16) : (w & 0xFFFFu);
+    return (int)(v << 16) >> 16;
+}
+
+// Terrain detail: the splat texture (-1 without detail), and per layer k (0..3) its albedo modulation, normal map and
+// UV scale over the albedo UV.
+inline int LoadSplatTexID(uint matID)
+{
+    return UnpackTexID16(g_mat[matID].detail[0], 0u);
+}
+
+inline int LoadDetailAlbedoTexID(uint matID, uint k)
+{
+    return UnpackTexID16(g_mat[matID].detail[1u + (k >> 1)], k & 1u);
+}
+
+inline int LoadDetailNormalTexID(uint matID, uint k)
+{
+    return UnpackTexID16(g_mat[matID].detail[3u + (k >> 1)], k & 1u);
+}
+
+inline float LoadDetailUVScale(uint matID, uint k)
+{
+    const uint p = g_mat[matID].detail[5u + (k >> 1)];
+    return f16tof32((k & 1u) != 0u ? (p >> 16) : (p & 0xFFFFu));
+}
+
 inline bool LoadIsSSS(uint matID)
 {
     if (FORCE_DIFFUSE || (g_mat[matID].texIDs_2 & (1u << 17)) == 0u) return false;

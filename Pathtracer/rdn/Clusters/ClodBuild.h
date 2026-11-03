@@ -75,6 +75,10 @@ struct clodConfig
 	// note: this will mutate vertex_positions in place; the caller should copy positions for each cluster in the output callback as they will be overwritten by simplified clusters
 	bool simplify_dilate_borders;
 
+	// aggregate detail (separate leaves, needles or blades): instead of simplifying, keep a share of each group's elements
+	// and grow the kept ones so that their area stays; like dilation, this mutates vertex_positions in place
+	bool simplify_prune_aggregate;
+
 	// should clodCluster::bounds be computed based on the geometry of each cluster
 	bool optimize_bounds;
 
@@ -869,6 +873,216 @@ static void dilateBorders(const clodMesh& mesh, const std::vector<unsigned int>&
 	}
 }
 
+// aggregate detail (config.simplify_prune_aggregate): a group's elements are the connected components of its triangles
+// (by position), free when they touch no locked vertex. Of the free ones, a share chosen by a hash of their positions
+// stays and the rest go; the kept ones grow about their centroids so that the free elements' area stays the same
+// (stochastic pruning, Cook et al. 2007). The error is the kept elements' mean radius once grown: the scale at which
+// their arrangement changes. The growth applies once the group's original clusters are out (growElements).
+struct GrowElement
+{
+	float center[3];
+	float scale;
+	size_t first, count; // its vertices in GrowPlan::vertices
+};
+
+struct GrowPlan
+{
+	std::vector<GrowElement> elements;
+	std::vector<unsigned int> vertices;
+};
+
+static unsigned int hashPosition(unsigned int v)
+{
+	v ^= v >> 16, v *= 0x7feb352du, v ^= v >> 15, v *= 0x846ca68bu, v ^= v >> 16;
+	return v;
+}
+
+static void pruneAggregate(std::vector<unsigned int>& lod, const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, const std::vector<unsigned int>& remap, size_t target_count, GrowPlan& plan, float* error)
+{
+	plan.elements.clear();
+	plan.vertices.clear();
+	size_t stride = mesh.vertex_positions_stride / sizeof(float);
+	size_t tri_count = indices.size() / 3;
+
+	// union-find over the group's positions
+	std::unordered_map<unsigned int, unsigned int> local;
+	local.reserve(indices.size());
+	std::vector<unsigned int> parent, corner(indices.size());
+	for (size_t i = 0; i < indices.size(); ++i)
+	{
+		std::pair<std::unordered_map<unsigned int, unsigned int>::iterator, bool> it = local.emplace(remap[indices[i]], unsigned(parent.size()));
+		if (it.second)
+			parent.push_back(unsigned(parent.size()));
+		corner[i] = it.first->second;
+	}
+	auto find = [&](unsigned int x)
+	{
+		while (parent[x] != x)
+			x = parent[x] = parent[parent[x]];
+		return x;
+	};
+	for (size_t t = 0; t < tri_count; ++t)
+	{
+		unsigned int a = find(corner[t * 3]);
+		for (int k = 1; k < 3; ++k)
+		{
+			unsigned int b = find(corner[t * 3 + k]);
+			if (b != a)
+				parent[b] = a;
+		}
+	}
+
+	struct Element
+	{
+		double area, center[3], mean[3];
+		float radius;
+		unsigned int tris, corners, hash;
+		bool locked;
+	};
+	std::vector<unsigned int> element_of(parent.size(), ~0u), tri_element(tri_count);
+	std::vector<Element> elements;
+	for (size_t t = 0; t < tri_count; ++t)
+	{
+		unsigned int root = find(corner[t * 3]);
+		if (element_of[root] == ~0u)
+		{
+			element_of[root] = unsigned(elements.size());
+			Element e = {};
+			e.hash = ~0u;
+			elements.push_back(e);
+		}
+		Element& e = elements[tri_element[t] = element_of[root]];
+		const float* p[3];
+		for (int k = 0; k < 3; ++k)
+		{
+			unsigned int v = indices[t * 3 + k];
+			p[k] = &mesh.vertex_positions[v * stride];
+			e.locked |= (locks[v] & meshopt_SimplifyVertex_Lock) != 0;
+			e.hash = std::min(e.hash, hashPosition(remap[v]));
+			for (int c = 0; c < 3; ++c)
+				e.mean[c] += p[k][c];
+		}
+		float ab[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
+		float ac[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
+		float nt[3] = {ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]};
+		double area = 0.5 * sqrt(double(nt[0]) * nt[0] + double(nt[1]) * nt[1] + double(nt[2]) * nt[2]);
+		for (int c = 0; c < 3; ++c)
+			e.center[c] += area * (double(p[0][c]) + p[1][c] + p[2][c]) / 3.0;
+		e.area += area;
+		e.tris++;
+		e.corners += 3;
+	}
+	for (Element& e : elements)
+		for (int c = 0; c < 3; ++c)
+			e.center[c] = e.area > 0 ? e.center[c] / e.area : e.mean[c] / e.corners;
+	for (size_t i = 0; i < indices.size(); ++i)
+	{
+		Element& e = elements[tri_element[i / 3]];
+		const float* p = &mesh.vertex_positions[indices[i] * stride];
+		double dx = p[0] - e.center[0], dy = p[1] - e.center[1], dz = p[2] - e.center[2];
+		e.radius = std::max(e.radius, float(sqrt(dx * dx + dy * dy + dz * dz)));
+	}
+
+	// the free elements in hash order: those first in it go first, at this level and at every later one
+	std::vector<unsigned int> free_elements;
+	size_t free_tris = 0;
+	double free_area = 0;
+	for (size_t i = 0; i < elements.size(); ++i)
+		if (!elements[i].locked)
+		{
+			free_elements.push_back(unsigned(i));
+			free_tris += elements[i].tris;
+			free_area += elements[i].area;
+		}
+	size_t drop = tri_count > target_count / 3 ? tri_count - target_count / 3 : 0;
+
+	// too little of the group is separate elements: it is a surface after all
+	if (free_tris * 2 < drop)
+	{
+		simplify(lod, config, mesh, indices, locks, target_count, error);
+		return;
+	}
+
+	std::sort(free_elements.begin(), free_elements.end(), [&](unsigned int a, unsigned int b) { return elements[a].hash < elements[b].hash || (elements[a].hash == elements[b].hash && a < b); });
+	std::vector<unsigned char> keep(elements.size(), 1);
+	size_t dropped = 0, kept = free_elements.size();
+	for (size_t i = 0; i < free_elements.size() && dropped < drop && kept > 1; ++i)
+	{
+		keep[free_elements[i]] = 0;
+		dropped += elements[free_elements[i]].tris;
+		kept--;
+	}
+
+	double kept_area = 0;
+	for (unsigned int i : free_elements)
+		if (keep[i])
+			kept_area += elements[i].area;
+	float scale = kept_area > 0 ? float(sqrt(free_area / kept_area)) : 1.f;
+
+	lod.clear();
+	for (size_t t = 0; t < tri_count; ++t)
+		if (keep[tri_element[t]])
+			lod.insert(lod.end(), indices.begin() + t * 3, indices.begin() + t * 3 + 3);
+
+	// the kept free elements' vertices, element by element
+	std::vector<std::pair<unsigned int, unsigned int> > grown;
+	for (size_t i = 0; i < indices.size(); ++i)
+	{
+		unsigned int e = tri_element[i / 3];
+		if (keep[e] && !elements[e].locked)
+			grown.push_back(std::make_pair(e, indices[i]));
+	}
+	std::sort(grown.begin(), grown.end());
+	grown.erase(std::unique(grown.begin(), grown.end()), grown.end());
+
+	double radius = 0, all_radius = 0;
+	for (size_t i = 0; i < grown.size();)
+	{
+		unsigned int e = grown[i].first;
+		GrowElement g = {};
+		for (int c = 0; c < 3; ++c)
+			g.center[c] = float(elements[e].center[c]);
+		g.scale = scale;
+		g.first = plan.vertices.size();
+		for (; i < grown.size() && grown[i].first == e; ++i)
+			plan.vertices.push_back(grown[i].second);
+		g.count = plan.vertices.size() - g.first;
+		plan.elements.push_back(g);
+		radius += elements[e].radius * scale;
+	}
+	for (unsigned int i : free_elements)
+		all_radius += elements[i].radius;
+
+	*error = plan.elements.empty() ? (free_elements.empty() ? 0.f : float(all_radius / free_elements.size())) : float(radius / plan.elements.size());
+}
+
+static void growElements(const clodMesh& mesh, const GrowPlan& plan, const std::vector<unsigned int>& remap, std::vector<unsigned char>& grown, clodBounds& bounds)
+{
+	size_t stride = mesh.vertex_positions_stride / sizeof(float);
+
+	// each position grows once, through its canonical vertex, and every wedge of it takes the result
+	for (const GrowElement& e : plan.elements)
+		for (size_t i = e.first; i < e.first + e.count; ++i)
+		{
+			unsigned int v = plan.vertices[i], r = remap[v];
+			float* vr = const_cast<float*>(&mesh.vertex_positions[r * stride]);
+			if (!grown[r])
+			{
+				for (int c = 0; c < 3; ++c)
+					vr[c] = e.center[c] + (vr[c] - e.center[c]) * e.scale;
+				grown[r] = 1;
+
+				float dx = vr[0] - bounds.center[0], dy = vr[1] - bounds.center[1], dz = vr[2] - bounds.center[2];
+				bounds.radius = std::max(bounds.radius, sqrtf(dx * dx + dy * dy + dz * dz));
+			}
+			float* vi = const_cast<float*>(&mesh.vertex_positions[v * stride]);
+			vi[0] = vr[0], vi[1] = vr[1], vi[2] = vr[2];
+		}
+
+	for (unsigned int v : plan.vertices)
+		grown[remap[v]] = 0;
+}
+
 static clodNode mergeNodes(const clodNode* nodes, size_t offset, size_t count)
 {
 	clodNode result = {};
@@ -963,6 +1177,8 @@ void clodBuildStage(clodConfig config, clodMesh mesh, const clodSurvivor* in, si
 
 	std::vector<float> dilate_offsets(config.simplify_dilate_borders ? mesh.vertex_count * 4 : 0);
 	std::vector<unsigned long long> dilate_table;
+	std::vector<unsigned char> grown(config.simplify_prune_aggregate ? mesh.vertex_count : 0);
+	GrowPlan grow_plan;
 
 	// initial clusterization splits the original mesh; a later stage starts from the survivors of earlier ones
 	std::vector<unsigned int> cluster_indices, cluster_codes;
@@ -1046,7 +1262,12 @@ void clodBuildStage(clodConfig config, clodMesh mesh, const clodSurvivor* in, si
 			clodBounds bounds = boundsMerge(&group[0].bounds, group_size, sizeof(Cluster));
 
 			float error = 0.f;
-			simplify(simplified, config, mesh, merged, locks, target_size, &error);
+			grow_plan.elements.clear();
+			grow_plan.vertices.clear();
+			if (config.simplify_prune_aggregate)
+				pruneAggregate(simplified, config, mesh, merged, locks, remap, target_size, grow_plan, &error);
+			else
+				simplify(simplified, config, mesh, merged, locks, target_size, &error);
 			if (simplified.size() > merged.size() * config.simplify_threshold)
 			{
 				// carry the clusters on unchanged, so that the next level's partition gives them other neighbours and other
@@ -1102,6 +1323,8 @@ void clodBuildStage(clodConfig config, clodMesh mesh, const clodSurvivor* in, si
 			// now that we've output the group with the original clusters, we need to dilate simplified clusters if requested
 			if (config.simplify_dilate_borders)
 				dilateBorders(mesh, merged, simplified, locks, remap, bounds, dilate_offsets, dilate_table);
+			if (!grow_plan.elements.empty())
+				growElements(mesh, grow_plan, remap, grown, bounds);
 
 			// enqueue new clusters for further processing
 			size_t cluster_offset = pending.size();

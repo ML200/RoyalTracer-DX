@@ -16,25 +16,27 @@ namespace clusters {
 // partitioned TLAS. The object's meshes are resident in full (Pager::pin); a few uniform cuts of each, at doubling
 // object-space error, are built once as cluster BLAS (buckets) that all its instances share. Every frame each instance
 // takes the coarsest bucket within the error budget at its distance, a looser budget off screen, and never none, since
-// rays leave the view. Instances are sorted into cells of at most CELL_INSTANCES (a TLAS partition each), whose bounds
-// let a cell skip its instances while its bucket holds. The records carry the meshes in world space, so the hit's
-// transform places them (IS_SET_INSTANCE).
+// rays leave the view. All sets' instances share regions of space, a TLAS partition each, so that sets covering the same
+// ground do not overlap in partitions of their own; within a region each set's are sorted into cells of at most
+// CELL_INSTANCES, whose bounds let a cell skip its instances while its bucket holds. The records carry the meshes in
+// world space, so the hit's transform places them (IS_SET_INSTANCE).
 //
 // An object may be an assembly (foliage: a tree of branch and twig parts). Far off it is its whole, one mesh, down to
 // a stand-in of three textured planes beyond its coarsest cut; an instance whose whole would need full detail expands
 // into its parts, each a TLAS instance of its own from a pool of part slots, and sways in the wind near the camera.
 class InstanceSets {
   public:
-    static constexpr uint32_t CELL_INSTANCES = 1024; // the TLAS's instances per partition
+    static constexpr uint32_t CELL_INSTANCES = 1024;   // a set's instances per cell, and per part slots' partition
+    static constexpr uint32_t REGION_INSTANCES = 4096; // all sets' instances per region: a TLAS partition
     static constexpr uint32_t MAX_BUCKETS = 16;      // per mesh
     static constexpr uint32_t MAX_PARTS = 256;       // per assembly
     static constexpr uint32_t ASSEMBLY_BLOCKS = 4096; // instances of a set expanded at once
 
     // Placed at position (relative to the scene origin), rotated by the unit quaternion rotation (x, y, z, w) and
-    // uniformly scaled, in the set's space.
+    // scaled along the object's axes, in the set's space.
     struct Instance {
         float position[3];
-        float scale;
+        float scale[3];
         float rotation[4];
     };
     // A mesh in a set's object: resident in full, placed in set space, whose origin an instance's position places.
@@ -57,6 +59,7 @@ class InstanceSets {
         bool proxy = false;      // farther than the whole's coarsest cut: the stand-in
         Mesh stand;
         float center[3] = {}, radius = 0.0f; // the object's bounding sphere in set space
+        float wind = 1.0f;       // its sway's factor: 0 stands still (rocks), and its instances are never rewritten for it
     };
     // The scene origin, and the camera relative to it; planes: points p in view have dot(xyz, p) + w >= 0 (unit
     // normals).
@@ -87,7 +90,8 @@ class InstanceSets {
     };
 
     void init(DeviceContext* ctx, ClusterGeometry* geometry, ID3D12DeviceRaytracing2* rtas, uint32_t frameSlots);
-    // Builds the set's buckets on cl, then flush; it joins the GPU tables at commit. Returns its index.
+    // Builds the set's buckets on cl, then flush; it joins the GPU tables, and its instances the regions, at commit.
+    // Returns its index.
     uint32_t add(const Desc& d, std::vector<Instance> instances, ID3D12GraphicsCommandList4* cl,
                  const std::function<void()>& flush);
     // After the adds: the GPU tables, and the TLAS range (a new structure, which the next frame fills). origin: the
@@ -125,6 +129,8 @@ class InstanceSets {
     uint32_t add_buckets(const Mesh& m, float standIn, ID3D12GraphicsCommandList4* cl,
                          const std::function<void()>& flush, uint32_t& count, float& lastError, uint32_t& fine,
                          uint32_t& coarse);
+    // At commit: the regions over all sets' instances, and every set's instances and cells in them.
+    void build_cells();
 
     DeviceContext* m_ctx = nullptr;
     ClusterGeometry* m_geometry = nullptr;
@@ -132,11 +138,12 @@ class InstanceSets {
     ComPtr<ID3D12RootSignature> m_root;
     ComPtr<ID3D12PipelineState> m_reset, m_cells, m_collapse, m_alloc, m_instances, m_finalize;
 
-    std::vector<uint8_t> m_instanceData; // packed instances, until commit
-    std::vector<uint32_t> m_cellData;    // packed cells, until commit
+    std::vector<std::vector<Instance>> m_pending; // per set its instances, until commit
+    std::vector<uint8_t> m_instanceData; // packed instances, at commit
+    std::vector<uint32_t> m_cellData;    // packed cells, at commit
     std::vector<uint32_t> m_bucketData, m_partData, m_setData;
     std::vector<ComPtr<ID3D12Resource>> m_blas;
-    uint32_t m_setCount = 0, m_instanceCount = 0, m_cellCount = 0;
+    uint32_t m_setCount = 0, m_instanceCount = 0, m_cellCount = 0, m_regionCount = 0;
     uint32_t m_blockCount = 0, m_slotCount = 0, m_poolPartitions = 0; // assemblies' part slots
     ComPtr<ID3D12Resource> m_setBuf, m_bucketBuf, m_cellBuf, m_instanceBuf, m_partBuf, m_instanceState, m_cellState,
         m_work, m_pool, m_motion;

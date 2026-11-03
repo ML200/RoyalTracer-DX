@@ -358,6 +358,35 @@ float TexFootprintLod(Texture2D<float4> tex, float uvFootprint)
     return log2(max(uvFootprint * float(max(w, h)), 1e-8f)) + PT_TEXTURE_LOD_BIAS;
 }
 
+// Terrain detail: the splat's layer weights at uv (the albedo UV); what they leave to 1 keeps the base unchanged.
+float4 DetailWeights(uint matID, int splatID, float2 uv, float uvFootprint)
+{
+    Texture2D<float4> splat = ResourceDescriptorHeap[splatID];
+    const float4 w = saturate(SampleMaterialTex(splat, uv, TexFootprintLod(splat, uvFootprint)));
+    const float sum = dot(w, float4(1.0f, 1.0f, 1.0f, 1.0f));
+    return sum > 1.0f ? w / sum : w;
+}
+
+// The layers' albedo modulation (each averages 0.5, so twice it averages 1): fine detail up close that filters
+// out to the base albedo with distance.
+float3 DetailAlbedoModulation(uint matID, float2 uv, float uvFootprint, float4 w)
+{
+    float3 m = (1.0f - dot(w, float4(1.0f, 1.0f, 1.0f, 1.0f))).xxx;
+    [unroll] for (uint k = 0u; k < 4u; ++k)
+    {
+        const int id = LoadDetailAlbedoTexID(matID, k);
+        [branch] if (w[k] > 1e-3f && id != -1)
+        {
+            const float s = LoadDetailUVScale(matID, k);
+            Texture2D<float4> tex = ResourceDescriptorHeap[id];
+            m += w[k] * 2.0f * SampleMaterialTex(tex, uv * s, TexFootprintLod(tex, uvFootprint * s)).rgb;
+        }
+        else
+            m += w[k].xxx;
+    }
+    return m;
+}
+
 float3 EvaluateAlbedo(uint matID, float2 uv, float uvFootprint)
 {
     float3 albedo = LoadKd_rgb(matID);
@@ -367,6 +396,13 @@ float3 EvaluateAlbedo(uint matID, float2 uv, float uvFootprint)
         const float2 scale = LoadAlbedoUVScale(matID);
         Texture2D<float4> tex = ResourceDescriptorHeap[texID];
         albedo = SampleMaterialTex(tex, uv * scale, TexFootprintLod(tex, uvFootprint * max(scale.x, scale.y))).rgb;
+        const int splatID = LoadSplatTexID(matID);
+        [branch] if (splatID != -1)
+        {
+            const float2 duv = uv * scale;
+            const float f = uvFootprint * max(scale.x, scale.y);
+            albedo *= DetailAlbedoModulation(matID, duv, f, DetailWeights(matID, splatID, duv, f));
+        }
     }
     return albedo;
 }
@@ -637,8 +673,31 @@ HitInfo EvalSurfaceStateImpl(
         if (dot(bitangentW, bitangentW_geom) < 0.0f) bitangentW = -bitangentW;
 
         Texture2D<float4> nTex = ResourceDescriptorHeap[normalTexID];
-        const float3 n_tan = SampleMaterialTex(nTex, normalUV,
+        float3 n_tan = SampleMaterialTex(nTex, normalUV,
             TexFootprintLod(nTex, hit.uvFootprint * max(normalScale.x, normalScale.y))).xyz * 2.0f - 1.0f;
+
+        // Terrain detail normals over the base's, by the splat's weights (partial derivatives add).
+        const int splatID = LoadSplatTexID(materialID);
+        [branch] if (splatID != -1)
+        {
+            const float2 aScale = LoadAlbedoUVScale(materialID);
+            const float2 duv = uv * aScale;
+            const float f = hit.uvFootprint * max(aScale.x, aScale.y);
+            const float4 w = DetailWeights(materialID, splatID, duv, f);
+            float2 slope = 0.0f;
+            [unroll] for (uint k = 0u; k < 4u; ++k)
+            {
+                const int id = LoadDetailNormalTexID(materialID, k);
+                [branch] if (w[k] > 1e-3f && id != -1)
+                {
+                    const float s = LoadDetailUVScale(materialID, k);
+                    Texture2D<float4> dTex = ResourceDescriptorHeap[id];
+                    const float3 d = SampleMaterialTex(dTex, duv * s, TexFootprintLod(dTex, f * s)).xyz * 2.0f - 1.0f;
+                    slope += w[k] * d.xy / max(d.z, 0.2f);
+                }
+            }
+            n_tan = normalize(float3(n_tan.xy / max(n_tan.z, 0.2f) + slope, 1.0f));
+        }
 
         normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;
         normW *= rsqrt(max(dot(normW, normW), 1e-20f));

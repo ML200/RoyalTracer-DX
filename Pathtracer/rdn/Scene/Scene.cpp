@@ -69,16 +69,53 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
         return false;
     }
 
+    // Aggregate detail: a material whose triangles make many small separate elements (modelled leaves, needles, grass
+    // blades), at most AGGREGATE_ELEMENT_TRIS triangles each on average. Edge collapses would shrink them all away at the
+    // first levels; its levels prune elements instead.
+    constexpr uint32_t AGGREGATE_MIN_TRIS = 256, AGGREGATE_ELEMENT_TRIS = 16;
+    std::unordered_map<uint32_t, uint32_t> regionElements;
+    {
+        std::vector<uint32_t> at(cpuVertices.size()), parent(cpuVertices.size());
+        meshopt_generatePositionRemap(at.data(), &cpuVertices[0].position.x, cpuVertices.size(), sizeof(Vertex));
+        for (uint32_t i = 0; i < (uint32_t)parent.size(); ++i) parent[i] = i;
+        auto find = [&](uint32_t x) {
+            while (parent[x] != x) x = parent[x] = parent[parent[x]];
+            return x;
+        };
+        for (UINT t = 0; t < triCount; ++t) {
+            if (regions[t] == NO_REGION) continue;
+            const uint32_t a = find(at[cpuIndices[3ull * t]]);
+            for (int k = 1; k < 3; ++k) {
+                const uint32_t b = find(at[cpuIndices[3ull * t + k]]);
+                if (b != a) parent[b] = a;
+            }
+        }
+        std::vector<uint64_t> elements;
+        elements.reserve(lodSourceTris);
+        for (UINT t = 0; t < triCount; ++t)
+            if (regions[t] != NO_REGION) elements.push_back((uint64_t)regions[t] << 32 | find(at[cpuIndices[3ull * t]]));
+        std::sort(elements.begin(), elements.end());
+        elements.erase(std::unique(elements.begin(), elements.end()), elements.end());
+        for (uint64_t e : elements) ++regionElements[(uint32_t)(e >> 32)];
+    }
+    auto aggregate = [&](uint32_t region) {
+        const uint32_t tris = regionTris[region];
+        return tris >= AGGREGATE_MIN_TRIS && tris <= AGGREGATE_ELEMENT_TRIS * regionElements[region];
+    };
+
     // Materials simplify together, each triangle keeping its own (a simplified one the one covering most around it), as
-    // Nanite's clusters mix them: a material border is no lock. Only foliage and the rest are regions apart, as they
-    // simplify differently.
-    constexpr uint32_t REGION_SURFACE = 0, REGION_FOLIAGE = 1;
+    // Nanite's clusters mix them: a material border is no lock. Only foliage, aggregates and the rest are regions apart,
+    // as they simplify differently.
+    constexpr uint32_t REGION_SURFACE = 0, REGION_FOLIAGE = 1, REGION_AGGREGATE = 2;
     std::vector<uint32_t> codes(triCount, 0), classes(triCount, NO_REGION);
     for (UINT t = 0; t < triCount; ++t)
         if (regions[t] != NO_REGION) {
             codes[t] = regions[t] - materialBase;
-            classes[t] = foliage && foliage(regions[t]) ? REGION_FOLIAGE : REGION_SURFACE;
+            classes[t] = foliage && foliage(regions[t]) ? REGION_FOLIAGE
+                         : aggregate(regions[t])        ? REGION_AGGREGATE
+                                                        : REGION_SURFACE;
         }
+    lodAggregate = std::find(classes.begin(), classes.end(), REGION_AGGREGATE) != classes.end();
 
     // Material borders as seams: a vertex shared across materials splits into one per material, and every vertex at such a
     // position is protected, so a border moves only along itself and no material spreads over another's surface.
@@ -139,6 +176,7 @@ bool MeshGPU::BuildPagedLod(std::vector<uint32_t> regions, uint32_t materialBase
     src.regions = classes.data();
     src.triCount = triCount;
     src.foliage = [](uint32_t region) { return region == REGION_FOLIAGE; };
+    src.aggregate = [](uint32_t region) { return region == REGION_AGGREGATE; };
     src.codes = codes.data();
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {

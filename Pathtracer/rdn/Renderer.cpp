@@ -84,7 +84,7 @@ static bool ScatterRequest(uint32_t& count, std::string& name) {
     return count > 0;
 }
 
-// Instance-set records available to the scatter.
+// Instance-set records available to the scatter; the loader's sets take one each on top.
 static constexpr UINT SET_SLOTS = 64;
 // The error budget's factor for set instances off screen: coarser, but still there for the rays that leave the view.
 static constexpr float SET_OFFSCREEN_ERROR = 8.0f;
@@ -200,6 +200,8 @@ void Renderer::InitDevice(HWND hwnd) {
 void Renderer::LoadScene(const std::vector<ModelEntry>& models) {
     try {
         auto flushFn = [this]() { m_ctx.FlushAndReset(); };
+        // Meshes with many instances become instance sets, which the GPU writes into the partitioned TLAS.
+        m_scene.instanceSetsWanted = m_planet.tlas().partitioned();
         AssetLoader::LoadModels(models, m_scene, m_ctx.Device(), m_ctx.CmdList(), flushFn);
         m_ctx.FlushAndReset();
     } catch (const std::exception& e) {
@@ -210,6 +212,36 @@ void Renderer::LoadScene(const std::vector<ModelEntry>& models) {
         MessageBoxW(NULL, wMsg, L"Fatal Init Error", MB_OK | MB_ICONERROR);
         exit(1);
     }
+}
+
+// The lowest world y of the loaded geometry: scene instances by their meshes' boxes, set instances by their mesh's
+// bounding sphere. +inf without any.
+float Renderer::SceneLowestY() const {
+    float lowest = FLT_MAX;
+    for (const SceneInstance& si : m_scene.instances) {
+        const MeshGPU& mesh = m_scene.meshes[si.meshIndex];
+        if (!mesh.vertexCount && mesh.lod.empty())
+            continue;
+        for (int c = 0; c < 8; ++c) {
+            const XMVECTOR p = XMVector3TransformCoord(
+                XMVectorSet(c & 1 ? mesh.boundsMax.x : mesh.boundsMin.x, c & 2 ? mesh.boundsMax.y : mesh.boundsMin.y,
+                            c & 4 ? mesh.boundsMax.z : mesh.boundsMin.z, 1.0f),
+                si.worldTransform);
+            lowest = std::min(lowest, XMVectorGetY(p));
+        }
+    }
+    for (const Scene::SetSource& src : m_scene.setSources) {
+        const MeshGPU& mesh = m_scene.meshes[m_scene.instances[src.instance].meshIndex];
+        const XMVECTOR lo = XMLoadFloat3(&mesh.boundsMin), hi = XMLoadFloat3(&mesh.boundsMax);
+        // The sphere about the box centre, as far down as any rotation takes it.
+        const float reach = XMVectorGetX(XMVector3Length(XMVectorScale(XMVectorAdd(lo, hi), 0.5f))) +
+                            0.5f * XMVectorGetX(XMVector3Length(XMVectorSubtract(hi, lo)));
+        for (const Scene::SetPlacement& p : src.placements) {
+            const float s = std::max({std::fabs(p.scale[0]), std::fabs(p.scale[1]), std::fabs(p.scale[2])});
+            lowest = std::min(lowest, p.position[1] - reach * s);
+        }
+    }
+    return lowest;
 }
 
 void Renderer::InitSceneGPU() {
@@ -225,6 +257,10 @@ void Renderer::InitSceneGPU() {
         // ones, so light picks use the tree's own importance.
         if (m_headless)
             m_integratorSettings.lightTreeLearning = false;
+        // The atmosphere's ground no higher than the scene's lowest geometry: below it a point gets no sun and no sky,
+        // and view rays end at it. A Minecraft world has set its own.
+        if (!m_voxels.enabled())
+            m_camera.skyGroundY = std::min(m_camera.skyGroundY, SceneLowestY() - 1.0f);
         m_rockMeshIndices.clear();
         if (m_planet.enabled()) {
             const auto rockVariants = planet::generate_rock_variants(6, 2, 0xB0DECA11u);
@@ -252,6 +288,11 @@ void Renderer::InitSceneGPU() {
             throw std::runtime_error("A host stream and a Minecraft world cannot share the external stream slot");
         m_planet.set_external(m_voxels.enabled() ? &m_voxels : static_cast<planet::IExternalStream*>(m_host));
         m_planet.set_external2(m_ocean.Enabled() ? &m_ocean : nullptr);
+        // Two hit-group records per scene instance, in the TLAS's 24-bit contribution (CreateShaderBindingTable).
+        if (m_scene.instances.size() > (0xFFFFFFu - 4u) / 2u)
+            throw std::runtime_error("The scene has " + std::to_string(m_scene.instances.size()) +
+                                     " instances; at most 8.4M fit the shader binding table. Meshes with many "
+                                     "instances need instance sets, which need the partitioned TLAS and paging.");
         m_planet.reserve_scene_instances((uint32_t)m_scene.instances.size());
         CreateAccelerationStructures();
 
@@ -331,8 +372,8 @@ void Renderer::InitSceneGPU() {
         {
             uint32_t count = 0;
             std::string name;
-            if (ScatterRequest(count, name))
-                m_scene.ReserveInstanceSets(SET_SLOTS);
+            if (ScatterRequest(count, name) || !m_scene.setSources.empty())
+                m_scene.ReserveInstanceSets(SET_SLOTS + (UINT)m_scene.setSources.size());
         }
         m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
 
@@ -1240,7 +1281,10 @@ void Renderer::LoadPagedRoots() {
         m_pager.add_mesh(&mesh.lod, std::move(*mesh.pagedSource), mesh.poolTriBase, mesh.hasOmm);
         mesh.pagedSource.reset();
     }
-    // The scatter's meshes stay resident in full: all their instances share cuts of the whole hierarchy.
+    // The sets' meshes stay resident in full: all their instances share cuts of the whole hierarchy.
+    std::vector<UINT> pinned;
+    for (const Scene::SetSource& s : m_scene.setSources)
+        pinned.push_back(m_scene.instances[s.instance].meshIndex);
     uint32_t scatterCount = 0;
     std::string scatterName;
     m_scatterSources.clear();
@@ -1272,7 +1316,6 @@ void Renderer::LoadPagedRoots() {
             if (best != ~0u)
                 m_scatterSources.push_back(best);
         }
-        std::vector<UINT> pinned;
         for (UINT i : m_scatterSources)
             pinned.push_back(m_scene.instances[i].meshIndex);
         if (m_scene.scatter.wholeInstance != ~0u) {
@@ -1281,16 +1324,16 @@ void Renderer::LoadPagedRoots() {
             if (m_scene.scatter.standIn != ~0u)
                 pinned.push_back(m_scene.scatter.standIn);
         }
-        for (UINT meshIndex : pinned) {
-            const auto at = std::find(m_pagedMeshes.begin(), m_pagedMeshes.end(), meshIndex);
-            if (at != m_pagedMeshes.end())
-                m_pager.pin((uint32_t)(at - m_pagedMeshes.begin()));
-        }
         for (UINT i : m_scatterSources) {
             const MeshGPU& m = m_scene.meshes[m_scene.instances[i].meshIndex];
             std::printf("[sets] RDN_SCATTER: %s, %zu clusters in its hierarchy%s\n", m_scene.instances[i].name.c_str(),
                         m.lod.clusters.size(), m.alphaTriCount || m.lodAlpha ? ", alpha-tested" : "");
         }
+    }
+    for (UINT meshIndex : pinned) {
+        const auto at = std::find(m_pagedMeshes.begin(), m_pagedMeshes.end(), meshIndex);
+        if (at != m_pagedMeshes.end())
+            m_pager.pin((uint32_t)(at - m_pagedMeshes.begin()));
     }
     m_pager.load_roots(m_ctx.CmdList(), [this] { m_ctx.FlushAndReset(); },
                        [this](uint32_t pagerMesh, ComPtr<ID3D12Resource> blas) {
@@ -1298,7 +1341,7 @@ void Renderer::LoadPagedRoots() {
                        });
     m_scene.RebuildTLASInstanceList();
     m_scene.tlasFullRebuild = true;
-    CreateScatterSets(scatterCount);
+    CreateInstanceSets(scatterCount);
 
     // Cuts on the GPU apply as partitioned TLAS instance updates.
     char v[8] = {};
@@ -1468,12 +1511,87 @@ void Renderer::UpdateSceneLod() {
 
 // The test forest: count copies of the scatter's object (its pieces, a set each, with the same transforms) on a jittered
 // grid around the scene, on the object's ground, turned and scaled at random.
-void Renderer::CreateScatterSets(uint32_t count) {
-    if (m_scatterSources.empty() || !count)
+// The loader's sets and the test scatter's, in one InstanceSets.
+void Renderer::CreateInstanceSets(uint32_t scatterCount) {
+    const bool scatter = !m_scatterSources.empty() && scatterCount;
+    if (!scatter && m_scene.setSources.empty())
         return;
-    if (m_scatterSources.size() > m_scene.setSlots) {
-        std::printf("[sets] RDN_SCATTER: %zu pieces, %u set records; nothing scattered\n", m_scatterSources.size(),
-                    m_scene.setSlots);
+    m_instanceSets.init(&m_ctx, &m_clusters, m_clusters.rtas_device(), m_clusters.frame_slots());
+    m_setRecords.clear();
+    CreateLoadedSets();
+    if (scatter)
+        CreateScatterSets(scatterCount);
+    auto flush = [this] { m_ctx.FlushAndReset(); };
+    m_instanceSets.commit(m_planet.tlas(), &m_scene.sceneOriginWorld.x, m_ctx.CmdList(), flush);
+    for (const auto& [slot, meshIndex] : m_setRecords)
+        m_scene.WriteSetRecord(slot, meshIndex);
+    m_setRecordBuffer = m_scene.instanceProperties.Get();
+    m_camera.instanceSetBase = m_scene.setPropsBase;
+    m_camera.instanceSetEnd = m_scene.setPropsBase + (UINT)m_setRecords.size();
+    m_setStart = std::chrono::steady_clock::now();
+}
+
+// A set's mesh: a record of its own, placed (mesh to set space), hit through the records of hitGroup, its scene
+// instance's.
+clusters::InstanceSets::Mesh Renderer::SetMesh(UINT meshIndex, const XMMATRIX& placed, UINT hitGroup) {
+    const MeshGPU& mesh = m_scene.meshes[meshIndex];
+    clusters::InstanceSets::Mesh d;
+    d.lod = &mesh.lod;
+    d.omm = mesh.hasOmm || mesh.lodAlpha;
+    d.record = m_scene.setPropsBase + (UINT)m_setRecords.size();
+    d.hitGroup = hitGroup;
+    d.flags = (mesh.alphaTriCount == 0 && !mesh.lodAlpha) ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
+                                                          : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+    const XMMATRIX T = XMMatrixTranspose(placed);
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+            d.base[r * 4 + c] = XMVectorGetByIndex(T.r[r], c);
+    m_setRecords.push_back({(UINT)m_setRecords.size(), meshIndex});
+    return d;
+}
+
+// The loader's sets: set space is the scene's, relative to its origin, and each mesh sits in it as in its own space.
+void Renderer::CreateLoadedSets() {
+    auto flush = [this] { m_ctx.FlushAndReset(); };
+    const XMFLOAT3& origin = m_scene.sceneOriginWorld;
+    for (Scene::SetSource& src : m_scene.setSources) {
+        const SceneInstance& si = m_scene.instances[src.instance];
+        const MeshGPU& mesh = m_scene.meshes[si.meshIndex];
+        if (src.placements.empty())
+            continue;
+        if (mesh.lod.empty() || m_setRecords.size() >= m_scene.setSlots) {
+            std::printf("[sets] %s: no set (%s); its %zu other instances are left out\n", si.name.c_str(),
+                        mesh.lod.empty() ? "no hierarchy" : "out of set records", src.placements.size());
+            continue;
+        }
+        std::vector<clusters::InstanceSets::Instance> instances(src.placements.size());
+        for (size_t i = 0; i < instances.size(); ++i) {
+            const Scene::SetPlacement& p = src.placements[i];
+            clusters::InstanceSets::Instance& in = instances[i];
+            in.position[0] = p.position[0] - origin.x;
+            in.position[1] = p.position[1] - origin.y;
+            in.position[2] = p.position[2] - origin.z;
+            std::memcpy(in.scale, p.scale, sizeof(in.scale));
+            std::memcpy(in.rotation, p.rotation, sizeof(in.rotation));
+        }
+        src.placements.clear();
+        src.placements.shrink_to_fit();
+        clusters::InstanceSets::Desc d;
+        d.whole = SetMesh(si.meshIndex, XMMatrixIdentity(), m_scene.tlasInstances[src.instance].hitGroupContribution);
+        const XMVECTOR lo = XMLoadFloat3(&mesh.boundsMin), hi = XMLoadFloat3(&mesh.boundsMax);
+        XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(d.center), XMVectorScale(XMVectorAdd(lo, hi), 0.5f));
+        d.radius = 0.5f * XMVectorGetX(XMVector3Length(XMVectorSubtract(hi, lo)));
+        // Foliage sways; rocks and logs stand still.
+        d.wind = mesh.lodAggregate || mesh.lodAlpha ? 1.0f : 0.0f;
+        m_instanceSets.add(d, std::move(instances), m_ctx.CmdList(), flush);
+    }
+}
+
+// The test scatter's sets.
+void Renderer::CreateScatterSets(uint32_t count) {
+    if (m_scatterSources.size() > m_scene.setSlots - m_setRecords.size()) {
+        std::printf("[sets] RDN_SCATTER: %zu pieces, %zu set records left; nothing scattered\n",
+                    m_scatterSources.size(), m_scene.setSlots - m_setRecords.size());
         return;
     }
     auto bounds = [&](UINT inst, XMVECTOR& lo, XMVECTOR& hi) {
@@ -1526,7 +1644,7 @@ void Renderer::CreateScatterSets(uint32_t count) {
         in.position[0] = cx + spacing * ((float)cells[i].second.first + 0.7f * (unit(rng) - 0.5f));
         in.position[1] = pivot.y;
         in.position[2] = cz + spacing * ((float)cells[i].second.second + 0.7f * (unit(rng) - 0.5f));
-        in.scale = 0.8f + 0.4f * unit(rng);
+        in.scale[0] = in.scale[1] = in.scale[2] = 0.8f + 0.4f * unit(rng);
         const float yaw = 6.2831853f * unit(rng);
         in.rotation[0] = 0.0f;
         in.rotation[1] = std::sin(0.5f * yaw);
@@ -1534,26 +1652,11 @@ void Renderer::CreateScatterSets(uint32_t count) {
         in.rotation[3] = std::cos(0.5f * yaw);
     }
 
-    m_instanceSets.init(&m_ctx, &m_clusters, m_clusters.rtas_device(), m_clusters.frame_slots());
     auto flush = [this] { m_ctx.FlushAndReset(); };
-    m_setRecords.clear();
     // Set space: the scene's, with the object's ground point at the origin.
     const XMMATRIX toSet = XMMatrixTranslation(-pivot.x, -pivot.y, -pivot.z);
     auto meshOf = [&](UINT meshIndex, const XMMATRIX& placed, UINT hitGroup) {
-        const MeshGPU& mesh = m_scene.meshes[meshIndex];
-        clusters::InstanceSets::Mesh d;
-        d.lod = &mesh.lod;
-        d.omm = mesh.hasOmm || mesh.lodAlpha;
-        d.record = m_scene.setPropsBase + (UINT)m_setRecords.size();
-        d.hitGroup = hitGroup;
-        d.flags = (mesh.alphaTriCount == 0 && !mesh.lodAlpha) ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
-                                                              : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-        const XMMATRIX T = XMMatrixTranspose(placed * toSet);
-        for (int r = 0; r < 3; ++r)
-            for (int c = 0; c < 4; ++c)
-                d.base[r * 4 + c] = XMVectorGetByIndex(T.r[r], c);
-        m_setRecords.push_back({(UINT)m_setRecords.size(), meshIndex});
-        return d;
+        return SetMesh(meshIndex, placed * toSet, hitGroup);
     };
     auto sphereOf = [&](XMVECTOR lo, XMVECTOR hi, clusters::InstanceSets::Desc& d) {
         lo = XMVector3Transform(lo, toSet);
@@ -1584,13 +1687,6 @@ void Renderer::CreateScatterSets(uint32_t count) {
         sphereOf(objLo, objHi, d);
         m_instanceSets.add(d, instances, m_ctx.CmdList(), flush);
     }
-    m_instanceSets.commit(m_planet.tlas(), &m_scene.sceneOriginWorld.x, m_ctx.CmdList(), flush);
-    for (const auto& [slot, meshIndex] : m_setRecords)
-        m_scene.WriteSetRecord(slot, meshIndex);
-    m_setRecordBuffer = m_scene.instanceProperties.Get();
-    m_camera.instanceSetBase = m_scene.setPropsBase;
-    m_camera.instanceSetEnd = m_scene.setPropsBase + (UINT)m_setRecords.size();
-    m_setStart = std::chrono::steady_clock::now();
     std::printf("[sets] scattered %zu copies of %zu pieces, %.1f m apart, %.0f to %.0f m from the scene centre\n",
                 instances.size(), m_scatterSources.size(), spacing, inner, outer);
 }

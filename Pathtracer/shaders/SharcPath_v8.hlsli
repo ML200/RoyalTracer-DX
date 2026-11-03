@@ -54,6 +54,30 @@ bool SharcMaterialEligible(HitContext ctx, SamplingP sp, float3 geometricNormal)
     return dot(ctx.hitNormal, geometricNormal) > 0.5f;
 }
 
+// A cell stores the diffuse lobe and GGX lobes at least this rough (SharcCachesGGX): as rough as a lobe the cache
+// may answer behind alone (SharcSpreadRamp), so the cell's average over arrival directions holds. Smoother lobes
+// lie on top of the cell (SharcLayerTransmission) and are traced on.
+static const float SHARC_CACHED_GGX_ROUGHNESS = 0.5f;
+bool SharcCachesGGX(half roughness) { return (float)roughness >= SHARC_CACHED_GGX_ROUGHNESS; }
+
+// After a cache hit: the lobes the cell does not hold, renormalized; false if none.
+bool SharcDropCachedLobes(inout SamplingP sp, half roughness)
+{
+    sp.Pdiff = 0.0f;
+    if (SharcCachesGGX(roughness)) sp.Pspec = 0.0f;
+    const float total = sp.Psheen + sp.Pcoat + sp.Pspec;
+    if (total < EPSILON)
+    {
+        sp.Psheen = 0.0f; sp.Pcoat = 0.0f; sp.Pspec = 0.0f;
+        return false;
+    }
+    const float inv = 1.0f / total;
+    sp.Psheen *= inv;
+    sp.Pcoat  *= inv;
+    sp.Pspec  *= inv;
+    return true;
+}
+
 float SharcLayerTransmission(SamplingP sp, HitContext ctx, float3 view)
 {
     const float3 N = normalize(ctx.hitNormal);
@@ -64,7 +88,7 @@ float SharcLayerTransmission(SamplingP sp, HitContext ctx, float3 view)
         gate *= Transmittance_SHEEN(ctx.matID, N, -N, V);
     if (sp.Pcoat >= EPSILON)
         gate *= CoatTransmittance(ctx.matID, N, V, N, ctx.iors.x, ctx.iors.y);
-    if (sp.Pspec >= EPSILON && !IsBroadGGX(ctx.hitLocalPr))
+    if (sp.Pspec >= EPSILON && !SharcCachesGGX(ctx.hitLocalPr))
         gate *= GGXTransmittance(ctx.matID, N, V, N, ctx.iors.x, ctx.iors.y, (float3)ctx.hitLocalKd,
             ctx.hitLocalPr, ctx.hitLocalPm);
     return saturate(gate);
